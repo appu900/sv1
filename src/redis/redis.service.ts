@@ -11,6 +11,20 @@ export class RedisService implements OnModuleDestroy {
     });
   }
 
+
+  async set(key:string,value:any,ttlSeconds:number){
+    await this.client.set(key,JSON.stringify(value),'EX',ttlSeconds)
+  }
+
+  async get(key:string) {
+    const value = await this.client.get(key);
+    return value ? JSON.parse(value) : null
+  }
+
+  async del(key:string){
+    await this.client.del(key)
+  }
+
   async setSession(sessionId: string, userId: string, ttlSeconds: number) {
     const key = `auth:session:${sessionId}`;
     await this.client.set(key, userId, 'EX', ttlSeconds);
