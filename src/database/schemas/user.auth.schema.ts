@@ -24,6 +24,9 @@ export class User {
   @Prop()
   stateCode?:string;
 
+  @Prop({})
+  country?:string
+
   @Prop({type:UserDietaryProfile})
   dietaryProfile?:UserDietaryProfile
 }

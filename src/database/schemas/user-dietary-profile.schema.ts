@@ -19,7 +19,20 @@ export class UserDietaryProfile {
 
   @Prop({ type: [String], default: [] })
   otherAllergies: string[];
+
+
+  @Prop({type:[String],default:[]})
+  tastePrefrence:string[]
+ 
+  @Prop({type:Number,default:0})
+  noOfAdults:number
+
+  @Prop({type:Number,default:0})
+  noOfChildren:number
 }
 
 export const UserDietaryProfileSchema =
   SchemaFactory.createForClass(UserDietaryProfile);
+
+
+export type UserDietaryProfileDocument = UserDietaryProfile & Document
