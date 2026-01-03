@@ -12,5 +12,6 @@ export class Stickers {
   description: string;
 }
 
+
 export type StickerDocument = Stickers & Document
 export const StickerSchema = SchemaFactory.createForClass(Stickers)
