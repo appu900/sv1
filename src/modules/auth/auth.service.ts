@@ -57,7 +57,6 @@ export class AuthService {
     );
     if (!isPasswordValid)
       throw new UnauthorizedException('Invalid Credentials');
-    // const key = `auth:session:${sessionId}`;
     const sessionId = nanoid();
     await this.redis.setSession(sessionId, user._id.toString(), 60 * 60);
     const accessToken = this.generateAccessToken(

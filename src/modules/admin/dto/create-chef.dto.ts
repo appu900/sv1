@@ -1,4 +1,4 @@
-import { IsEmail, IsNotEmpty, IsString, MinLength, IsOptional } from 'class-validator';
+import { IsEmail, IsNotEmpty, IsString, MinLength } from 'class-validator';
 
 export class CreateChefDto {
   @IsEmail()
@@ -13,8 +13,4 @@ export class CreateChefDto {
   @MinLength(8)
   @IsNotEmpty()
   password: string;
-
-  @IsString()
-  @IsOptional()
-  phoneNumber?: string;
 }
