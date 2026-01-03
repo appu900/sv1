@@ -6,36 +6,34 @@ export class UserProfileDto {
   vegType: string;
 
   @IsBoolean()
-  @IsNotEmpty()
-  dairyFree: boolean;
+  @IsOptional()
+  dairyFree?: boolean;
 
   @IsBoolean()
-  @IsNotEmpty()
-  nutFree: boolean;
+  @IsOptional()
+  nutFree?: boolean;
 
   @IsBoolean()
-  @IsNotEmpty()
-  glutenFree: boolean;
+  @IsOptional()
+  glutenFree?: boolean;
 
   @IsBoolean()
-  @IsNotEmpty()
-  hasDiabetes: boolean;
-
+  @IsOptional()
+  hasDiabetes?: boolean;
 
   @IsOptional()
   @IsArray()
-  allergies: string[];
+  otherAllergies?: string[];
 
-  @IsNotEmpty()
+  @IsOptional()
   @IsString()
-  country:string;
-
-
-  @IsNumber()
-  @IsOptional()
-  noOfChildren:number
+  country?: string;
 
   @IsNumber()
   @IsOptional()
-  noOfAdults:number
+  noOfChildren?: number;
+
+  @IsNumber()
+  @IsOptional()
+  noOfAdults?: number;
 }

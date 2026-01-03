@@ -51,32 +51,32 @@ export class UserService {
     const user = await this.userModel.findById(new Types.ObjectId(userId));
     if (!user) throw new BadRequestException('can not perform this operation');
 
+    const updateData: any = {
+      dietaryProfile: {
+        vegType: dto.vegType || 'OMNI',
+        dairyFree: dto.dairyFree ?? false,
+        nutFree: dto.nutFree ?? false,
+        glutenFree: dto.glutenFree ?? false,
+        hasDiabetes: dto.hasDiabetes ?? false,
+        otherAllergies: dto.otherAllergies || [],
+        noOfAdults: dto.noOfAdults ?? 0,
+        noOfChildren: dto.noOfChildren ?? 0,
+        tastePrefrence: [],
+      },
+    };
+    
+    if (dto.country) {
+      updateData.country = dto.country;
+    }
+    
     const result = await this.userModel.findByIdAndUpdate(
       userId,
-      {
-        $set: {
-          country: dto.country,
-          dietaryProfile: {
-            vegType: dto.vegType,
-            dairyFree: dto.dairyFree,
-            nutFree: dto.nutFree,
-            glutenFree: dto.glutenFree,
-            hasDiabetes: dto.hasDiabetes,
-            otherAllergies: dto.allergies ?? [],
-            noOfAdults: dto.noOfAdults ?? 0,
-            noOfChildren: dto.noOfChildren ?? 0,
-            tastePrefrence: [],
-          },
-        },
-      },
+      { $set: updateData },
       { new: true },
     );
     if (!result) {
       throw new BadRequestException('can not perform this operation');
     }
-    return {
-      message: 'Profile update successfully',
-      dietaryProfile: user.dietaryProfile,
-    };
+    return result;
   }
 }

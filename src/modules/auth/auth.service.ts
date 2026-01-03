@@ -30,19 +30,54 @@ export class AuthService {
 
   async register(dto: RegisterUserDto) {
     const existing = await this.userService.findByEmail(dto.email);
-    const userRole = dto.role.toUpperCase() as UserRole;
+    const userRole = dto.role ? (dto.role.toUpperCase() as UserRole) : UserRole.USER;
     if (existing) throw new BadRequestException('email already registered');
     const passwordhash = await bcrypt.hash(dto.password, 10);
+    
+    // Build dietary profile if any fields are provided
+    const dietaryProfile = (dto.vegType || dto.dairyFree || dto.nutFree || dto.glutenFree || dto.hasDiabetes || dto.otherAllergies || dto.noOfAdults !== undefined || dto.noOfChildren !== undefined || dto.tastePreference)
+      ? {
+          vegType: dto.vegType || 'OMNI',
+          dairyFree: dto.dairyFree || false,
+          nutFree: dto.nutFree || false,
+          glutenFree: dto.glutenFree || false,
+          hasDiabetes: dto.hasDiabetes || false,
+          otherAllergies: dto.otherAllergies || [],
+          noOfAdults: dto.noOfAdults || 0,
+          noOfChildren: dto.noOfChildren || 0,
+          tastePrefrence: dto.tastePreference || [],
+        }
+      : undefined;
+
     const user = await this.userService.create({
       email: dto.email,
       passwordHash: passwordhash,
       name: dto.name,
       role: userRole,
+      country: dto.country,
+      stateCode: dto.stateCode,
+      dietaryProfile,
     });
+
+    // Generate session and token for auto-login after signup
+    const sessionId = nanoid();
+    await this.redis.setSession(sessionId, user._id.toString(), 60 * 60);
+    const accessToken = this.generateAccessToken(
+      user._id.toString(),
+      user.role,
+      sessionId,
+    );
+
     return {
+      success: true,
       message: 'user created sucessfully',
-      id: user._id,
-      email: user.email,
+      accessToken,
+      user: {
+        id: user._id.toString(),
+        email: user.email,
+        name: user.name,
+        role: user.role,
+      },
     };
   }
 
@@ -65,10 +100,15 @@ export class AuthService {
       sessionId,
     );
     return {
+      success: true,
       message: 'login sucessful',
-      userId: user._id,
-      email: user.email,
       accessToken,
+      user: {
+        id: user._id.toString(),
+        email: user.email,
+        name: user.name,
+        role: user.role,
+      },
     };
   }
 
@@ -98,14 +138,11 @@ export class AuthService {
     );
     
     return {
+      success: true,
       message: 'login successful',
-      userId: user._id,
-      email: user.email,
-      name: user.name,
-      role: user.role,
       accessToken,
       user: {
-        id: user._id,
+        id: user._id.toString(),
         email: user.email,
         name: user.name,
         role: user.role,
@@ -118,11 +155,6 @@ export class AuthService {
       throw new BadRequestException('invalid userId');
     const user = await this.userService.findById(userId);
     if (!user) throw new UnauthorizedException();
-    return {
-      id: user._id.toString(),
-      email: user.email,
-      name: user.name,
-      role: user.role,
-    };
+    return user;
   }
 }

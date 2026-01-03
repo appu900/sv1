@@ -1,4 +1,4 @@
-import { IsString, IsEmail, isNotEmpty, IsNotEmpty } from 'class-validator';
+import { IsString, IsEmail, IsNotEmpty, IsOptional, IsBoolean, IsArray, IsNumber } from 'class-validator';
 
 export class RegisterUserDto {
   @IsEmail()
@@ -14,5 +14,51 @@ export class RegisterUserDto {
   password: string;
 
   @IsString()
-  role: string;
+  @IsOptional()
+  role?: string;
+
+  @IsString()
+  @IsOptional()
+  country?: string;
+
+  @IsString()
+  @IsOptional()
+  stateCode?: string;
+
+  // Dietary profile fields
+  @IsString()
+  @IsOptional()
+  vegType?: string;
+
+  @IsBoolean()
+  @IsOptional()
+  dairyFree?: boolean;
+
+  @IsBoolean()
+  @IsOptional()
+  nutFree?: boolean;
+
+  @IsBoolean()
+  @IsOptional()
+  glutenFree?: boolean;
+
+  @IsBoolean()
+  @IsOptional()
+  hasDiabetes?: boolean;
+
+  @IsArray()
+  @IsOptional()
+  otherAllergies?: string[];
+
+  @IsNumber()
+  @IsOptional()
+  noOfAdults?: number;
+
+  @IsNumber()
+  @IsOptional()
+  noOfChildren?: number;
+
+  @IsArray()
+  @IsOptional()
+  tastePreference?: string[];
 }
