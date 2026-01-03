@@ -85,6 +85,7 @@ export class HackService {
       throw new BadRequestException('category not exists in db');
     const hacks = await this.hackModel
       .find({ categoryId: hackCategory._id })
+      .populate('sponsorId')
       .lean();
     const response = {
       category: {
@@ -243,7 +244,7 @@ export class HackService {
     const cacheKey = `hacks:single:${hackId}`;
     const cached = await this.redisService.get(cacheKey);
     if (cached) return cached;
-    const hack = await this.hackModel.findById(hackId).lean();
+    const hack = await this.hackModel.findById(hackId).populate('sponsorId').lean();
     if (!hack) throw new NotFoundException('Hack not found');
     await this.redisService.set(cacheKey, hack, 60 * 10);
     return hack;

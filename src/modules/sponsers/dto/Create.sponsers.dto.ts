@@ -1,15 +1,15 @@
-import { IsNotEmpty, IsString } from 'class-validator';
+import { IsNotEmpty, IsString, IsOptional } from 'class-validator';
 
 export class CreateSponsers {
   @IsNotEmpty()
   @IsString()
   title: string;
 
-  @IsNotEmpty()
+  @IsOptional()
   @IsString()
-  broughtToYouBy: string;
+  broughtToYouBy?: string;
 
-  @IsNotEmpty()
+  @IsOptional()
   @IsString()
-  tagline: string;
+  tagline?: string;
 }

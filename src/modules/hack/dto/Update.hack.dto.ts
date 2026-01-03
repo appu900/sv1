@@ -1,5 +1,5 @@
-import { IsNotEmpty, IsOptional, IsString, IsArray, ValidateNested } from 'class-validator';
-import { Type } from 'class-transformer';
+import { IsNotEmpty, IsOptional, IsString, IsArray } from 'class-validator';
+import { Transform } from 'class-transformer';
 import { ArticleBlockDto } from './Create.article.block.dto';
 
 export class UpdateHackDto {
@@ -29,7 +29,17 @@ export class UpdateHackDto {
 
   @IsOptional()
   @IsArray()
-  @ValidateNested({ each: true })
-  @Type(() => Object)
+  @Transform(({ value }) => {
+    if (typeof value === 'string') {
+      try {
+        const parsed = JSON.parse(value);
+        return Array.isArray(parsed) ? parsed : [parsed];
+      } catch {
+        return [];
+      }
+    }
+    return Array.isArray(value) ? value : [];
+  })
+  // Keep nested properties intact; validate in service
   articleBlocks?: ArticleBlockDto[];
 }

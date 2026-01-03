@@ -4,6 +4,7 @@ import {
   Get,
   Put,
   Post,
+  Param,
   UseGuards,
   UseInterceptors,
   UploadedFiles,
@@ -43,5 +44,10 @@ export class SponsersController {
   @Get('')
   async fetchAllSponsers() {
     return this.sponsersService.fetchAll();
+  }
+
+  @Get(':id')
+  async fetchSponserById(@Param('id') id: string) {
+    return this.sponsersService.fetchById(id);
   }
 }

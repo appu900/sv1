@@ -57,4 +57,14 @@ export class SponsersService {
     await this.redisService.set(cachedKey, JSON.stringify(result), 60 * 20);
     return result;
   }
+
+  async fetchById(id: string) {
+    const cachedKey = `sponsers:single:${id}`;
+    const cachedData = await this.redisService.get(cachedKey);
+    if (cachedData) return JSON.parse(cachedData);
+    const result = await this.sponsersModel.findById(id);
+    if (!result) throw new Error('Sponsor not found');
+    await this.redisService.set(cachedKey, JSON.stringify(result), 60 * 20);
+    return result;
+  }
 }

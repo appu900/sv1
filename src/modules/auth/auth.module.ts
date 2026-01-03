@@ -23,7 +23,7 @@ import { AdminModule } from '../admin/admin.module';
         }
         return {
           secret,
-          signOptions: { expiresIn: '5d' },
+          signOptions: { expiresIn: '7d' },
         };
       },
     }),

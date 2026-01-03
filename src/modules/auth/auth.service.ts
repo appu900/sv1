@@ -61,7 +61,7 @@ export class AuthService {
 
     // Generate session and token for auto-login after signup
     const sessionId = nanoid();
-    await this.redis.setSession(sessionId, user._id.toString(), 60 * 60);
+    await this.redis.setSession(sessionId, user._id.toString(), 60 * 60 * 24 * 7);
     const accessToken = this.generateAccessToken(
       user._id.toString(),
       user.role,
@@ -93,7 +93,7 @@ export class AuthService {
     if (!isPasswordValid)
       throw new UnauthorizedException('Invalid Credentials');
     const sessionId = nanoid();
-    await this.redis.setSession(sessionId, user._id.toString(), 60 * 60);
+    await this.redis.setSession(sessionId, user._id.toString(), 60 * 60 * 24 * 7);
     const accessToken = this.generateAccessToken(
       user._id.toString(),
       user.role,
@@ -130,7 +130,7 @@ export class AuthService {
       throw new UnauthorizedException('Invalid Credentials');
     
     const sessionId = nanoid();
-    await this.redis.setSession(sessionId, user._id.toString(), 60 * 60);
+    await this.redis.setSession(sessionId, user._id.toString(), 60 * 60 * 24 * 7);
     const accessToken = this.generateAccessToken(
       user._id.toString(),
       user.role,

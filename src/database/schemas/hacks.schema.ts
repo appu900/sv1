@@ -133,7 +133,7 @@ export class Hacks {
   @Prop()
   leadText?: string; // HTML formatted lead text
 
-  @Prop({ type: Types.ObjectId, index: true })
+  @Prop({ type: Types.ObjectId, ref: 'Sponsers', index: true })
   sponsorId?: Types.ObjectId;
 
   @Prop({ type: Types.ObjectId, required: true, index: true })

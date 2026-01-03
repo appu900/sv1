@@ -13,10 +13,10 @@ export class Sponsers {
   @Prop({required:true})
   logoBlackAndWhite: string;
 
-  @Prop({required:true})
+  @Prop({required:false})
   broughtToYouBy: string;
 
-  @Prop({required:true})
+  @Prop({required:false})
   tagline: string;
 }
 
