@@ -12,16 +12,13 @@ export class AdminService {
   ) {}
 
   async createChef(dto: CreateChefDto) {
-    // Check if chef already exists
     const existingChef = await this.userModel.findOne({ email: dto.email });
     if (existingChef) {
       throw new BadRequestException('Chef with this email already exists');
     }
 
-    // Hash password
     const passwordHash = await bcrypt.hash(dto.password, 10);
 
-    // Create chef user
     const chef = await this.userModel.create({
       email: dto.email,
       name: dto.name,
@@ -123,8 +120,26 @@ export class AdminService {
         role: user.role,
         country: user.country,
         stateCode: user.stateCode,
+        dietaryProfile: user.dietaryProfile ? {
+          vegType: user.dietaryProfile.vegType,
+          dairyFree: user.dietaryProfile.dairyFree,
+          nutFree: user.dietaryProfile.nutFree,
+          glutenFree: user.dietaryProfile.glutenFree,
+          hasDiabetes: user.dietaryProfile.hasDiabetes,
+          otherAllergies: user.dietaryProfile.otherAllergies || [],
+        } : null,
+        onboarding: user.country ? {
+          noOfAdults: user.dietaryProfile?.noOfAdults || 1,
+          noOfChildren: user.dietaryProfile?.noOfChildren || 0,
+          country: user.country,
+          stateCode: user.stateCode,
+        } : null,
         createdAt: user['createdAt'],
         updatedAt: user['updatedAt'],
+        _count: {
+          cookedRecipes: 0, 
+          bookmarkedRecipes: 0, 
+        },
       })),
     };
   }
@@ -151,9 +166,26 @@ export class AdminService {
         role: user.role,
         country: user.country,
         stateCode: user.stateCode,
-        dietaryProfile: user.dietaryProfile,
+        dietaryProfile: user.dietaryProfile ? {
+          vegType: user.dietaryProfile.vegType,
+          dairyFree: user.dietaryProfile.dairyFree,
+          nutFree: user.dietaryProfile.nutFree,
+          glutenFree: user.dietaryProfile.glutenFree,
+          hasDiabetes: user.dietaryProfile.hasDiabetes,
+          otherAllergies: user.dietaryProfile.otherAllergies || [],
+        } : null,
+        onboarding: user.country ? {
+          noOfAdults: user.dietaryProfile?.noOfAdults || 1,
+          noOfChildren: user.dietaryProfile?.noOfChildren || 0,
+          country: user.country,
+          stateCode: user.stateCode,
+        } : null,
         createdAt: user['createdAt'],
         updatedAt: user['updatedAt'],
+        _count: {
+          cookedRecipes: 0, // TODO: implement actual count from recipes
+          bookmarkedRecipes: 0, // TODO: implement actual count from bookmarks
+        },
       },
     };
   }
@@ -177,6 +209,45 @@ export class AdminService {
     return {
       success: true,
       message: 'User deleted successfully',
+    };
+  }
+
+  async getStats() {
+    const totalUsers = await this.userModel.countDocuments({
+      role: UserRole.USER,
+    });
+
+    const totalChefs = await this.userModel.countDocuments({
+      role: UserRole.CHEF,
+    });
+
+    const usersWithDietaryProfile = await this.userModel.countDocuments({
+      role: UserRole.USER,
+      'dietaryProfile.vegType': { $exists: true },
+    });
+
+    const usersWithCountry = await this.userModel.countDocuments({
+      role: UserRole.USER,
+      country: { $exists: true, $ne: null },
+    });
+
+    const dietaryProfileCompletionRate =
+      totalUsers > 0
+        ? `${((usersWithDietaryProfile / totalUsers) * 100).toFixed(1)}%`
+        : '0%';
+
+    const onboardingCompletionRate =
+      totalUsers > 0
+        ? `${((usersWithCountry / totalUsers) * 100).toFixed(1)}%`
+        : '0%';
+
+    return {
+      totalUsers,
+      totalChefs,
+      usersWithDietaryProfile,
+      dietaryProfileCompletionRate,
+      usersWithOnboarding: usersWithCountry,
+      onboardingCompletionRate,
     };
   }
 }

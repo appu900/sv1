@@ -51,4 +51,10 @@ export class AdminController {
   async deleteUser(@Param('id') id: string) {
     return this.adminService.deleteUser(id);
   }
+
+  // Stats endpoint
+  @Get('stats')
+  async getStats() {
+    return this.adminService.getStats();
+  }
 }
