@@ -63,7 +63,7 @@ export class HackController {
     const etag = generateETag(data);
     const clientEtag = req.headers['if-none-match'];
     if (clientEtag == etag) {
-      res.status(304).end();
+      return res.status(304).end();
     }
     res.setHeader('Etag', etag);
     res.setHeader('Cache-Control', 'private,must-revalidate');
