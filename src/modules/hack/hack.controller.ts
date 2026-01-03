@@ -79,4 +79,10 @@ export class HackController {
   async getHackById(@Param('id') hackId:string){
     return this.hackService.getHackById(hackId)
   }
+
+
+  @Get('/basir')
+  async FetchBasir(){
+
+  }
 }
