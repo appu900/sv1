@@ -12,10 +12,17 @@ import { ImageUploadModule } from './modules/image-upload/image-upload.module';
 import { IngredientsModule } from './modules/ingredients/ingredients.module';
 import { StickerModule } from './modules/sticker/sticker.module';
 import { SponsersModule } from './modules/sponsers/sponsers.module';
+<<<<<<< Updated upstream
 import { AdminModule } from './modules/admin/admin.module';
 
 @Module({
   imports: [ConfigModule.forRoot({ isGlobal: true }), DatabaseModule, AuthModule, RedisModule, UserModule, HackModule, ImageUploadModule, IngredientsModule, StickerModule, SponsersModule, AdminModule],
+=======
+import { DietModule } from './modules/diet/diet.module';
+
+@Module({
+  imports: [ConfigModule.forRoot({ isGlobal: true }), DatabaseModule, AuthModule, RedisModule, UserModule, HackModule, ImageUploadModule, IngredientsModule, StickerModule, SponsersModule, DietModule],
+>>>>>>> Stashed changes
   controllers: [AppController],
   providers: [AppService],
 })
