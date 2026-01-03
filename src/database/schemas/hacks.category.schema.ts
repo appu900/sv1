@@ -6,7 +6,10 @@ export class Hackscategory {
   name: string;
 
   @Prop({ required: true })
-  imageUrl: string;
+  heroImageUrl: string;
+
+  @Prop({ required: true })
+  iconImageUrl: string;
 }
 export type HackCategoryDocument = Hackscategory & Document
 export const HacksCategorySchema = SchemaFactory.createForClass(Hackscategory)

@@ -2,18 +2,18 @@ import { IsNotEmpty, IsOptional, IsString, IsArray, ValidateNested } from 'class
 import { Type } from 'class-transformer';
 import { ArticleBlockDto } from './Create.article.block.dto';
 
-export class CreateHackDto {
-  @IsNotEmpty()
+export class UpdateHackDto {
+  @IsOptional()
   @IsString()
-  title: string;
+  title?: string;
 
   @IsOptional()
   @IsString()
   shortDescription?: string;
 
-  @IsNotEmpty()
+  @IsOptional()
   @IsString()
-  categoryId: string;
+  categoryId?: string;
 
   @IsOptional()
   @IsString()
@@ -21,14 +21,15 @@ export class CreateHackDto {
 
   @IsOptional()
   @IsString()
-  leadText?: string;
+  leadText?: string; 
 
   @IsOptional()
   @IsString()
   description?: string; 
 
+  @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
-  @Type(() => Object) 
-  articleBlocks: ArticleBlockDto[];
+  @Type(() => Object)
+  articleBlocks?: ArticleBlockDto[];
 }

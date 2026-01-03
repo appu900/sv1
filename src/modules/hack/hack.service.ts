@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { ImageUploadService } from '../image-upload/image-upload.service';
 import { InjectModel } from '@nestjs/mongoose';
 import {
@@ -11,6 +11,7 @@ import { Types } from 'mongoose';
 import { HackDocument, Hacks } from 'src/database/schemas/hacks.schema';
 import { RedisService } from 'src/redis/redis.service';
 import { CreateHackDto } from './dto/Create.hack.dto';
+import { UpdateHackDto } from './dto/Update.hack.dto';
 import { threadCpuUsage } from 'process';
 import { JsonWebTokenError } from 'jsonwebtoken';
 
@@ -26,23 +27,34 @@ export class HackService {
 
   async createHackCategory(
     dto: CreateHackCategoryDto,
-    files: { image: Express.Multer.File[] },
+    files: { heroImage: Express.Multer.File[]; iconImage: Express.Multer.File[] },
   ) {
-    let imageUrl = '';
-    if (files?.image?.[0]) {
-      imageUrl = await this.imageUploadService.uploadFile(
-        files.image[0],
-        'saveful/hack-category',
+    let heroImageUrl = '';
+    let iconImageUrl = '';
+    
+    if (files?.heroImage?.[0]) {
+      heroImageUrl = await this.imageUploadService.uploadFile(
+        files.heroImage[0],
+        'saveful/hack-category/hero',
       );
     }
+    
+    if (files?.iconImage?.[0]) {
+      iconImageUrl = await this.imageUploadService.uploadFile(
+        files.iconImage[0],
+        'saveful/hack-category/icons',
+      );
+    }
+    
     const result = await this.hacksCategory.create({
       name: dto.name,
-      imageUrl: imageUrl,
+      heroImageUrl: heroImageUrl,
+      iconImageUrl: iconImageUrl,
     });
     const cacheKey = `hacks:category:all`
     await this.redisService.del(cacheKey)
     return {
-      message: 'hacks categort created successfully',
+      message: 'hacks category created successfully',
       result,
     };
   }
@@ -78,7 +90,8 @@ export class HackService {
       category: {
         id: hackCategory._id,
         name: hackCategory.name,
-        imageUrl: hackCategory.imageUrl,
+        heroImageUrl: hackCategory.heroImageUrl,
+        iconImageUrl: hackCategory.iconImageUrl,
       },
       hacks,
     };
@@ -92,7 +105,11 @@ export class HackService {
 
   async createHack(
     dto: CreateHackDto,
-    files?: { image: Express.Multer.File[] },
+    files?: {
+      thumbnailImage?: Express.Multer.File[];
+      heroImage?: Express.Multer.File[];
+      iconImage?: Express.Multer.File[];
+    },
   ) {
     if (!Types.ObjectId.isValid(dto.categoryId)) {
       throw new BadRequestException('Invalid Category Id');
@@ -101,38 +118,242 @@ export class HackService {
     if (!category) {
       throw new BadRequestException('category does not exists');
     }
-    let imageUrl: string | undefined;
-    if (files?.image?.[0]) {
-      imageUrl = await this.imageUploadService.uploadFile(
-        files.image[0],
-        'saveful/hacks',
+
+    // Upload images if provided
+    let thumbnailImageUrl: string | undefined;
+    let heroImageUrl: string | undefined;
+    let iconImageUrl: string | undefined;
+
+    if (files?.thumbnailImage?.[0]) {
+      thumbnailImageUrl = await this.imageUploadService.uploadFile(
+        files.thumbnailImage[0],
+        'saveful/hacks/thumbnails',
       );
     }
 
-    const hack = await this.hackModel.create({
-        title:dto.title,
-        description:dto.description,
-        categoryId:category._id,
-        imageUrl:imageUrl,
-        youtubeLink:dto.youtubeLink
-    })
-    const cachedKey = `hacks:single:${hack._id}`
-    await this.redisService.set(cachedKey,JSON.stringify(hack),60 * 20)
-    await this.redisService.del(`hacks:category:${dto.categoryId}`)
-    return {
-        message:"hack created sucessfully",
-        hackId:hack._id
+    if (files?.heroImage?.[0]) {
+      heroImageUrl = await this.imageUploadService.uploadFile(
+        files.heroImage[0],
+        'saveful/hacks/hero-images',
+      );
     }
+
+    if (files?.iconImage?.[0]) {
+      iconImageUrl = await this.imageUploadService.uploadFile(
+        files.iconImage[0],
+        'saveful/hacks/icons',
+      );
+    }
+
+    // Process and validate article blocks
+    const processedBlocks = this.processArticleBlocks(dto.articleBlocks);
+
+    const hack = await this.hackModel.create({
+      title: dto.title,
+      shortDescription: dto.shortDescription,
+      description: dto.description,
+      leadText: dto.leadText,
+      categoryId: category._id,
+      sponsorId: dto.sponsorId
+        ? new Types.ObjectId(dto.sponsorId)
+        : undefined,
+      thumbnailImageUrl,
+      heroImageUrl,
+      iconImageUrl,
+      articleBlocks: processedBlocks,
+    });
+
+    const cachedKey = `hacks:single:${hack._id}`;
+    await this.redisService.set(cachedKey, JSON.stringify(hack), 60 * 20);
+    await this.redisService.del(`hacks:category:${dto.categoryId}`);
+
+    return {
+      message: 'hack created successfully',
+      hackId: hack._id,
+    };
   }
 
-  async getHackById(hackId:string){
-    if(!Types.ObjectId.isValid(hackId)) throw new BadRequestException("Invalid hack id")
-    const cacheKey = `hacks:single:${hackId}`
-    const cached = await this.redisService.get(cacheKey)
-    if(cached) return cached
-    const hack = await this.hackModel.findById(hackId)
-    if(!hack) throw new BadRequestException("Hack not found")
-    await this.redisService.set(cacheKey,JSON.stringify(hack),60*10)
-    return hack
+  /**
+   * Process and validate article blocks with proper ordering
+   */
+  private processArticleBlocks(blocks: any[]): any[] {
+    return blocks.map((block, index) => {
+      const processedBlock = {
+        ...block,
+        order: index, // Sequential ordering
+        id: block.id || new Types.ObjectId().toString(),
+      };
+
+      // Validate block structure based on type
+      switch (block.type) {
+        case 'text':
+          if (!block.text) {
+            throw new BadRequestException(
+              `Text block at position ${index} is missing text content`,
+            );
+          }
+          break;
+        case 'image':
+          if (!block.imageUrl) {
+            throw new BadRequestException(
+              `Image block at position ${index} is missing imageUrl`,
+            );
+          }
+          break;
+        case 'video':
+          if (!block.videoUrl) {
+            throw new BadRequestException(
+              `Video block at position ${index} is missing videoUrl`,
+            );
+          }
+          break;
+        case 'list':
+          if (!block.listTitle || !block.listItems) {
+            throw new BadRequestException(
+              `List block at position ${index} is missing required fields`,
+            );
+          }
+          break;
+        case 'accordion':
+          if (!block.accordion || !Array.isArray(block.accordion)) {
+            throw new BadRequestException(
+              `Accordion block at position ${index} is missing accordion items`,
+            );
+          }
+          break;
+        case 'image_details':
+          if (!block.blockImageUrl || !block.blockTitle) {
+            throw new BadRequestException(
+              `Image details block at position ${index} is missing required fields`,
+            );
+          }
+          break;
+        default:
+          // Allow other block types
+          break;
+      }
+
+      return processedBlock;
+    });
+  }
+
+  async getHackById(hackId: string) {
+    if (!Types.ObjectId.isValid(hackId))
+      throw new BadRequestException('Invalid hack id');
+    const cacheKey = `hacks:single:${hackId}`;
+    const cached = await this.redisService.get(cacheKey);
+    if (cached) return cached;
+    const hack = await this.hackModel.findById(hackId).lean();
+    if (!hack) throw new NotFoundException('Hack not found');
+    await this.redisService.set(cacheKey, hack, 60 * 10);
+    return hack;
+  }
+
+  async updateHack(
+    hackId: string,
+    dto: UpdateHackDto,
+    files?: {
+      thumbnailImage?: Express.Multer.File[];
+      heroImage?: Express.Multer.File[];
+      iconImage?: Express.Multer.File[];
+    },
+  ) {
+    if (!Types.ObjectId.isValid(hackId)) {
+      throw new BadRequestException('Invalid hack id');
+    }
+
+    const hack = await this.hackModel.findById(hackId);
+    if (!hack) {
+      throw new NotFoundException('Hack not found');
+    }
+
+    // Validate category if provided
+    if (dto.categoryId && Types.ObjectId.isValid(dto.categoryId)) {
+      const category = await this.hacksCategory.findById(dto.categoryId);
+      if (!category) {
+        throw new BadRequestException('Category does not exist');
+      }
+    }
+
+    // Upload new images if provided
+    const updateData: any = {};
+
+    if (files?.thumbnailImage?.[0]) {
+      updateData.thumbnailImageUrl = await this.imageUploadService.uploadFile(
+        files.thumbnailImage[0],
+        'saveful/hacks/thumbnails',
+      );
+    }
+
+    if (files?.heroImage?.[0]) {
+      updateData.heroImageUrl = await this.imageUploadService.uploadFile(
+        files.heroImage[0],
+        'saveful/hacks/hero-images',
+      );
+    }
+
+    if (files?.iconImage?.[0]) {
+      updateData.iconImageUrl = await this.imageUploadService.uploadFile(
+        files.iconImage[0],
+        'saveful/hacks/icons',
+      );
+    }
+
+    // Update text fields
+    if (dto.title) updateData.title = dto.title;
+    if (dto.shortDescription !== undefined)
+      updateData.shortDescription = dto.shortDescription;
+    if (dto.description !== undefined) updateData.description = dto.description;
+    if (dto.leadText !== undefined) updateData.leadText = dto.leadText;
+    if (dto.categoryId) updateData.categoryId = new Types.ObjectId(dto.categoryId);
+    if (dto.sponsorId !== undefined) {
+      updateData.sponsorId = dto.sponsorId
+        ? new Types.ObjectId(dto.sponsorId)
+        : null;
+    }
+
+    // Process article blocks if provided
+    if (dto.articleBlocks) {
+      updateData.articleBlocks = this.processArticleBlocks(dto.articleBlocks);
+    }
+
+    const updatedHack = await this.hackModel.findByIdAndUpdate(
+      hackId,
+      updateData,
+      { new: true },
+    );
+
+    // Invalidate caches
+    await this.redisService.del(`hacks:single:${hackId}`);
+    await this.redisService.del(`hacks:category:${hack.categoryId}`);
+    if (dto.categoryId && dto.categoryId !== hack.categoryId.toString()) {
+      await this.redisService.del(`hacks:category:${dto.categoryId}`);
+    }
+
+    return {
+      message: 'Hack updated successfully',
+      hack: updatedHack,
+    };
+  }
+
+  async deleteHack(hackId: string) {
+    if (!Types.ObjectId.isValid(hackId)) {
+      throw new BadRequestException('Invalid hack id');
+    }
+
+    const hack = await this.hackModel.findById(hackId);
+    if (!hack) {
+      throw new NotFoundException('Hack not found');
+    }
+
+    await this.hackModel.findByIdAndDelete(hackId);
+
+    // Invalidate caches
+    await this.redisService.del(`hacks:single:${hackId}`);
+    await this.redisService.del(`hacks:category:${hack.categoryId}`);
+
+    return {
+      message: 'Hack deleted successfully',
+    };
   }
 }

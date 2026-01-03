@@ -9,6 +9,8 @@ import {
   Param,
   Req,
   Res,
+  Put,
+  Delete,
 } from '@nestjs/common';
 import { CreateHackCategoryDto } from './dto/Create.hack.category.dto';
 import { RolesGuard } from 'src/common/guards/roles.guard';
@@ -25,6 +27,7 @@ import { generate } from 'rxjs';
 import { generateETag } from 'src/common/http/etag.utils';
 import { Request, Response } from 'express';
 import { CreateHackDto } from './dto/Create.hack.dto';
+import { UpdateHackDto } from './dto/Update.hack.dto';
 
 @Controller('hack')
 export class HackController {
@@ -32,10 +35,13 @@ export class HackController {
   @Post('category')
   @Roles('ADMIN', 'CHEF')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @UseInterceptors(FileFieldsInterceptor([{ name: 'image', maxCount: 1 }]))
+  @UseInterceptors(FileFieldsInterceptor([
+    { name: 'heroImage', maxCount: 1 },
+    { name: 'iconImage', maxCount: 1 }
+  ]))
   async createHackCategory(
     @Body() dto: CreateHackCategoryDto,
-    @UploadedFiles() files: { image: Express.Multer.File[] },
+    @UploadedFiles() files: { heroImage: Express.Multer.File[]; iconImage: Express.Multer.File[] },
     @GetUser() user: any,
   ) {
     console.log(user);
@@ -67,22 +73,60 @@ export class HackController {
   @Post('')
   @Roles(UserRole.ADMIN, UserRole.CHEF)
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @UseInterceptors(FileFieldsInterceptor([{ name: 'image', maxCount: 1 }]))
+  @UseInterceptors(
+    FileFieldsInterceptor([
+      { name: 'thumbnailImage', maxCount: 1 },
+      { name: 'heroImage', maxCount: 1 },
+      { name: 'iconImage', maxCount: 1 },
+    ]),
+  )
   async createHack(
     @Body() dto: CreateHackDto,
-    @UploadedFiles() files: { image: Express.Multer.File[] },
+    @UploadedFiles()
+    files: {
+      thumbnailImage?: Express.Multer.File[];
+      heroImage?: Express.Multer.File[];
+      iconImage?: Express.Multer.File[];
+    },
   ) {
-    return this.hackService.createHack(dto,files)
+    return this.hackService.createHack(dto, files);
   }
 
   @Get(':id')
-  async getHackById(@Param('id') hackId:string){
-    return this.hackService.getHackById(hackId)
+  async getHackById(@Param('id') hackId: string) {
+    return this.hackService.getHackById(hackId);
   }
 
+  @Put(':id')
+  @Roles(UserRole.ADMIN, UserRole.CHEF)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseInterceptors(
+    FileFieldsInterceptor([
+      { name: 'thumbnailImage', maxCount: 1 },
+      { name: 'heroImage', maxCount: 1 },
+      { name: 'iconImage', maxCount: 1 },
+    ]),
+  )
+  async updateHack(
+    @Param('id') hackId: string,
+    @Body() dto: UpdateHackDto,
+    @UploadedFiles()
+    files?: {
+      thumbnailImage?: Express.Multer.File[];
+      heroImage?: Express.Multer.File[];
+      iconImage?: Express.Multer.File[];
+    },
+  ) {
+    return this.hackService.updateHack(hackId, dto, files);
+  }
+
+  @Delete(':id')
+  @Roles(UserRole.ADMIN, UserRole.CHEF)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  async deleteHack(@Param('id') hackId: string) {
+    return this.hackService.deleteHack(hackId);
+  }
 
   @Get('/basir')
-  async FetchBasir(){
-
-  }
+  async FetchBasir() {}
 }
