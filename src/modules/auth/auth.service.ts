@@ -73,6 +73,47 @@ export class AuthService {
     };
   }
 
+  async loginWithRole(dto: UserLoginDto, requiredRole: UserRole) {
+    const user = await this.userService.findByEmail(dto.email);
+    if (!user) {
+      throw new UnauthorizedException('Invalid Credentials');
+    }
+    
+    if (user.role !== requiredRole) {
+      throw new UnauthorizedException(`Access denied. This login is only for ${requiredRole.toLowerCase()}s.`);
+    }
+    
+    const isPasswordValid = await bcrypt.compare(
+      dto.password,
+      user.passwordHash,
+    );
+    if (!isPasswordValid)
+      throw new UnauthorizedException('Invalid Credentials');
+    
+    const sessionId = nanoid();
+    await this.redis.setSession(sessionId, user._id.toString(), 60 * 60);
+    const accessToken = this.generateAccessToken(
+      user._id.toString(),
+      user.role,
+      sessionId,
+    );
+    
+    return {
+      message: 'login successful',
+      userId: user._id,
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      accessToken,
+      user: {
+        id: user._id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+      },
+    };
+  }
+
   async getProfile(userId: string) {
     if (!Types.ObjectId.isValid(userId))
       throw new BadRequestException('invalid userId');
