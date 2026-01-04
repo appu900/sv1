@@ -67,4 +67,61 @@ export class SponsersService {
     await this.redisService.set(cachedKey, JSON.stringify(result), 60 * 20);
     return result;
   }
+
+  async update(
+    id: string,
+    dto: Partial<CreateSponsers>,
+    files?: {
+      logo?: Express.Multer.File[];
+      logoBlackAndWhite?: Express.Multer.File[];
+    },
+  ) {
+    const existing = await this.sponsersModel.findById(id);
+    if (!existing) throw new Error('Sponsor not found');
+
+    let logoUrl = existing.logo;
+    let logoBWUrl = existing.logoBlackAndWhite;
+
+    if (files?.logo?.[0]) {
+      logoUrl = await this.imageUplaodService.uploadFile(
+        files.logo[0],
+        'saveful/sponsers',
+      );
+    }
+
+    if (files?.logoBlackAndWhite?.[0]) {
+      logoBWUrl = await this.imageUplaodService.uploadFile(
+        files.logoBlackAndWhite[0],
+        'saveful/sponsers',
+      );
+    }
+
+    const updatePayload: Partial<Sponsers> = {
+      title: dto.title ?? existing.title,
+      broughtToYouBy: dto.broughtToYouBy ?? existing.broughtToYouBy,
+      tagline: dto.tagline ?? existing.tagline,
+      logo: logoUrl,
+      logoBlackAndWhite: logoBWUrl,
+    };
+
+    const updated = await this.sponsersModel.findByIdAndUpdate(id, updatePayload, {
+      new: true,
+    });
+
+    const allKey = `sponsers:all`;
+    const singleKey = `sponsers:single:${id}`;
+    await this.redisService.del(allKey);
+    await this.redisService.del(singleKey);
+    return updated;
+  }
+
+  async remove(id: string) {
+    const deleted = await this.sponsersModel.findByIdAndDelete(id);
+    if (!deleted) throw new Error('Sponsor not found');
+    const allKey = `sponsers:all`;
+    const singleKey = `sponsers:single:${id}`;
+    await this.redisService.del(allKey);
+    await this.redisService.del(singleKey);
+    return { success: true };
+  }
 }

@@ -4,6 +4,7 @@ import {
   Get,
   Put,
   Post,
+  Delete,
   Param,
   UseGuards,
   UseInterceptors,
@@ -49,5 +50,33 @@ export class SponsersController {
   @Get(':id')
   async fetchSponserById(@Param('id') id: string) {
     return this.sponsersService.fetchById(id);
+  }
+
+  @Put(':id')
+  @Roles(UserRole.ADMIN, UserRole.CHEF)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseInterceptors(
+    FileFieldsInterceptor([
+      { name: 'logo', maxCount: 1 },
+      { name: 'logoBlackAndWhite', maxCount: 1 },
+    ]),
+  )
+  async update(
+    @Param('id') id: string,
+    @Body() dto: CreateSponsers,
+    @UploadedFiles()
+    files: {
+      logo?: Express.Multer.File[];
+      logoBlackAndWhite?: Express.Multer.File[];
+    },
+  ) {
+    return this.sponsersService.update(id, dto, files);
+  }
+
+  @Delete(':id')
+  @Roles(UserRole.ADMIN, UserRole.CHEF)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  async remove(@Param('id') id: string) {
+    return this.sponsersService.remove(id);
   }
 }
