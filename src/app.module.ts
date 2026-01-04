@@ -13,9 +13,10 @@ import { IngredientsModule } from './modules/ingredients/ingredients.module';
 import { StickerModule } from './modules/sticker/sticker.module';
 import { SponsersModule } from './modules/sponsers/sponsers.module';
 import { AdminModule } from './modules/admin/admin.module';
+import { HackOrTipModule } from './modules/hack-or-tip/hack-or-tip.module';
 
 @Module({
-  imports: [ConfigModule.forRoot({ isGlobal: true }), DatabaseModule, AuthModule, RedisModule, UserModule, HackModule, ImageUploadModule, IngredientsModule, StickerModule, SponsersModule, AdminModule],
+  imports: [ConfigModule.forRoot({ isGlobal: true }), DatabaseModule, AuthModule, RedisModule, UserModule, HackModule, ImageUploadModule, IngredientsModule, StickerModule, SponsersModule, AdminModule, HackOrTipModule],
   controllers: [AppController],
   providers: [AppService],
 })

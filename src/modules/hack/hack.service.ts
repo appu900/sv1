@@ -272,6 +272,28 @@ export class HackService {
           }
         }
 
+        // Upload image for image block if provided
+        if (block.type === 'image') {
+          const imageFile = fileMap.get(`blockImage_${block.id}`);
+          if (imageFile) {
+            processedBlock.imageUrl = await this.imageUploadService.uploadFile(
+              imageFile,
+              'saveful/hacks/block-images',
+            );
+          }
+        }
+
+        // Upload image for image details block if provided
+        if (block.type === 'image_details') {
+          const imageFile = fileMap.get(`blockImage_${block.id}`);
+          if (imageFile) {
+            processedBlock.blockImageUrl = await this.imageUploadService.uploadFile(
+              imageFile,
+              'saveful/hacks/block-images',
+            );
+          }
+        }
+
         // Validate block structure
         switch (block.type) {
           case 'text':
@@ -282,9 +304,9 @@ export class HackService {
             }
             break;
           case 'image':
-            if (!block.imageUrl) {
+            if (!block.imageUrl && !fileMap.get(`blockImage_${block.id}`)) {
               throw new BadRequestException(
-                `Image block at position ${index} is missing imageUrl`,
+                `Image block at position ${index} is missing imageUrl or image file`,
               );
             }
             break;
@@ -310,7 +332,7 @@ export class HackService {
             }
             break;
           case 'image_details':
-            if (!block.blockImageUrl || !block.blockTitle) {
+            if ((!block.blockImageUrl && !fileMap.get(`blockImage_${block.id}`)) || !block.blockTitle) {
               throw new BadRequestException(
                 `Image details block at position ${index} is missing required fields`,
               );
