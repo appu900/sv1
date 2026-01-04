@@ -1,6 +1,17 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 
-@Schema({ timestamps: true })
+@Schema({ 
+  timestamps: true,
+  toJSON: {
+    virtuals: true,
+    transform: function(doc, ret: any) {
+      ret.id = ret._id.toString();
+      delete ret._id;
+      delete ret.__v;
+      return ret;
+    }
+  }
+})
 export class Stickers {
   @Prop({ required: true })
   title: string;
@@ -8,8 +19,8 @@ export class Stickers {
   @Prop({ required: true })
   imageUrl: string;
 
-  @Prop({ required: true })
-  description: string;
+  @Prop()
+  description?: string;
 }
 
 

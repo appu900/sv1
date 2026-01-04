@@ -3,6 +3,9 @@ import {
   Body,
   Get,
   Post,
+  Patch,
+  Delete,
+  Param,
   UseGuards,
   UseInterceptors,
   UploadedFiles,
@@ -35,6 +38,25 @@ export class StickerController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   async getAll() {
     return this.stickerService.fetchAllStickers();
+  }
+
+  @Patch(':id')
+  @Roles(UserRole.ADMIN, UserRole.CHEF)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseInterceptors(FileFieldsInterceptor([{ name: 'image', maxCount: 1 }]))
+  async update(
+    @Param('id') id: string,
+    @Body() dto: CreateStickerDto,
+    @UploadedFiles() files: { image: Express.Multer.File[] },
+  ) {
+    return this.stickerService.update(id, dto, files);
+  }
+
+  @Delete(':id')
+  @Roles(UserRole.ADMIN, UserRole.CHEF)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  async delete(@Param('id') id: string) {
+    return this.stickerService.delete(id);
   }
 }
 

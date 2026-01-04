@@ -23,16 +23,18 @@ export class IngredientsService {
      const existing = await this.ingredinatsCategory.findOne({name:dto.name})
      console.log(existing)
      if(existing) throw new ConflictException("this categiry already exists")
-     let imageUrl = ''
+     
+     const categoryData: any = {
+        name: dto.name
+     };
+     
      if(files?.image?.[0]){
-         imageUrl = await this.imageuploadService.uploadFile(files.image[0],'saveful/ingredinats-category') 
+         const imageUrl = await this.imageuploadService.uploadFile(files.image[0],'saveful/ingredinats-category')
+         categoryData.imageUrl = imageUrl;
      }
+     
      const cachedKey = `Ingrediants:Category:all`
-     const result = await this.ingredinatsCategory.create({
-        name:dto.name,
-        imageUrl:imageUrl,
-        description:dto.description
-    })
+     const result = await this.ingredinatsCategory.create(categoryData)
     await this.redisService.del(cachedKey)
     return result
   }

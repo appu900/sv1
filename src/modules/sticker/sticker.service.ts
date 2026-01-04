@@ -24,11 +24,14 @@ export class StickerService {
             imageUrl = await this.imageUploadService.uploadFile(file.image[0],'saveful/sticker')
          }
          const cachedKey = `sticker:all`
-         const result = await this.stickerMode.create({
-            title:dto.title,
-            description:dto.description,
-            imageUrl:imageUrl
-         })
+         const stickerData: any = {
+            title: dto.title,
+            imageUrl: imageUrl
+         };
+         if (dto.description) {
+            stickerData.description = dto.description;
+         }
+         const result = await this.stickerMode.create(stickerData)
          await this.redisService.del(cachedKey);
          return result
     }
@@ -41,5 +44,38 @@ export class StickerService {
         const result = await this.stickerMode.find()
         await this.redisService.set(cachedKey,JSON.stringify(result),60 * 20)
         return result
+    }
+
+    async update(id: string, dto: CreateStickerDto, file?: { image: Express.Multer.File[] }) {
+        const existing = await this.stickerMode.findById(id);
+        if (!existing) throw new BadRequestException('Sticker not found');
+
+        const updateData: any = {
+            title: dto.title
+        };
+
+        if (dto.description !== undefined) {
+            updateData.description = dto.description;
+        }
+
+        if (file?.image?.[0]) {
+            const imageUrl = await this.imageUploadService.uploadFile(file.image[0], 'saveful/sticker');
+            updateData.imageUrl = imageUrl;
+        }
+
+        const cachedKey = `sticker:all`;
+        const result = await this.stickerMode.findByIdAndUpdate(id, updateData, { new: true });
+        await this.redisService.del(cachedKey);
+        return result;
+    }
+
+    async delete(id: string) {
+        const existing = await this.stickerMode.findById(id);
+        if (!existing) throw new BadRequestException('Sticker not found');
+
+        const cachedKey = `sticker:all`;
+        await this.stickerMode.findByIdAndDelete(id);
+        await this.redisService.del(cachedKey);
+        return { message: 'Sticker deleted successfully' };
     }
 }
