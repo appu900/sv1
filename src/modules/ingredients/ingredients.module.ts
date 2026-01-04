@@ -3,16 +3,25 @@ import { IngredientsController } from './ingredients.controller';
 import { IngredientsService } from './ingredients.service';
 import { Mongoose } from 'mongoose';
 import { MongooseModule } from '@nestjs/mongoose';
-import { IngredientsCategory, ingredinatsCategorySchema } from 'src/database/schemas/ingredinats.Category.schema';
-import { ImageUploadService } from '../image-upload/image-upload.service';
+import {
+  IngredientsCategory,
+  ingredinatsCategorySchema,
+} from 'src/database/schemas/ingredinats.Category.schema';
+import {
+  Ingredient,
+  IngredientSchema,
+} from 'src/database/schemas/ingredient.schema';
+import { ImageUploadModule } from '../image-upload/image-upload.module';
 
 @Module({
-  imports:[
+  imports: [
     MongooseModule.forFeature([
-      {name:IngredientsCategory.name,schema:ingredinatsCategorySchema}
+      { name: IngredientsCategory.name, schema: ingredinatsCategorySchema },
+      { name: Ingredient.name, schema: IngredientSchema },
     ]),
+    ImageUploadModule,
   ],
   controllers: [IngredientsController],
-  providers: [IngredientsService]
+  providers: [IngredientsService],
 })
 export class IngredientsModule {}
