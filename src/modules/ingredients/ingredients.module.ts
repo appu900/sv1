@@ -11,6 +11,10 @@ import {
   Ingredient,
   IngredientSchema,
 } from 'src/database/schemas/ingredient.schema';
+import {
+  DietCategory,
+  DietCategorySchema,
+} from 'src/database/schemas/diet.schema';
 import { ImageUploadModule } from '../image-upload/image-upload.module';
 
 @Module({
@@ -18,6 +22,7 @@ import { ImageUploadModule } from '../image-upload/image-upload.module';
     MongooseModule.forFeature([
       { name: IngredientsCategory.name, schema: ingredinatsCategorySchema },
       { name: Ingredient.name, schema: IngredientSchema },
+      { name: DietCategory.name, schema: DietCategorySchema },
     ]),
     ImageUploadModule,
   ],

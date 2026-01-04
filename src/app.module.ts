@@ -15,6 +15,7 @@ import { SponsersModule } from './modules/sponsers/sponsers.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { HackOrTipModule } from './modules/hack-or-tip/hack-or-tip.module';
 import { CommunityGroupsModule } from './modules/community-groups/community-groups.module';
+import { DietModule } from './modules/diet/diet.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { CommunityGroupsModule } from './modules/community-groups/community-grou
     HackModule,
     ImageUploadModule,
     IngredientsModule,
+    DietModule,
     StickerModule,
     SponsersModule,
     AdminModule,
