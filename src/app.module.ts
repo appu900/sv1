@@ -14,11 +14,24 @@ import { StickerModule } from './modules/sticker/sticker.module';
 import { SponsersModule } from './modules/sponsers/sponsers.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { HackOrTipModule } from './modules/hack-or-tip/hack-or-tip.module';
-import { DietModule } from './modules/diet/diet.module';
 import { CommunityGroupsModule } from './modules/community-groups/community-groups.module';
 
 @Module({
-  imports: [ConfigModule.forRoot({ isGlobal: true }), DatabaseModule, AuthModule, RedisModule, UserModule, HackModule, ImageUploadModule, IngredientsModule, StickerModule, SponsersModule, AdminModule, HackOrTipModule, DietModule, CommunityGroupsModule],
+  imports: [
+    ConfigModule.forRoot({ isGlobal: true }),
+    DatabaseModule,
+    AuthModule,
+    RedisModule,
+    UserModule,
+    HackModule,
+    ImageUploadModule,
+    IngredientsModule,
+    StickerModule,
+    SponsersModule,
+    AdminModule,
+    HackOrTipModule,
+    CommunityGroupsModule
+  ],
   controllers: [AppController],
   providers: [AppService],
 })
