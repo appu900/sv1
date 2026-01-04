@@ -4,6 +4,7 @@ import Redis from 'ioredis';
 @Injectable()
 export class RedisService implements OnModuleDestroy {
   private readonly client: Redis;
+  private readonly JOIN_CODE_SET_KEY = 'community:join_codes';
 
   constructor() {
     this.client = new Redis(process.env.REDIS_URL || 'redis://localhost:6379', {
@@ -11,13 +12,37 @@ export class RedisService implements OnModuleDestroy {
       enableReadyCheck: true,
     });
 
-    this.client.on('connect', () =>
-      console.log('Redis connected'),
-    );
+    this.client.on('connect', () => console.log('Redis connected'));
 
-    this.client.on('error', (err) =>
-      console.error('Redis error:', err),
-    );
+    this.client.on('error', (err) => console.error('Redis error:', err));
+  }
+
+  async isHealthy(): Promise<boolean> {
+    try {
+      await this.client.ping();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async isJoinCodeUsed(code: string): Promise<boolean> {
+    return (await this.client.sismember(this.JOIN_CODE_SET_KEY, code)) === 1;
+  }
+
+
+   async resetJoinCodes(): Promise<void> {
+    await this.client.del(this.JOIN_CODE_SET_KEY);
+  }
+
+
+  async releaseJoinCode(code: string): Promise<void> {
+    await this.client.srem(this.JOIN_CODE_SET_KEY, code);
+  }
+
+  async addJoinCodes(codes: string[]): Promise<void> {
+    if (!codes.length) return;
+    await this.client.sadd(this.JOIN_CODE_SET_KEY, ...codes);
   }
 
   async set(key: string, value: any, ttlSeconds: number) {
