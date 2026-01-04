@@ -1,4 +1,4 @@
-import { Controller, Body, Post, Get, UseGuards } from '@nestjs/common';
+import { Controller, Body, Post, Get, Patch, Delete, Param, UseGuards } from '@nestjs/common';
 import { DietService } from './diet.service';
 import { CreateDietDto } from './dto/create.diet.dto';
 import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
@@ -20,5 +20,19 @@ export class DietController {
   @Get('')
   async getAll() {
     return this.dietService.getAll();
+  }
+
+  @Patch(':id')
+  @Roles(UserRole.ADMIN, UserRole.CHEF)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  async update(@Param('id') id: string, @Body() dto: { name: string }) {
+    return this.dietService.update(id, dto);
+  }
+
+  @Delete(':id')
+  @Roles(UserRole.ADMIN, UserRole.CHEF)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  async delete(@Param('id') id: string) {
+    return this.dietService.delete(id);
   }
 }

@@ -20,12 +20,13 @@ export class DietService {
     const cachedKey = `diets:all`;
     if (dto.diets.length == 0)
       throw new BadRequestException('Need some inputes');
-    await Promise.all(
+    const results = await Promise.all(
       dto.diets.map((diet) =>
         this.dietCategoryModel.create({ name: diet.trim() }),
       ),
     );
     await this.redisService.del(cachedKey);
+    return results;
   }
 
 
@@ -36,5 +37,29 @@ export class DietService {
        const res = await this.dietCategoryModel.find()
        await this.redisService.set(cachedKey,JSON.stringify(res),60 * 20)
        return res
+  }
+
+  async update(id: string, dto: { name: string }) {
+    const existing = await this.dietCategoryModel.findById(id);
+    if (!existing) throw new BadRequestException('Diet category not found');
+
+    const cachedKey = `diets:all`;
+    const result = await this.dietCategoryModel.findByIdAndUpdate(
+      id,
+      { name: dto.name },
+      { new: true }
+    );
+    await this.redisService.del(cachedKey);
+    return result;
+  }
+
+  async delete(id: string) {
+    const existing = await this.dietCategoryModel.findById(id);
+    if (!existing) throw new BadRequestException('Diet category not found');
+
+    const cachedKey = `diets:all`;
+    await this.dietCategoryModel.findByIdAndDelete(id);
+    await this.redisService.del(cachedKey);
+    return { message: 'Diet category deleted successfully' };
   }
 }
