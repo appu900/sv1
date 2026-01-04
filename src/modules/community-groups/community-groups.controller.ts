@@ -48,20 +48,18 @@ export class CommunityGroupsController {
       files,
     );
   }
+  
 
-  @Get()
+  @Get('/individual-created')
   @Roles(UserRole.USER)
   @UseGuards(JwtAuthGuard,RolesGuard)
   findAllOwnedComunityByUserId(@GetUser() user:any) {
     const userId = user.userId;
     if(!userId) throw new UnauthorizedException()
-    
+    return this.communityGroupsService.findAllCommunityGroupByUserId(userId)
   }
 
-  @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.communityGroupsService.findOne(+id);
-  }
+  
 
   @Patch(':id')
   update(

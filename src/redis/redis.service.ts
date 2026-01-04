@@ -13,7 +13,6 @@ export class RedisService implements OnModuleDestroy {
     });
 
     this.client.on('connect', () => console.log('Redis connected'));
-
     this.client.on('error', (err) => console.error('Redis error:', err));
   }
 

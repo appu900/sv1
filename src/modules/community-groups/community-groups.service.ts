@@ -56,6 +56,11 @@ export class CommunityGroupsService {
 
     console.log(profileImageUrl)
 
+
+    // ** need to invalid cache 
+    const cachedKey = `community:Groups:${userId}`;
+
+
     // ** code verification part 
     let code = ''
     let attempts = 0
@@ -92,6 +97,7 @@ export class CommunityGroupsService {
 
     if(await this.redisService.isHealthy()){
        await this.redisService.releaseJoinCode(code)
+       await this.redisService.del(cachedKey)
     }
     console.log(group)
     console.log("code",code)
