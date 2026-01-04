@@ -29,7 +29,7 @@ export class VideoBlock {
   type: string;
 
   @Prop({ required: true })
-  videoUrl: string;
+  videoUrl: string; // YouTube URL
 
   @Prop()
   videoCaption?: string;
@@ -38,7 +38,7 @@ export class VideoBlock {
   videoCredit?: string;
 
   @Prop()
-  thumbnailUrl?: string;
+  videoThumbnail?: string; // S3 URL for custom thumbnail (optional, YouTube provides default)
 }
 
 @Schema({ _id: false })

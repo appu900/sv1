@@ -20,6 +20,7 @@ import { UserRole } from 'src/database/schemas/user.auth.schema';
 import {
   FileFieldsInterceptor,
   FileInterceptor,
+  AnyFilesInterceptor,
 } from '@nestjs/platform-express';
 import { HackService } from './hack.service';
 import { GetUser } from 'src/common/decorators/Get.user.decorator';
@@ -70,24 +71,35 @@ export class HackController {
     return res.json(data);
   }
 
+  @Delete('category/:id')
+  @Roles(UserRole.ADMIN, UserRole.CHEF)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  async deleteHackCategory(@Param('id') categoryId: string) {
+    return this.hackService.deleteCategory(categoryId);
+  }
+
+  @Put('category/:id')
+  @Roles(UserRole.ADMIN, UserRole.CHEF)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseInterceptors(FileFieldsInterceptor([
+    { name: 'heroImage', maxCount: 1 },
+    { name: 'iconImage', maxCount: 1 }
+  ]))
+  async updateHackCategory(
+    @Param('id') categoryId: string,
+    @Body() dto: CreateHackCategoryDto,
+    @UploadedFiles() files?: { heroImage?: Express.Multer.File[]; iconImage?: Express.Multer.File[] },
+  ) {
+    return this.hackService.updateCategory(categoryId, dto, files);
+  }
+
   @Post('')
   @Roles(UserRole.ADMIN, UserRole.CHEF)
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @UseInterceptors(
-    FileFieldsInterceptor([
-      { name: 'thumbnailImage', maxCount: 1 },
-      { name: 'heroImage', maxCount: 1 },
-      { name: 'iconImage', maxCount: 1 },
-    ]),
-  )
+  @UseInterceptors(AnyFilesInterceptor())
   async createHack(
     @Body() dto: CreateHackDto,
-    @UploadedFiles()
-    files: {
-      thumbnailImage?: Express.Multer.File[];
-      heroImage?: Express.Multer.File[];
-      iconImage?: Express.Multer.File[];
-    },
+    @UploadedFiles() files: Express.Multer.File[],
   ) {
     return this.hackService.createHack(dto, files);
   }
@@ -100,22 +112,11 @@ export class HackController {
   @Put(':id')
   @Roles(UserRole.ADMIN, UserRole.CHEF)
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @UseInterceptors(
-    FileFieldsInterceptor([
-      { name: 'thumbnailImage', maxCount: 1 },
-      { name: 'heroImage', maxCount: 1 },
-      { name: 'iconImage', maxCount: 1 },
-    ]),
-  )
+  @UseInterceptors(AnyFilesInterceptor())
   async updateHack(
     @Param('id') hackId: string,
     @Body() dto: UpdateHackDto,
-    @UploadedFiles()
-    files?: {
-      thumbnailImage?: Express.Multer.File[];
-      heroImage?: Express.Multer.File[];
-      iconImage?: Express.Multer.File[];
-    },
+    @UploadedFiles() files: Express.Multer.File[],
   ) {
     return this.hackService.updateHack(hackId, dto, files);
   }

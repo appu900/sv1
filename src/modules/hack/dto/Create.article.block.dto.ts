@@ -43,7 +43,7 @@ export class ImageBlockDto extends BaseBlockDto {
 export class VideoBlockDto extends BaseBlockDto {
   @IsString()
   @IsNotEmpty()
-  videoUrl: string; 
+  videoUrl: string; // YouTube URL
 
   @IsOptional()
   @IsString()
@@ -55,7 +55,7 @@ export class VideoBlockDto extends BaseBlockDto {
 
   @IsOptional()
   @IsString()
-  thumbnailUrl?: string;
+  videoThumbnail?: string; // S3 URL for custom thumbnail
 }
 
 export class ListItemDto {
