@@ -57,4 +57,25 @@ export class AdminController {
   async getStats() {
     return this.adminService.getStats();
   }
+
+  // Dashboard endpoints
+  @Get('dashboard/stats')
+  async getDashboardStats() {
+    return this.adminService.getDashboardStats();
+  }
+
+  @Get('dashboard/health')
+  async getPlatformHealth() {
+    return this.adminService.getPlatformHealth();
+  }
+
+  @Get('dashboard/user-growth')
+  async getUserGrowth() {
+    return this.adminService.getUserGrowth();
+  }
+
+  @Get('dashboard/activity')
+  async getActivityLog() {
+    return this.adminService.getActivityLog();
+  }
 }
