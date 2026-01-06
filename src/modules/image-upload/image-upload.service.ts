@@ -34,4 +34,27 @@ export class ImageUploadService {
     this.logger.log(`Uploaded file: ${key}`);
     return `https://${this.bucket}.s3.${this.configService.get('AWS_REGION')}.amazonaws.com/${key}`;
   }
+
+  async deleteFile(fileUrl: string): Promise<void> {
+    try {
+      // Extract key from URL
+      const urlParts = fileUrl.split('/');
+      const keyIndex = urlParts.findIndex((part) => part.includes('amazonaws.com'));
+      if (keyIndex === -1 || keyIndex === urlParts.length - 1) {
+        this.logger.warn(`Invalid file URL format: ${fileUrl}`);
+        return;
+      }
+      const key = urlParts.slice(keyIndex + 1).join('/');
+      
+      await this.s3Client.send(
+        new DeleteObjectCommand({
+          Bucket: this.bucket,
+          Key: key,
+        }),
+      );
+      this.logger.log(`Deleted file: ${key}`);
+    } catch (error) {
+      this.logger.error(`Failed to delete file ${fileUrl}: ${error.message}`);
+    }
+  }
 }

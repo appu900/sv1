@@ -2,7 +2,7 @@ import { Module } from '@nestjs/common';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { DatabaseModule } from './database/database.module';
-
+import { RecipeModule } from './modules/recipe/recipe.module';
 import { ConfigModule } from '@nestjs/config';
 import { AuthModule } from './modules/auth/auth.module';
 import { RedisModule } from './redis/redis.module';
@@ -34,7 +34,8 @@ import { FoodFactModule } from './modules/food-fact/food-fact.module';
     AdminModule,
     HackOrTipModule,
     CommunityGroupsModule,
-    FoodFactModule
+    FoodFactModule,
+    RecipeModule,
   ],
   controllers: [AppController],
   providers: [AppService],
