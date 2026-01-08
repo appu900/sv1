@@ -2,7 +2,6 @@ import { Module } from '@nestjs/common';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { DatabaseModule } from './database/database.module';
-import { RecipeModule } from './modules/recipe/recipe.module';
 import { ConfigModule } from '@nestjs/config';
 import { AuthModule } from './modules/auth/auth.module';
 import { RedisModule } from './redis/redis.module';
@@ -17,6 +16,7 @@ import { HackOrTipModule } from './modules/hack-or-tip/hack-or-tip.module';
 import { CommunityGroupsModule } from './modules/community-groups/community-groups.module';
 import { DietModule } from './modules/diet/diet.module';
 import { FoodFactModule } from './modules/food-fact/food-fact.module';
+import { RecipeModule } from './modules/recipe/recipe.module';
 import { FrameworkCategoryModule } from './modules/framework-category/framework-category.module';
 
 @Module({
@@ -43,3 +43,6 @@ import { FrameworkCategoryModule } from './modules/framework-category/framework-
   providers: [AppService],
 })
 export class AppModule {}
+
+
+
