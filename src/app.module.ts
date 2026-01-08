@@ -17,6 +17,7 @@ import { HackOrTipModule } from './modules/hack-or-tip/hack-or-tip.module';
 import { CommunityGroupsModule } from './modules/community-groups/community-groups.module';
 import { DietModule } from './modules/diet/diet.module';
 import { FoodFactModule } from './modules/food-fact/food-fact.module';
+import { FrameworkCategoryModule } from './modules/framework-category/framework-category.module';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { FoodFactModule } from './modules/food-fact/food-fact.module';
     CommunityGroupsModule,
     FoodFactModule,
     RecipeModule,
+    FrameworkCategoryModule,
   ],
   controllers: [AppController],
   providers: [AppService],

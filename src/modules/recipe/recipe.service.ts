@@ -136,9 +136,14 @@ export class RecipeService {
 
  
   async findAll(): Promise<Recipe[]> {
-    const cached = await this.redisService.get(this.CACHE_KEY_ALL);
-    if (cached) {
-      return JSON.parse(cached);
+    try {
+      const cached = await this.redisService.get(this.CACHE_KEY_ALL);
+      if (cached) {
+        return JSON.parse(cached);
+      }
+    } catch (error) {
+      console.error('Error parsing cached recipes, clearing cache:', error.message);
+      await this.redisService.del(this.CACHE_KEY_ALL);
     }
 
     const recipes = await this.recipeModel
@@ -174,7 +179,7 @@ export class RecipeService {
 
     await this.redisService.set(
       this.CACHE_KEY_ALL,
-      recipes,
+      JSON.stringify(recipes),
       this.CACHE_TTL,
     );
 
@@ -188,9 +193,14 @@ export class RecipeService {
     }
 
     const cacheKey = `${this.CACHE_KEY_SINGLE}:${id}`;
-    const cached = await this.redisService.get(cacheKey);
-    if (cached) {
-      return cached;
+    try {
+      const cached = await this.redisService.get(cacheKey);
+      if (cached) {
+        return JSON.parse(cached);
+      }
+    } catch (error) {
+      console.error('Error parsing cached recipe, clearing cache:', error.message);
+      await this.redisService.del(cacheKey);
     }
 
     const recipe = await this.recipeModel
@@ -229,7 +239,7 @@ export class RecipeService {
 
     await this.redisService.set(
       cacheKey,
-      recipe,
+      JSON.stringify(recipe),
       this.CACHE_TTL,
     );
 
@@ -243,9 +253,14 @@ export class RecipeService {
     }
 
     const cacheKey = `${this.CACHE_KEY_CATEGORY}:${categoryId}`;
-    const cached = await this.redisService.get(cacheKey);
-    if (cached) {
-      return cached;
+    try {
+      const cached = await this.redisService.get(cacheKey);
+      if (cached) {
+        return JSON.parse(cached);
+      }
+    } catch (error) {
+      console.error('Error parsing cached recipes by category, clearing cache:', error.message);
+      await this.redisService.del(cacheKey);
     }
 
     const recipes = await this.recipeModel
@@ -271,7 +286,7 @@ export class RecipeService {
 
     await this.redisService.set(
       cacheKey,
-      recipes,
+      JSON.stringify(recipes),
       this.CACHE_TTL,
     );
 
