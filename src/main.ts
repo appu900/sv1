@@ -20,5 +20,6 @@ async function bootstrap() {
   }))
   await app.listen(process.env.PORT ?? 3000, '0.0.0.0');
   console.log(`Application is running on: http://0.0.0.0:${process.env.PORT ?? 3000}`);
+  console.log(`Redis running on remote server`,process.env.REDIS_URL)
 }
 bootstrap();
