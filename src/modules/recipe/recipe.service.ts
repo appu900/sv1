@@ -34,8 +34,14 @@ export class RecipeService {
         stronglyRecommended: wrapper.stronglyRecommended || false,
         choiceInstructions: wrapper.choiceInstructions,
         buttonText: wrapper.buttonText,
-
-        component: (wrapper.component || []).map((comp: any) => ({
+        // Support both `component` and `components` keys from the client
+        component: (
+          Array.isArray(wrapper.component)
+            ? wrapper.component
+            : Array.isArray((wrapper as any).components)
+            ? (wrapper as any).components
+            : []
+        ).map((comp: any) => ({
           componentTitle: comp.componentTitle,
           componentInstructions: comp.componentInstructions,
           includedInVariants: comp.includedInVariants || [],
@@ -99,6 +105,19 @@ export class RecipeService {
       const processedComponents = this.processComponents(
         createRecipeDto.components,
       );
+      // Debug: log processed structure for the first wrapper/component
+      if (processedComponents?.length) {
+        const firstWrapper = processedComponents[0] as any;
+        const firstComp = Array.isArray(firstWrapper?.component)
+          ? firstWrapper.component[0]
+          : undefined;
+        // Using console.log here to ensure visibility even if Nest logger level changes
+        console.log('RecipeService.processedComponents count:', processedComponents.length);
+        console.log('RecipeService.firstWrapper keys:', Object.keys(firstWrapper || {}));
+        if (firstComp) {
+          console.log('RecipeService.firstComponent keys:', Object.keys(firstComp));
+        }
+      }
 
       const recipeData: any = {
         ...createRecipeDto,
@@ -123,6 +142,26 @@ export class RecipeService {
 
       const recipe = new this.recipeModel(recipeData);
       const savedRecipe = await recipe.save();
+
+      // Debug: confirm what was persisted
+      try {
+        const firstWrapper: any = (savedRecipe.components || [])[0];
+        const firstComp: any = Array.isArray(firstWrapper?.component)
+          ? firstWrapper.component[0]
+          : undefined;
+        console.log('SavedRecipe.components length:', savedRecipe.components?.length || 0);
+        if (firstWrapper) {
+          console.log('SavedRecipe.firstWrapper keys:', Object.keys(firstWrapper));
+        }
+        if (firstComp) {
+          console.log('SavedRecipe.firstComponent keys:', Object.keys(firstComp));
+          console.log('SavedRecipe.firstComponent requiredIngredients length:', firstComp.requiredIngredients?.length || 0);
+          console.log('SavedRecipe.firstComponent optionalIngredients length:', firstComp.optionalIngredients?.length || 0);
+          console.log('SavedRecipe.firstComponent componentSteps length:', firstComp.componentSteps?.length || 0);
+        }
+      } catch (e) {
+        console.log('SavedRecipe debug logging failed:', e?.message);
+      }
 
       await this.redisService.del(this.CACHE_KEY_ALL);
 

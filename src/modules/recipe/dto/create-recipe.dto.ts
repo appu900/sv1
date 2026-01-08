@@ -1,29 +1,26 @@
 import {
-  IsString,
   IsNotEmpty,
   IsOptional,
+  IsString,
   IsArray,
   IsNumber,
   IsBoolean,
   ValidateNested,
   ArrayMinSize,
 } from 'class-validator';
-import { Type, Transform } from 'class-transformer';
-
+import { Type } from 'class-transformer';
 
 export class AlternativeIngredientDto {
   @IsString()
   @IsNotEmpty()
-  ingredient: string; 
+  ingredient: string;
 
   @IsBoolean()
   @IsOptional()
-  @Transform(({ value }) => value === 'true' || value === true)
   inheritQuantity?: boolean;
 
   @IsBoolean()
   @IsOptional()
-  @Transform(({ value }) => value === 'true' || value === true)
   inheritPreparation?: boolean;
 
   @IsString()
@@ -35,11 +32,10 @@ export class AlternativeIngredientDto {
   preparation?: string;
 }
 
-
 export class RequiredIngredientDto {
   @IsString()
   @IsNotEmpty()
-  recommendedIngredient: string; 
+  recommendedIngredient: string;
 
   @IsString()
   @IsNotEmpty()
@@ -53,23 +49,13 @@ export class RequiredIngredientDto {
   @IsOptional()
   @ValidateNested({ each: true })
   @Type(() => AlternativeIngredientDto)
-  @Transform(({ value }) => {
-    if (typeof value === 'string') {
-      try {
-        return JSON.parse(value);
-      } catch {
-        return [];
-      }
-    }
-    return value || [];
-  })
   alternativeIngredients?: AlternativeIngredientDto[];
 }
 
 export class OptionalIngredientDto {
   @IsString()
   @IsNotEmpty()
-  ingredient: string; 
+  ingredient: string;
 
   @IsString()
   @IsNotEmpty()
@@ -83,44 +69,20 @@ export class OptionalIngredientDto {
 export class ComponentStepDto {
   @IsString()
   @IsNotEmpty()
-  stepInstructions: string; 
+  stepInstructions: string;
 
   @IsArray()
   @IsOptional()
-  @Transform(({ value }) => {
-    if (typeof value === 'string') {
-      try {
-        const parsed = JSON.parse(value);
-        return Array.isArray(parsed) ? parsed : [];
-      } catch {
-        return [];
-      }
-    }
-    return value || [];
-  })
-  hackOrTipIds?: string[]; 
+  hackOrTipIds?: string[];
 
   @IsBoolean()
   @IsOptional()
-  @Transform(({ value }) => value === 'true' || value === true)
   alwaysShow?: boolean;
 
   @IsArray()
   @IsOptional()
-  @Transform(({ value }) => {
-    if (typeof value === 'string') {
-      try {
-        const parsed = JSON.parse(value);
-        return Array.isArray(parsed) ? parsed : [];
-      } catch {
-        return [];
-      }
-    }
-    return value || [];
-  })
-  relevantIngredients?: string[]; 
+  relevantIngredients?: string[];
 }
-
 
 export class ComponentDto {
   @IsString()
@@ -133,68 +95,26 @@ export class ComponentDto {
 
   @IsArray()
   @IsOptional()
-  @Transform(({ value }) => {
-    if (typeof value === 'string') {
-      try {
-        const parsed = JSON.parse(value);
-        return Array.isArray(parsed) ? parsed : [];
-      } catch {
-        return [];
-      }
-    }
-    return value || [];
-  })
   includedInVariants?: string[];
 
   @IsArray()
   @IsOptional()
   @ValidateNested({ each: true })
   @Type(() => RequiredIngredientDto)
-  @Transform(({ value }) => {
-    if (typeof value === 'string') {
-      try {
-        return JSON.parse(value);
-      } catch {
-        return [];
-      }
-    }
-    return value || [];
-  })
   requiredIngredients?: RequiredIngredientDto[];
 
   @IsArray()
   @IsOptional()
   @ValidateNested({ each: true })
   @Type(() => OptionalIngredientDto)
-  @Transform(({ value }) => {
-    if (typeof value === 'string') {
-      try {
-        return JSON.parse(value);
-      } catch {
-        return [];
-      }
-    }
-    return value || [];
-  })
   optionalIngredients?: OptionalIngredientDto[];
 
   @IsArray()
   @IsOptional()
   @ValidateNested({ each: true })
   @Type(() => ComponentStepDto)
-  @Transform(({ value }) => {
-    if (typeof value === 'string') {
-      try {
-        return JSON.parse(value);
-      } catch {
-        return [];
-      }
-    }
-    return value || [];
-  })
   componentSteps?: ComponentStepDto[];
 }
-
 
 export class RecipeComponentWrapperDto {
   @IsString()
@@ -207,22 +127,10 @@ export class RecipeComponentWrapperDto {
 
   @IsArray()
   @IsOptional()
-  @Transform(({ value }) => {
-    if (typeof value === 'string') {
-      try {
-        const parsed = JSON.parse(value);
-        return Array.isArray(parsed) ? parsed : [];
-      } catch {
-        return [];
-      }
-    }
-    return value || [];
-  })
   variantTags?: string[];
 
   @IsBoolean()
   @IsOptional()
-  @Transform(({ value }) => value === 'true' || value === true)
   stronglyRecommended?: boolean;
 
   @IsString()
@@ -237,132 +145,76 @@ export class RecipeComponentWrapperDto {
   @ArrayMinSize(1)
   @ValidateNested({ each: true })
   @Type(() => ComponentDto)
-  @Transform(({ value }) => {
-    if (typeof value === 'string') {
-      try {
-        return JSON.parse(value);
-      } catch {
-        return [];
-      }
-    }
-    return value || [];
-  })
   component: ComponentDto[];
 }
 
 export class CreateRecipeDto {
-  @IsString()
   @IsNotEmpty()
+  @IsString()
   title: string;
 
   @IsString()
   @IsNotEmpty()
   shortDescription: string;
 
-  @IsString()
   @IsNotEmpty()
+  @IsString()
   longDescription: string;
 
-  @IsArray()
   @IsOptional()
-  @Transform(({ value }) => {
-    if (typeof value === 'string') {
-      try {
-        const parsed = JSON.parse(value);
-        return Array.isArray(parsed) ? parsed : [];
-      } catch {
-        return [];
-      }
-    }
-    return value || [];
-  })
-  hackOrTipIds?: string[];
-
   @IsString()
-  @IsOptional()
-  heroImageUrl?: string;
-
-  @IsString()
-  @IsOptional()
   youtubeId?: string;
+
+  @IsOptional()
+  @IsString()
+  heroImageUrl?: string;
 
   @IsString()
   @IsNotEmpty()
   portions: string;
 
   @IsNumber()
-  @Transform(({ value }) => (value ? parseInt(value, 10) : 0))
   prepCookTime: number;
 
-  @IsString()
   @IsOptional()
+  @IsString()
   stickerId?: string;
 
   @IsArray()
   @ArrayMinSize(1)
-  @Transform(({ value }) => {
-    if (typeof value === 'string') {
-      try {
-        const parsed = JSON.parse(value);
-        return Array.isArray(parsed) ? parsed : [];
-      } catch {
-        return [];
-      }
-    }
-    return value || [];
-  })
   frameworkCategories: string[];
 
-  @IsString()
   @IsOptional()
+  @IsString()
   sponsorId?: string;
 
-  @IsString()
   @IsOptional()
+  @IsString()
   fridgeKeepTime?: string;
 
-  @IsString()
   @IsOptional()
+  @IsString()
   freezeKeepTime?: string;
 
-  @IsArray()
   @IsOptional()
-  @Transform(({ value }) => {
-    if (typeof value === 'string') {
-      try {
-        const parsed = JSON.parse(value);
-        return Array.isArray(parsed) ? parsed : [];
-      } catch {
-        return [];
-      }
-    }
-    return value || [];
-  })
+  @IsArray()
+  hackOrTipIds?: string[];
+
+  @IsOptional()
+  @IsArray()
   useLeftoversIn?: string[];
 
   @IsArray()
   @ArrayMinSize(1)
   @ValidateNested({ each: true })
   @Type(() => RecipeComponentWrapperDto)
-  @Transform(({ value }) => {
-    if (typeof value === 'string') {
-      try {
-        return JSON.parse(value);
-      } catch {
-        return [];
-      }
-    }
-    return value || [];
-  })
   components: RecipeComponentWrapperDto[];
 
-  @IsNumber()
   @IsOptional()
-  @Transform(({ value }) => (value ? parseInt(value, 10) : 0))
+  @IsNumber()
   order?: number;
 
-  @IsBoolean()
   @IsOptional()
-  @Transform(({ value }) => value === 'true' || value === true)
+  @IsBoolean()
   isActive?: boolean;
 }
