@@ -7,13 +7,33 @@ export class RedisService implements OnModuleDestroy {
   private readonly JOIN_CODE_SET_KEY = 'community:join_codes';
 
   constructor() {
-    this.client = new Redis(process.env.REDIS_URL || 'redis://localhost:6379', {
-      maxRetriesPerRequest: 5,
-      enableReadyCheck: true,
+    if (process.env.REDIS_URL) {
+      this.client = new Redis(process.env.REDIS_URL, {
+        maxRetriesPerRequest: 5,
+        enableReadyCheck: true,
+      });
+    } else {
+      this.client = new Redis({
+        host: process.env.REDIS_HOST || '127.0.0.1',
+        port: Number(process.env.REDIS_PORT) || 6379,
+        password: process.env.REDIS_PASSWORD,
+        db: Number(process.env.REDIS_DB) || 0,
+        maxRetriesPerRequest: 5,
+        enableReadyCheck: true,
+      });
+    }
+
+    this.client.on('connect', () => {
+      console.log('Redis connected');
     });
 
-    this.client.on('connect', () => console.log('Redis connected'));
-    this.client.on('error', (err) => console.error('Redis error:', err));
+    this.client.on('ready', () => {
+      console.log('Redis ready to use');
+    });
+
+    this.client.on('error', (err) => {
+      console.error('Redis error:', err);
+    });
   }
 
   async isHealthy(): Promise<boolean> {
@@ -29,11 +49,9 @@ export class RedisService implements OnModuleDestroy {
     return (await this.client.sismember(this.JOIN_CODE_SET_KEY, code)) === 1;
   }
 
-
-   async resetJoinCodes(): Promise<void> {
+  async resetJoinCodes(): Promise<void> {
     await this.client.del(this.JOIN_CODE_SET_KEY);
   }
-
 
   async releaseJoinCode(code: string): Promise<void> {
     await this.client.srem(this.JOIN_CODE_SET_KEY, code);
@@ -48,7 +66,7 @@ export class RedisService implements OnModuleDestroy {
     await this.client.set(key, JSON.stringify(value), 'EX', ttlSeconds);
   }
 
-  async get(key: string) {
+  async get<T = any>(key: string): Promise<T | null> {
     const value = await this.client.get(key);
     return value ? JSON.parse(value) : null;
   }
