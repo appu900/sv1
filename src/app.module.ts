@@ -18,10 +18,14 @@ import { DietModule } from './modules/diet/diet.module';
 import { FoodFactModule } from './modules/food-fact/food-fact.module';
 import { RecipeModule } from './modules/recipe/recipe.module';
 import { FrameworkCategoryModule } from './modules/framework-category/framework-category.module';
+import { AnalyticsService } from './modules/analytics/analytics.service';
+import { AnalyticsModule } from './modules/analytics/analytics.module';
+import {EventEmitterModule} from "@nestjs/event-emitter"
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    EventEmitterModule.forRoot(),
     DatabaseModule,
     AuthModule,
     RedisModule,
@@ -38,6 +42,7 @@ import { FrameworkCategoryModule } from './modules/framework-category/framework-
     FoodFactModule,
     RecipeModule,
     FrameworkCategoryModule,
+    AnalyticsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

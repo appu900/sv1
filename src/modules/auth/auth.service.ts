@@ -68,6 +68,10 @@ export class AuthService {
       sessionId,
     );
 
+    // ** create user foodanalytics profile
+
+    const userFoodProfileId = await this.userService.createUserFoodAnalyticsProfile(user._id)
+
     return {
       success: true,
       message: 'user created sucessfully',
@@ -77,7 +81,9 @@ export class AuthService {
         email: user.email,
         name: user.name,
         role: user.role,
+        analyticsProfileId:userFoodProfileId
       },
+      
     };
   }
 

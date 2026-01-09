@@ -9,14 +9,20 @@ import { InjectModel } from '@nestjs/mongoose';
 import { isValidObjectId, Model, Types } from 'mongoose';
 import { User, UserDocument } from 'src/database/schemas/user.auth.schema';
 import { UserProfileDto } from './dto/user.profile.dto';
-
+import {
+  UserFoodAnalyticalProfileDocument,
+  UserFoodAnalyticsProfile,
+} from 'src/database/schemas/user.food.analyticsProfile.schema';
 
 @Injectable()
 export class UserService {
   private logger = new Logger(UserService.name);
   constructor(
     @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
+    @InjectModel(UserFoodAnalyticsProfile.name)
+    private readonly UserFoodProfileModel: Model<UserFoodAnalyticalProfileDocument>,
   ) {}
+
   async findByEmail(email: string) {
     const user = await this.userModel.findOne({ email });
     return user;
@@ -45,6 +51,13 @@ export class UserService {
     }
   }
 
+  async createUserFoodAnalyticsProfile(userId:Types.ObjectId) {
+    const profileId = await this.UserFoodProfileModel.create({
+      userId:userId
+    });
+    return profileId;
+  }
+
   async updateProfile(dto: UserProfileDto, userId: string) {
     if (!Types.ObjectId.isValid(userId))
       throw new BadRequestException('invalid userId');
@@ -64,11 +77,11 @@ export class UserService {
         tastePrefrence: [],
       },
     };
-    
+
     if (dto.country) {
       updateData.country = dto.country;
     }
-    
+
     const result = await this.userModel.findByIdAndUpdate(
       userId,
       { $set: updateData },
@@ -79,4 +92,6 @@ export class UserService {
     }
     return result;
   }
+
+ 
 }

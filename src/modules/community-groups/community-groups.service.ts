@@ -26,17 +26,34 @@ import {
 import { JoinGroupDto } from './dto/Join-group.Memebr.dto';
 import { User, UserDocument } from 'src/database/schemas/user.auth.schema';
 import { Type } from 'class-transformer';
+import { CreateChallengeDto } from './dto/create-challenge.dto';
+import {
+  CommunityChallengeParticipant,
+  CommunityChallengeParticipantDocument,
+} from 'src/database/schemas/challenge.members.schema';
+import {
+  CommunityChallenge,
+  CommunityChallengeDocument,
+} from 'src/database/schemas/challenge.schema';
+import { JoinChallengeDto } from './dto/join-challenge.to';
+import { leveChallengeDto } from './dto/leaveChallenege.dto';
+import { ListBucketInventoryConfigurationsCommand } from '@aws-sdk/client-s3';
 
 @Injectable()
 export class CommunityGroupsService {
   private readonly logger = new Logger(CommunityGroupsService.name);
   private readonly SINGLE_COMMUNITY_CACHE_KEY = 'community:group';
+
   constructor(
     @InjectModel(CommunityGroups.name)
     private readonly CommunityModel: Model<CommunityGroupDocument>,
     @InjectModel(CommunityGroupMember.name)
     private readonly communityGroupMemberModel: Model<CommunityGroupMemberDocument>,
     @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
+    @InjectModel(CommunityChallenge.name)
+    private readonly communityChallengeModel: Model<CommunityChallengeDocument>,
+    @InjectModel(CommunityChallengeParticipant.name)
+    private readonly communityChallengeParticipantModel: Model<CommunityChallengeParticipantDocument>,
     private readonly imageuploadService: ImageUploadService,
     private readonly redisService: RedisService,
   ) {}
@@ -128,7 +145,7 @@ export class CommunityGroupsService {
     const cachedKey = `community:Groups:${userId}`;
     const cachedData = await this.redisService.get(cachedKey);
     console.log('CachedData', cachedData);
-    if (cachedData) return cachedData
+    if (cachedData) return cachedData;
     const result = await this.CommunityModel.find({ ownerId: userId });
     await this.redisService.set(cachedKey, JSON.stringify(result), 60 * 20);
     return result;
@@ -202,7 +219,7 @@ export class CommunityGroupsService {
     // ** caching phase
     const cachedKey = `${this.SINGLE_COMMUNITY_CACHE_KEY}:${groupId.toString()}`;
     const cachedData = await this.redisService.get(cachedKey);
-    if (cachedData) return cachedData
+    if (cachedData) return cachedData;
 
     const group = await this.CommunityModel.findOne({
       _id: new Types.ObjectId(groupId),
@@ -278,6 +295,143 @@ export class CommunityGroupsService {
     await this.redisService.del(cacheKey);
     return {
       message: 'Group deleted sucessfully',
+    };
+  }
+
+  async createChallenge(userId: string, dto: CreateChallengeDto) {
+    if (
+      !Types.ObjectId.isValid(userId) ||
+      !Types.ObjectId.isValid(dto.communityId)
+    )
+      throw new BadRequestException();
+    const authorizedUser = await this.communityGroupMemberModel.findOne({
+      groupId: dto.communityId,
+      userId,
+      isActive: true,
+      role: GroupMemberRole.OWNER,
+    });
+    if (!authorizedUser)
+      throw new ForbiddenException('only owners can create the challange');
+    const community = await this.CommunityModel.findById(
+      new Types.ObjectId(dto.communityId),
+    );
+    if (!community) throw new NotFoundException();
+    const result = await this.communityChallengeModel.create({
+      communityId: new Types.ObjectId(dto.communityId),
+      createdBy: new Types.ObjectId(userId),
+      challengeName: dto.challengeName,
+      description: dto.description,
+      startDate: dto.startDate,
+      endDate: dto.endDate,
+      challengeGoal: dto.challengeGoals,
+    });
+    const cachedKey = `community:challenges:communityId:${dto.communityId}`;
+    await this.redisService.del(cachedKey);
+    return result;
+  }
+
+  async getChallangesByCommunityId(communityId: string) {
+    if (!Types.ObjectId.isValid(communityId)) throw new BadRequestException();
+    const cachedKey = `community:challenges:communityId:${communityId}`;
+    const cachedData = await this.redisService.get(cachedKey);
+    if (cachedData) return cachedData;
+    const community = await this.CommunityModel.findById(
+      new Types.ObjectId(communityId),
+    );
+    const result = await this.communityChallengeModel.find({
+      communityId: new Types.ObjectId(communityId),
+    });
+    await this.redisService.set(cachedKey, JSON.stringify(result), 60 * 30);
+    return result;
+  }
+
+  async getChallengeById(challengeId: string) {
+    const cachedKey = `community:challenge:single:${challengeId}`;
+    const cachedData = await this.redisService.get(cachedKey);
+    if (cachedData) return cachedData;
+    const result = await this.communityChallengeModel.findById(
+      new Types.ObjectId(challengeId),
+    );
+    await this.redisService.set(cachedKey, JSON.stringify(result), 60 * 20);
+    return result;
+  }
+
+  /**
+   * 1.validate if the user is the part of the community or not
+   * 2.create a participate for the challenge
+   * 3.increment member count in the challenge model
+   * 4.update saved food one
+   * */
+
+  async joinChallenge(userId: string, dto: JoinChallengeDto) {
+    if (
+      !Types.ObjectId.isValid(userId) ||
+      !Types.ObjectId.isValid(dto.communityId)
+    )
+      throw new BadRequestException();
+    const isUserCommunityMember = await this.communityGroupMemberModel.findOne({
+      groupId: new Types.ObjectId(dto.communityId),
+      userId: userId,
+      isActive: true,
+    });
+    if (!isUserCommunityMember)
+      throw new ForbiddenException('you need to join the community first');
+    const result = await this.communityChallengeParticipantModel.create({
+      userId: new Types.ObjectId(userId),
+      communityId: new Types.ObjectId(dto.communityId),
+      challengeId: new Types.ObjectId(dto.challnageId),
+    });
+    if (result) {
+      await this.communityChallengeModel.findByIdAndUpdate(
+        new Types.ObjectId(dto.challnageId),
+        { $inc: { memberCount: 1 } },
+      );
+    }
+    return {
+      message: 'challenge join sucessfully',
+      result,
+    };
+  }
+
+  async leaveChallenge(dto: leveChallengeDto, userId: string) {
+    // ** check if the ids are valid or not
+    if (
+      !Types.ObjectId.isValid(userId) ||
+      !Types.ObjectId.isValid(dto.communityId) ||
+      !Types.ObjectId.isValid(dto.challengeId)
+    ) {
+      throw new BadRequestException();
+    }
+    const isCommunityUser = await this.communityGroupMemberModel.findOne({
+      groupId: new Types.ObjectId(dto.communityId),
+      userId: new Types.ObjectId(userId),
+      isActive: true,
+    });
+    if (!isCommunityUser)
+      throw new ForbiddenException(
+        'You need to join the community to leave this challange',
+      );
+    const participant =
+      await this.communityChallengeParticipantModel.findOneAndUpdate(
+        {
+          communityId: new Types.ObjectId(dto.communityId),
+          userId: new Types.ObjectId(userId),
+          isActive: true,
+        },
+        { isActive: false },
+      );
+    if (!participant) {
+      throw new BadRequestException('you are not the part of this challenge');
+    }
+
+    await this.communityChallengeModel.updateOne(
+      { id: dto.challengeId },
+      { $inc: { memberCount: -1 } },
+    );
+
+    return {
+      message: 'leaved challenge sucessfully',
+      status: true,
     };
   }
 
