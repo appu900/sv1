@@ -22,6 +22,7 @@ import { UseGuards } from '@nestjs/common';
 import { GetUser } from 'src/common/decorators/Get.user.decorator';
 import { FileFieldsInterceptor } from '@nestjs/platform-express';
 import { JoinGroupDto } from './dto/Join-group.Memebr.dto';
+import { userInfo } from 'os';
 import { CreateChallengeDto } from './dto/create-challenge.dto';
 import { JoinChallengeDto } from './dto/join-challenge.to';
 import { leveChallengeDto } from './dto/leaveChallenege.dto';
@@ -53,23 +54,6 @@ export class CommunityGroupsController {
     );
   }
 
-  @Get('/individual-created')
-  @Roles(UserRole.USER)
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  findAllOwnedComunityByUserId(@GetUser() user: any) {
-    const userId = user.userId;
-    if (!userId) throw new UnauthorizedException();
-    return this.communityGroupsService.findAllCommunityGroupByUserId(userId);
-  }
-
-
-  @Get(':id')
-  @Roles(UserRole.USER)
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  fetchCommunityById(@Param('id') id: string, @GetUser() user: any) {
-    return this.communityGroupsService.findOne(id);
-  }
-
   @Post('join-group')
   @Roles(UserRole.USER)
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -79,18 +63,46 @@ export class CommunityGroupsController {
     return this.communityGroupsService.joinGroupByCode(dto, userId);
   }
 
+  @Get('/individual-created')
+  @Roles(UserRole.USER)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  findAllOwnedComunityByUserId(@GetUser() user: any) {
+    const userId = user.userId;
+    if (!userId) throw new UnauthorizedException();
+    return this.communityGroupsService.findAllCommunityGroupByUserId(userId);
+  }
+
+  @Get('/userGroups')
+  @Roles(UserRole.USER)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  async fetchGroupsForUserId(@GetUser() user: any) {
+    const userId = user.userId;
+    console.log('this one');
+    return this.communityGroupsService.getUserGroups(userId);
+  }
+
+  @Get(':id')
+  @Roles(UserRole.USER)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  fetchCommunityById(@Param() communityId: string, @GetUser() user: any) {
+    return this.communityGroupsService.findOne(communityId);
+  }
+
   // ** update group only group owner can update
   @Patch('')
   @Roles(UserRole.USER)
-  @UseGuards(JwtAuthGuard,RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @UseInterceptors(
     FileFieldsInterceptor([{ name: 'groupProfileImage', maxCount: 1 }]),
   )
-  update(@Body() updateCommunityDto: UpdateCommunityGroupDto,@GetUser() user:any,@UploadedFiles() file:{groupProfileImage:Express.Multer.File[]}) {
+  update(
+    @Body() updateCommunityDto: UpdateCommunityGroupDto,
+    @GetUser() user: any,
+    @UploadedFiles() file: { groupProfileImage: Express.Multer.File[] },
+  ) {
     const userId = user.userId;
-    if(!userId) throw new UnauthorizedException();
-    return this.communityGroupsService.update(updateCommunityDto,userId,file)
-
+    if (!userId) throw new UnauthorizedException();
+    return this.communityGroupsService.update(updateCommunityDto, userId, file);
   }
 
   @Delete(':id')

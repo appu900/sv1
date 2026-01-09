@@ -6,9 +6,6 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { UserFoodAnalyticalProfileSchema, UserFoodAnalyticsProfile } from 'src/database/schemas/user.food.analyticsProfile.schema';
 import { Ingredient, IngredientSchema } from 'src/database/schemas/ingredient.schema';
 
-
-
-
 @Global()
 @Module({
   imports: [MongooseModule.forFeature([

@@ -153,7 +153,7 @@ export class CommunityGroupsService {
 
   async joinGroupByCode(dto: JoinGroupDto, userId: string) {
     const group = await this.CommunityModel.findOne({
-      joinCode: dto.code,
+      joinCode: dto.code, 
       isDeleted: false,
     });
     if (!group) {
@@ -355,6 +355,52 @@ export class CommunityGroupsService {
     await this.redisService.set(cachedKey, JSON.stringify(result), 60 * 20);
     return result;
   }
+
+
+  async getUserGroups(userId: string) {
+  const objectUserId = new Types.ObjectId(userId);
+
+  return this.communityGroupMemberModel.aggregate([
+    {
+      $match: {
+        userId: objectUserId,
+        isActive: true,
+      },
+    },
+    {
+      $lookup: {
+        from: 'communitygroups', 
+        localField: 'groupId',
+        foreignField: '_id',
+        as: 'group',
+      },
+    },
+    {
+      $unwind: '$group',
+    },
+    {
+      $match: {
+        'group.isDeleted': false,
+      },
+    },
+    {
+      $project: {
+        _id: 0,
+        role: 1,
+        joinedViaCode: 1,
+        group: {
+          _id: 1,
+          name: 1,
+          description: 1,
+          profilePhotoUrl: 1,
+          memberCount: 1,
+          totalFoodSaved: 1,
+          ownerId: 1,
+        },
+      },
+    },
+  ]);
+}
 
   /**
    * 1.validate if the user is the part of the community or not

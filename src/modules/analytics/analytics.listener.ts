@@ -9,8 +9,6 @@ import { FoodSavedEvent } from './analytics.service';
 import { OnEvent } from '@nestjs/event-emitter';
 import { Types } from 'mongoose';
 
-
-
 @Injectable()
 export class AnalyticsListner {
   private readonly logger = new Logger(AnalyticsListner.name);
@@ -23,18 +21,21 @@ export class AnalyticsListner {
   async updateUserProfile(event: FoodSavedEvent) {
     try {
       await this.profileModel.findOneAndUpdate(
-        { userId: new Types.ObjectId(event.userId)  },
+        { userId: new Types.ObjectId(event.userId) },
         {
           $inc: {
             foodSavedInGrams: event.foodSavedInGrams,
             numberOfMealsCooked: 1,
           },
         },
-        {upsert:true}
+        { upsert: true },
       );
-      this.logger.log(`update profile for user ${event.userId}`)
+      this.logger.log(`update profile for user ${event.userId}`);
     } catch (error) {
-        this.logger.error(`Failed to update profile:${error.message}`,error.stack)
+      this.logger.error(
+        `Failed to update profile:${error.message}`,
+        error.stack,
+      );
     }
   }
 }
