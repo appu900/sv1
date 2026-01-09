@@ -22,6 +22,9 @@ import { UseGuards } from '@nestjs/common';
 import { GetUser } from 'src/common/decorators/Get.user.decorator';
 import { FileFieldsInterceptor } from '@nestjs/platform-express';
 import { JoinGroupDto } from './dto/Join-group.Memebr.dto';
+import { CreateChallengeDto } from './dto/create-challenge.dto';
+import { JoinChallengeDto } from './dto/join-challenge.to';
+import { leveChallengeDto } from './dto/leaveChallenege.dto';
 
 @Controller('community-groups')
 export class CommunityGroupsController {
@@ -62,9 +65,9 @@ export class CommunityGroupsController {
 
   @Get(':id')
   @Roles(UserRole.USER)
-  @UseGuards(JwtAuthGuard,RolesGuard)
-  fetchCommunityById(@Param() communityId:string,@GetUser() user:any){
-    return this.communityGroupsService.findOne(communityId)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  fetchCommunityById(@Param('id') id: string, @GetUser() user: any) {
+    return this.communityGroupsService.findOne(id);
   }
 
   @Post('join-group')
@@ -90,8 +93,54 @@ export class CommunityGroupsController {
 
   }
 
-  // @Delete(':id')
-  // remove(@Param('id') id: string) {
-  //   return this.communityGroupsService.remove(+id);
-  // }
+  @Delete(':id')
+  @Roles(UserRole.USER)
+  @UseGuards(JwtAuthGuard,RolesGuard)
+  remove(@Param('id') id: string, @GetUser() user: any) {
+    const userId = user.userId;
+    if(!userId) throw new UnauthorizedException();
+    return this.communityGroupsService.remove(id, userId);
+  }
+
+  // Challenge endpoints
+  @Post('challenges')
+  @Roles(UserRole.USER)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  createChallenge(@Body() dto: CreateChallengeDto, @GetUser() user: any) {
+    const userId = user.userId;
+    if (!userId) throw new UnauthorizedException();
+    return this.communityGroupsService.createChallenge(userId, dto);
+  }
+
+  @Get(':communityId/challenges')
+  @Roles(UserRole.USER)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  getChallengesByCommunity(@Param('communityId') communityId: string) {
+    return this.communityGroupsService.getChallangesByCommunityId(communityId);
+  }
+
+  @Get('challenges/:challengeId')
+  @Roles(UserRole.USER)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  getChallengeById(@Param('challengeId') challengeId: string) {
+    return this.communityGroupsService.getChallengeById(challengeId);
+  }
+
+  @Post('challenges/join')
+  @Roles(UserRole.USER)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  joinChallenge(@Body() dto: JoinChallengeDto, @GetUser() user: any) {
+    const userId = user.userId;
+    if (!userId) throw new UnauthorizedException();
+    return this.communityGroupsService.joinChallenge(userId, dto);
+  }
+
+  @Post('challenges/leave')
+  @Roles(UserRole.USER)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  leaveChallenge(@Body() dto: leveChallengeDto, @GetUser() user: any) {
+    const userId = user.userId;
+    if (!userId) throw new UnauthorizedException();
+    return this.communityGroupsService.leaveChallenge(dto, userId);
+  }
 }

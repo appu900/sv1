@@ -166,6 +166,11 @@ export class RecipeController {
     return this.recipeService.findByFrameworkCategory(categoryId);
   }
 
+  @Get('ingredient/:ingredientId')
+  async findByIngredient(@Param('ingredientId') ingredientId: string) {
+    return this.recipeService.findByIngredient(ingredientId);
+  }
+
   @Get(':id')
   async findOne(@Param('id') id: string) {
     return this.recipeService.findOne(id);

@@ -332,6 +332,75 @@ export class RecipeService {
     return recipes;
   }
 
+  async findByIngredient(ingredientId: string): Promise<Recipe[]> {
+    if (!Types.ObjectId.isValid(ingredientId)) {
+      throw new BadRequestException('Invalid ingredient ID format');
+    }
+
+    const cacheKey = `recipes:ingredient:${ingredientId}`;
+    try {
+      const cached = await this.redisService.get(cacheKey);
+      if (cached) {
+        return JSON.parse(cached);
+      }
+    } catch (error) {
+      console.error('Error parsing cached recipes by ingredient, clearing cache:', error.message);
+      await this.redisService.del(cacheKey);
+    }
+
+    const ingredientObjectId = new Types.ObjectId(ingredientId);
+
+    // Find recipes where the ingredient appears in:
+    // 1. Required ingredients (recommendedIngredient)
+    // 2. Alternative ingredients
+    // 3. Optional ingredients
+    const recipes = await this.recipeModel
+      .find({
+        isActive: true,
+        $or: [
+          { 'components.component.requiredIngredients.recommendedIngredient': ingredientObjectId },
+          { 'components.component.requiredIngredients.alternativeIngredients.ingredient': ingredientObjectId },
+          { 'components.component.optionalIngredients.ingredient': ingredientObjectId },
+        ],
+      })
+      .populate('hackOrTipIds')
+      .populate('stickerId')
+      .populate('frameworkCategories')
+      .populate('sponsorId')
+      .populate('useLeftoversIn')
+      .populate({
+        path: 'components.component.requiredIngredients.recommendedIngredient',
+        model: 'Ingredient',
+      })
+      .populate({
+        path: 'components.component.requiredIngredients.alternativeIngredients.ingredient',
+        model: 'Ingredient',
+      })
+      .populate({
+        path: 'components.component.optionalIngredients.ingredient',
+        model: 'Ingredient',
+      })
+      .populate({
+        path: 'components.component.componentSteps.hackOrTipIds',
+        model: 'HackOrTip',
+      })
+      .populate({
+        path: 'components.component.componentSteps.relevantIngredients',
+        model: 'Ingredient',
+      })
+      .sort({ order: 1 })
+      .lean()
+      .exec();
+
+    await this.redisService.set(
+      cacheKey,
+      JSON.stringify(recipes),
+      this.CACHE_TTL,
+    );
+
+    return recipes;
+  }
+
 
   async update(
     id: string,
