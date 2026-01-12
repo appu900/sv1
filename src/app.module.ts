@@ -21,10 +21,15 @@ import { FrameworkCategoryModule } from './modules/framework-category/framework-
 import { AnalyticsService } from './modules/analytics/analytics.service';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import {EventEmitterModule} from "@nestjs/event-emitter"
-
+import { WinstonModule, WINSTON_MODULE_PROVIDER } from 'nest-winston';
+import createWinstonLogger from './logger';
+import { Logger } from 'winston';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    WinstonModule.forRoot({
+      instance: createWinstonLogger(),
+    }),
     EventEmitterModule.forRoot(),
     DatabaseModule,
     AuthModule,
