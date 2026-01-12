@@ -1,7 +1,7 @@
+import './instrumentation';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
-import './instrumentation';
 import { WinstonModule } from 'nest-winston';
 import createWinstonLogger from './logger';
 
