@@ -27,6 +27,7 @@ import { JoinGroupDto } from './dto/Join-group.Memebr.dto';
 import { User, UserDocument } from 'src/database/schemas/user.auth.schema';
 import { Type } from 'class-transformer';
 import { CreateChallengeDto } from './dto/create-challenge.dto';
+import { UpdateChallengeDto } from './dto/update-challenge.dto';
 import {
   CommunityChallengeParticipant,
   CommunityChallengeParticipantDocument,
