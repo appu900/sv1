@@ -14,6 +14,9 @@ export class UserFoodAnalyticsProfile{
 
     @Prop({default:[]})
     savedRecipes:Types.ObjectId[]
+
+    @Prop({default:[], type:[String]})
+    cookedRecipes:string[]  // framework_ids of cooked recipes
 }
 
 

@@ -4,6 +4,7 @@ import { ValidationPipe } from '@nestjs/common';
 import './instrumentation';
 import { WinstonModule } from 'nest-winston';
 import createWinstonLogger from './logger';
+
 async function bootstrap() {
   const logger = createWinstonLogger();
   const app = await NestFactory.create(AppModule, {
