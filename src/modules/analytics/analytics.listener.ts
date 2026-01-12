@@ -189,6 +189,19 @@ export class AnalyticsListner {
         },
       );
 
+      // Invalidate Redis cache for each updated challenge
+      for (const challengeId of activeChallengeIds) {
+        const cacheKey = `community:challenge:single:${challengeId.toString()}`;
+        await this.redisService.del(cacheKey);
+        
+        // Also invalidate the community's challenges list
+        const challenge = await this.communityChallengeModel.findById(challengeId).select('communityId').lean();
+        if (challenge) {
+          const listCacheKey = `community:challenges:communityId:${challenge.communityId.toString()}`;
+          await this.redisService.del(listCacheKey);
+        }
+      }
+
       this.logger.log(
         `Updated ${activeChallengeIds.length} challenges for user ${event.userId}`,
       );

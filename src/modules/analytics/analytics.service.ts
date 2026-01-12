@@ -6,6 +6,8 @@ import {
   Ingredient,
   IngredientDocument,
 } from 'src/database/schemas/ingredient.schema';
+import { Feedback, FeedbackDocument } from 'src/database/schemas/feedback.schema';
+import { Recipe, RecipeDocument } from 'src/database/schemas/recipe.schema';
 import {
   UserFoodAnalyticalProfileDocument,
   UserFoodAnalyticsProfile,
@@ -26,6 +28,10 @@ export class AnalyticsService {
     private readonly userFoodAnallyticsProfileModel: Model<UserFoodAnalyticalProfileDocument>,
     @InjectModel(Ingredient.name)
     private readonly ingredinatModel: Model<IngredientDocument>,
+    @InjectModel(Recipe.name)
+    private readonly recipeModel: Model<RecipeDocument>,
+    @InjectModel(Feedback.name)
+    private readonly feedbackModel: Model<FeedbackDocument>,
     private readonly eventEmmiter: EventEmitter2,
   ) {}
 
@@ -52,12 +58,45 @@ export class AnalyticsService {
   async getUserCookedRecipes(userId: string) {
     const profile = await this.userFoodAnallyticsProfileModel
       .findOne({ userId: new Types.ObjectId(userId) })
-      .select('cookedRecipes')
+      .select('cookedRecipes numberOfMealsCooked')
       .lean();
     
     return { 
       cookedRecipes: profile?.cookedRecipes || [],
+      numberOfMealsCooked: profile?.numberOfMealsCooked || 0,
     };
+  }
+
+  async getUserCookedRecipesDetails(userId: string) {
+    const profile = await this.userFoodAnallyticsProfileModel
+      .findOne({ userId: new Types.ObjectId(userId) })
+      .select('cookedRecipes')
+      .lean();
+
+    const cookedIds: string[] = profile?.cookedRecipes || [];
+
+    if (!cookedIds.length) {
+      return { cookedRecipes: [] };
+    }
+
+    const recipes = await this.recipeModel
+      .find({ _id: { $in: cookedIds.map(id => new Types.ObjectId(id)) } })
+      .select('title heroImageUrl shortDescription')
+      .lean();
+
+    const items = (recipes as any[]).map(r => ({
+      id: r._id.toString(),
+      title: r.title,
+      shortDescription: r.shortDescription,
+      heroImageUrl: r.heroImageUrl,
+    }));
+
+    // Preserve the recent ordering (last 3)
+    const idOrder = cookedIds.slice(-3);
+    const map = new Map(items.map(i => [i.id, i]));
+    const orderedRecent = idOrder.map(id => map.get(id)).filter(Boolean);
+
+    return { cookedRecipes: orderedRecent };
   }
 
   async getUserStats(userId: string) {
@@ -89,6 +128,77 @@ export class AnalyticsService {
       best_co2_savings: null,
       best_cost_savings: null,
     };
+  }
+
+  async getTrendingRecipes(limit: number = 5) {
+    // Define current month range
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+
+    // Aggregate feedbacks for current month with valid framework_id
+    let results = await this.feedbackModel.aggregate([
+      {
+        $match: {
+          createdAt: { $gte: startOfMonth, $lt: endOfMonth },
+          framework_id: { $exists: true, $ne: null },
+        },
+      },
+      {
+        $group: {
+          _id: '$framework_id',
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { count: -1 } },
+      { $limit: limit },
+    ]);
+
+    // Fallback to last 30 days if monthly has no results
+    if (!results || results.length === 0) {
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+      results = await this.feedbackModel.aggregate([
+        {
+          $match: {
+            createdAt: { $gte: thirtyDaysAgo },
+            framework_id: { $exists: true, $ne: null },
+          },
+        },
+        {
+          $group: {
+            _id: '$framework_id',
+            count: { $sum: 1 },
+          },
+        },
+        { $sort: { count: -1 } },
+        { $limit: limit },
+      ]);
+    }
+
+    const ids = results.map(r => r._id).filter(Boolean);
+    if (!ids.length) return { trending: [] };
+
+    const recipes = await this.recipeModel
+      .find({ _id: { $in: ids.map(id => new Types.ObjectId(id)) } })
+      .select('title heroImageUrl shortDescription')
+      .lean();
+
+    const byId = new Map(recipes.map((r: any) => [r._id.toString(), r]));
+    const trending = results
+      .map(r => {
+        const rec = byId.get(r._id);
+        if (!rec) return null;
+        return {
+          id: rec._id.toString(),
+          title: rec.title,
+          shortDescription: rec.shortDescription,
+          heroImageUrl: rec.heroImageUrl,
+          count: r.count,
+        };
+      })
+      .filter(Boolean);
+
+    return { trending };
   }
 
   async getAllUsersStats() {

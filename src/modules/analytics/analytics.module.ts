@@ -9,6 +9,8 @@ import { CommunityGroups, CommunityGroupSchema } from 'src/database/schemas/comm
 import { CommunityGroupMember, CommunityGroupMemberSchema } from 'src/database/schemas/CommunityGroupMember.schema';
 import { CommunityChallenge, CommunityChallengesSchema } from 'src/database/schemas/challenge.schema';
 import { CommunityChallengeParticipant, CommunityChallengeParticipantSchema } from 'src/database/schemas/challenge.members.schema';
+import { Recipe, RecipeSchema } from 'src/database/schemas/recipe.schema';
+import { Feedback, FeedbackSchema } from 'src/database/schemas/feedback.schema';
 
 @Global()
 @Module({
@@ -19,6 +21,8 @@ import { CommunityChallengeParticipant, CommunityChallengeParticipantSchema } fr
     {name:CommunityGroupMember.name,schema:CommunityGroupMemberSchema},
     {name:CommunityChallenge.name,schema:CommunityChallengesSchema},
     {name:CommunityChallengeParticipant.name,schema:CommunityChallengeParticipantSchema},
+    {name:Recipe.name,schema:RecipeSchema},
+    {name:Feedback.name,schema:FeedbackSchema},
   ])],
   providers: [AnalyticsService,AnalyticsListner],
   controllers: [AnalyticsController],

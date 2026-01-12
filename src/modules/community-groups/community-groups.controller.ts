@@ -136,8 +136,10 @@ export class CommunityGroupsController {
   @Get('challenges/:challengeId')
   @Roles(UserRole.USER)
   @UseGuards(JwtAuthGuard, RolesGuard)
-  getChallengeById(@Param('challengeId') challengeId: string) {
-    return this.communityGroupsService.getChallengeById(challengeId);
+  getChallengeById(@Param('challengeId') challengeId: string, @GetUser() user: any) {
+    const userId = user.userId;
+    if (!userId) throw new UnauthorizedException();
+    return this.communityGroupsService.getChallengeById(challengeId, userId);
   }
 
   @Post('challenges/join')
