@@ -5,6 +5,22 @@ import {
   UserFoodAnalyticalProfileDocument,
   UserFoodAnalyticsProfile,
 } from 'src/database/schemas/user.food.analyticsProfile.schema';
+import {
+  CommunityGroups,
+  CommunityGroupDocument,
+} from 'src/database/schemas/community.groups.schema';
+import {
+  CommunityGroupMember,
+  CommunityGroupMemberDocument,
+} from 'src/database/schemas/CommunityGroupMember.schema';
+import {
+  CommunityChallenge,
+  CommunityChallengeDocument,
+} from 'src/database/schemas/challenge.schema';
+import {
+  CommunityChallengeParticipant,
+  CommunityChallengeParticipantDocument,
+} from 'src/database/schemas/challenge.members.schema';
 import { FoodSavedEvent } from './analytics.service';
 import { OnEvent } from '@nestjs/event-emitter';
 import { Types } from 'mongoose';
@@ -15,25 +31,162 @@ export class AnalyticsListner {
   constructor(
     @InjectModel(UserFoodAnalyticsProfile.name)
     private readonly profileModel: Model<UserFoodAnalyticalProfileDocument>,
+    @InjectModel(CommunityGroups.name)
+    private readonly communityGroupModel: Model<CommunityGroupDocument>,
+    @InjectModel(CommunityGroupMember.name)
+    private readonly communityGroupMemberModel: Model<CommunityGroupMemberDocument>,
+    @InjectModel(CommunityChallenge.name)
+    private readonly communityChallengeModel: Model<CommunityChallengeDocument>,
+    @InjectModel(CommunityChallengeParticipant.name)
+    private readonly challengeParticipantModel: Model<CommunityChallengeParticipantDocument>,
   ) {}
 
   @OnEvent('food.saved', { async: true })
   async updateUserProfile(event: FoodSavedEvent) {
     try {
+      // Prepare update operation
+      const updateOperation: any = {
+        $inc: {
+          foodSavedInGrams: event.foodSavedInGrams,
+          numberOfMealsCooked: 1,
+        },
+      };
+
+      // Add framework_id to cookedRecipes if provided
+      if (event.frameworkId) {
+        updateOperation.$addToSet = {
+          cookedRecipes: event.frameworkId,
+        };
+      }
+
+      // Update user analytics profile
       await this.profileModel.findOneAndUpdate(
         { userId: new Types.ObjectId(event.userId) },
-        {
-          $inc: {
-            foodSavedInGrams: event.foodSavedInGrams,
-            numberOfMealsCooked: 1,
-          },
-        },
+        updateOperation,
         { upsert: true },
       );
-      this.logger.log(`update profile for user ${event.userId}`);
+      this.logger.log(`Updated profile for user ${event.userId}`);
+
+      // Update all community groups the user is a member of
+      await this.updateCommunityGroups(event);
+
+      // Update all active challenges the user is participating in
+      await this.updateChallenges(event);
     } catch (error) {
       this.logger.error(
-        `Failed to update profile:${error.message}`,
+        `Failed to update profile: ${error.message}`,
+        error.stack,
+      );
+    }
+  }
+
+  private async updateCommunityGroups(event: FoodSavedEvent) {
+    try {
+      // Find all groups where user is an active member
+      const userMemberships = await this.communityGroupMemberModel
+        .find({
+          userId: new Types.ObjectId(event.userId),
+          isActive: true,
+        })
+        .lean();
+
+      if (userMemberships.length === 0) {
+        return;
+      }
+
+      const groupIds = userMemberships.map((m) => m.groupId);
+
+      // Update totalFoodSaved for all groups
+      await this.communityGroupModel.updateMany(
+        {
+          _id: { $in: groupIds },
+          isDeleted: false,
+        },
+        {
+          $inc: {
+            totalFoodSaved: event.foodSavedInGrams,
+          },
+        },
+      );
+
+      this.logger.log(
+        `Updated ${groupIds.length} community groups for user ${event.userId}`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Failed to update community groups: ${error.message}`,
+        error.stack,
+      );
+    }
+  }
+
+  private async updateChallenges(event: FoodSavedEvent) {
+    try {
+      const now = new Date();
+
+      // Find all active challenges the user is participating in
+      const userChallenges = await this.challengeParticipantModel
+        .find({
+          userId: new Types.ObjectId(event.userId),
+          isActive: true,
+        })
+        .populate('challengeId')
+        .lean();
+
+      if (userChallenges.length === 0) {
+        return;
+      }
+
+      // Filter for challenges that are currently active (within date range)
+      const activeChallengeIds = userChallenges
+        .filter((cp: any) => {
+          const challenge = cp.challengeId;
+          return (
+            challenge &&
+            !challenge.isDeleted &&
+            challenge.status &&
+            new Date(challenge.startDate) <= now &&
+            new Date(challenge.endDate) >= now
+          );
+        })
+        .map((cp) => cp.challengeId);
+
+      if (activeChallengeIds.length === 0) {
+        return;
+      }
+
+      // Update totalFoodSaved for all active challenges
+      await this.communityChallengeModel.updateMany(
+        {
+          _id: { $in: activeChallengeIds },
+        },
+        {
+          $inc: {
+            totalFoodSaved: event.foodSavedInGrams,
+          },
+        },
+      );
+
+      // Update participant's food saved
+      await this.challengeParticipantModel.updateMany(
+        {
+          userId: new Types.ObjectId(event.userId),
+          challengeId: { $in: activeChallengeIds },
+          isActive: true,
+        },
+        {
+          $inc: {
+            totalFoodSaved: event.foodSavedInGrams,
+          },
+        },
+      );
+
+      this.logger.log(
+        `Updated ${activeChallengeIds.length} challenges for user ${event.userId}`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Failed to update challenges: ${error.message}`,
         error.stack,
       );
     }

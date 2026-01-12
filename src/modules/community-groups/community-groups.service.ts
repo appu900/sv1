@@ -27,6 +27,7 @@ import { JoinGroupDto } from './dto/Join-group.Memebr.dto';
 import { User, UserDocument } from 'src/database/schemas/user.auth.schema';
 import { Type } from 'class-transformer';
 import { CreateChallengeDto } from './dto/create-challenge.dto';
+import { UpdateChallengeDto } from './dto/update-challenge.dto';
 import {
   CommunityChallengeParticipant,
   CommunityChallengeParticipantDocument,
@@ -146,7 +147,10 @@ export class CommunityGroupsService {
     const cachedData = await this.redisService.get(cachedKey);
     console.log('CachedData', cachedData);
     if (cachedData) return cachedData;
-    const result = await this.CommunityModel.find({ ownerId: userId });
+    const result = await this.CommunityModel.find({ 
+      ownerId: userId,
+      isDeleted: false 
+    });
     await this.redisService.set(cachedKey, JSON.stringify(result), 60 * 20);
     return result;
   }
@@ -289,10 +293,49 @@ export class CommunityGroupsService {
     });
     if (!isAuthorizedMemeber)
       throw new ForbiddenException('Only owner can Perform this Operation');
+    
+    // Get all members before deactivating (to clear their caches)
+    const allMembers = await this.communityGroupMemberModel.find({
+      groupId: existingGroup._id,
+      isActive: true,
+    }).select('userId');
+
+    // Soft delete the group
     existingGroup.isDeleted = true;
     await existingGroup.save();
+
+    // Deactivate all members
+    await this.communityGroupMemberModel.updateMany(
+      { groupId: existingGroup._id, isActive: true },
+      { isActive: false },
+    );
+
+    // Soft delete all challenges in this group
+    await this.communityChallengeModel.updateMany(
+      { communityId: existingGroup._id, isDeleted: false },
+      { isDeleted: true },
+    );
+
+    // Deactivate all challenge participants
+    await this.communityChallengeParticipantModel.updateMany(
+      { communityId: existingGroup._id, isActive: true },
+      { isActive: false },
+    );
+
+    // Clear all related caches
     const cacheKey = `${this.SINGLE_COMMUNITY_CACHE_KEY}:${existingGroup._id.toString()}`;
+    const challengesCacheKey = `community:challenges:communityId:${existingGroup._id.toString()}`;
+    const membersCacheKey = `community:members:${existingGroup._id.toString()}`;
     await this.redisService.del(cacheKey);
+    await this.redisService.del(challengesCacheKey);
+    await this.redisService.del(membersCacheKey);
+
+    // Clear cache for ALL members (including owner)
+    for (const member of allMembers) {
+      const userGroupsKey = `community:Groups:${member.userId.toString()}`;
+      await this.redisService.del(userGroupsKey);
+    }
+    
     return {
       message: 'Group deleted sucessfully',
     };
@@ -335,12 +378,29 @@ export class CommunityGroupsService {
     const cachedKey = `community:challenges:communityId:${communityId}`;
     const cachedData = await this.redisService.get(cachedKey);
     if (cachedData) return cachedData;
+    
     const community = await this.CommunityModel.findById(
       new Types.ObjectId(communityId),
     );
-    const result = await this.communityChallengeModel.find({
+    
+    const challenges = await this.communityChallengeModel.find({
       communityId: new Types.ObjectId(communityId),
+      isDeleted: false,
     });
+
+    const now = new Date();
+    const categorized = {
+      active: challenges.filter(c => c.status && new Date(c.startDate) <= now && new Date(c.endDate) >= now),
+      upcoming: challenges.filter(c => c.status && new Date(c.startDate) > now),
+      closed: challenges.filter(c => c.status && new Date(c.endDate) < now),
+      cancelled: challenges.filter(c => !c.status),
+    };
+
+    const result = {
+      challenges,
+      categorized,
+    };
+
     await this.redisService.set(cachedKey, JSON.stringify(result), 60 * 30);
     return result;
   }
@@ -422,6 +482,30 @@ export class CommunityGroupsService {
     });
     if (!isUserCommunityMember)
       throw new ForbiddenException('you need to join the community first');
+    
+    // Check if already a participant
+    const existingParticipant = await this.communityChallengeParticipantModel.findOne({
+      userId: new Types.ObjectId(userId),
+      challengeId: new Types.ObjectId(dto.challnageId),
+    });
+
+    if (existingParticipant) {
+      if (existingParticipant.isActive) {
+        throw new BadRequestException('Already a participant in this challenge');
+      }
+      // Reactivate if previously left
+      existingParticipant.isActive = true;
+      await existingParticipant.save();
+      await this.communityChallengeModel.findByIdAndUpdate(
+        new Types.ObjectId(dto.challnageId),
+        { $inc: { memberCount: 1 } },
+      );
+      return {
+        message: 'Rejoined challenge successfully',
+        result: existingParticipant,
+      };
+    }
+
     const result = await this.communityChallengeParticipantModel.create({
       userId: new Types.ObjectId(userId),
       communityId: new Types.ObjectId(dto.communityId),
@@ -433,6 +517,13 @@ export class CommunityGroupsService {
         { $inc: { memberCount: 1 } },
       );
     }
+
+    // Clear cache
+    const cacheKey = `community:challenge:single:${dto.challnageId}`;
+    const listCacheKey = `community:challenges:communityId:${dto.communityId}`;
+    await this.redisService.del(cacheKey);
+    await this.redisService.del(listCacheKey);
+
     return {
       message: 'challenge join sucessfully',
       result,
@@ -462,6 +553,7 @@ export class CommunityGroupsService {
         {
           communityId: new Types.ObjectId(dto.communityId),
           userId: new Types.ObjectId(userId),
+          challengeId: new Types.ObjectId(dto.challengeId),
           isActive: true,
         },
         { isActive: false },
@@ -471,9 +563,15 @@ export class CommunityGroupsService {
     }
 
     await this.communityChallengeModel.updateOne(
-      { id: dto.challengeId },
+      { _id: new Types.ObjectId(dto.challengeId) },
       { $inc: { memberCount: -1 } },
     );
+
+    // Clear cache
+    const cacheKey = `community:challenge:single:${dto.challengeId}`;
+    const listCacheKey = `community:challenges:communityId:${dto.communityId}`;
+    await this.redisService.del(cacheKey);
+    await this.redisService.del(listCacheKey);
 
     return {
       message: 'leaved challenge sucessfully',
@@ -484,9 +582,246 @@ export class CommunityGroupsService {
   async transferOwnership(
     userId: string,
     groupId: string,
-    newOwnerEmail: string,
+    newOwnerId: string,
   ) {
-    const user = await this.userModel.findById(new Types.ObjectId(userId));
-    if (!user) throw new BadRequestException();
+    if (
+      !Types.ObjectId.isValid(userId) ||
+      !Types.ObjectId.isValid(groupId) ||
+      !Types.ObjectId.isValid(newOwnerId)
+    ) {
+      throw new BadRequestException('Invalid IDs');
+    }
+
+    // Prevent transferring to self
+    if (userId === newOwnerId) {
+      throw new BadRequestException('Cannot transfer ownership to yourself');
+    }
+
+    // Verify current user is the owner
+    const currentOwnerMembership = await this.communityGroupMemberModel.findOne({
+      groupId: new Types.ObjectId(groupId),
+      userId: new Types.ObjectId(userId),
+      isActive: true,
+      role: GroupMemberRole.OWNER,
+    });
+
+    if (!currentOwnerMembership) {
+      throw new ForbiddenException('Only the owner can transfer ownership');
+    }
+
+    // Verify group exists and is not deleted
+    const group = await this.CommunityModel.findOne({
+      _id: new Types.ObjectId(groupId),
+      isDeleted: false,
+    });
+
+    if (!group) {
+      throw new NotFoundException('Group not found');
+    }
+
+    // Check if new owner is already a member
+    const newOwnerMembership = await this.communityGroupMemberModel.findOne({
+      groupId: new Types.ObjectId(groupId),
+      userId: new Types.ObjectId(newOwnerId),
+      isActive: true,
+    });
+
+    if (!newOwnerMembership) {
+      throw new BadRequestException('New owner must be a member of the group');
+    }
+
+    // Get new owner details
+    const newOwner = await this.userModel.findById(
+      new Types.ObjectId(newOwnerId),
+    );
+    if (!newOwner) {
+      throw new NotFoundException('New owner user not found');
+    }
+
+    // Transfer ownership
+    await this.communityGroupMemberModel.updateOne(
+      { _id: currentOwnerMembership._id },
+      { role: GroupMemberRole.MEMBER },
+    );
+
+    await this.communityGroupMemberModel.updateOne(
+      { _id: newOwnerMembership._id },
+      { role: GroupMemberRole.OWNER },
+    );
+
+    // Update group ownerId
+    await this.CommunityModel.updateOne(
+      { _id: new Types.ObjectId(groupId) },
+      { ownerId: newOwner._id },
+    );
+
+    // Clear all related caches
+    const groupCacheKey = `${this.SINGLE_COMMUNITY_CACHE_KEY}:${groupId}`;
+    const membersCacheKey = `community:members:${groupId}`;
+    await this.redisService.del(groupCacheKey);
+    await this.redisService.del(membersCacheKey);
+
+    return {
+      message: 'Ownership transferred successfully',
+      newOwner: { id: newOwner._id, name: newOwner.name, email: newOwner.email },
+    };
+  }
+
+  async updateChallenge(
+    userId: string,
+    challengeId: string,
+    dto: UpdateChallengeDto,
+  ) {
+    if (!Types.ObjectId.isValid(userId) || !Types.ObjectId.isValid(challengeId)) {
+      throw new BadRequestException('Invalid IDs');
+    }
+
+    const challenge = await this.communityChallengeModel.findById(
+      new Types.ObjectId(challengeId),
+    );
+
+    if (!challenge || challenge.isDeleted) {
+      throw new NotFoundException('Challenge not found');
+    }
+
+    // Verify user is the owner of the group
+    const isOwner = await this.communityGroupMemberModel.findOne({
+      groupId: challenge.communityId,
+      userId: new Types.ObjectId(userId),
+      isActive: true,
+      role: GroupMemberRole.OWNER,
+    });
+
+    if (!isOwner) {
+      throw new ForbiddenException('Only group owner can edit challenges');
+    }
+
+    // Update challenge fields
+    if (dto.challengeName) challenge.challengeName = dto.challengeName;
+    if (dto.description) challenge.description = dto.description;
+    if (dto.startDate) challenge.startDate = dto.startDate;
+    if (dto.endDate) challenge.endDate = dto.endDate;
+    if (dto.challengeGoals) challenge.challengeGoal = dto.challengeGoals;
+    if (dto.status !== undefined) challenge.status = dto.status;
+
+    await challenge.save();
+
+    // Clear cache
+    const cacheKey = `community:challenge:single:${challengeId}`;
+    const listCacheKey = `community:challenges:communityId:${challenge.communityId}`;
+    await this.redisService.del(cacheKey);
+    await this.redisService.del(listCacheKey);
+
+    return challenge;
+  }
+
+  async deleteChallenge(userId: string, challengeId: string) {
+    if (!Types.ObjectId.isValid(userId) || !Types.ObjectId.isValid(challengeId)) {
+      throw new BadRequestException('Invalid IDs');
+    }
+
+    const challenge = await this.communityChallengeModel.findById(
+      new Types.ObjectId(challengeId),
+    );
+
+    if (!challenge || challenge.isDeleted) {
+      throw new NotFoundException('Challenge not found');
+    }
+
+    // Verify user is the owner of the group
+    const isOwner = await this.communityGroupMemberModel.findOne({
+      groupId: challenge.communityId,
+      userId: new Types.ObjectId(userId),
+      isActive: true,
+      role: GroupMemberRole.OWNER,
+    });
+
+    if (!isOwner) {
+      throw new ForbiddenException('Only group owner can delete challenges');
+    }
+
+    challenge.isDeleted = true;
+    await challenge.save();
+
+    // Deactivate all participants in this challenge
+    await this.communityChallengeParticipantModel.updateMany(
+      { challengeId: challenge._id, isActive: true },
+      { isActive: false },
+    );
+
+    // Clear cache
+    const cacheKey = `community:challenge:single:${challengeId}`;
+    const listCacheKey = `community:challenges:communityId:${challenge.communityId}`;
+    await this.redisService.del(cacheKey);
+    await this.redisService.del(listCacheKey);
+
+    return { message: 'Challenge deleted successfully' };
+  }
+
+  async leaveGroup(userId: string, groupId: string) {
+    if (!Types.ObjectId.isValid(userId) || !Types.ObjectId.isValid(groupId)) {
+      throw new BadRequestException('Invalid IDs');
+    }
+
+    // Check if user is a member
+    const membership = await this.communityGroupMemberModel.findOne({
+      groupId: new Types.ObjectId(groupId),
+      userId: new Types.ObjectId(userId),
+      isActive: true,
+    });
+
+    if (!membership) {
+      throw new NotFoundException('You are not a member of this group');
+    }
+
+    // Owners cannot leave - they must transfer ownership first
+    if (membership.role === GroupMemberRole.OWNER) {
+      throw new ForbiddenException(
+        'Owners cannot leave the group. Please transfer ownership first or delete the group.',
+      );
+    }
+
+    // Deactivate membership
+    membership.isActive = false;
+    await membership.save();
+
+    // Decrement member count
+    await this.CommunityModel.updateOne(
+      { _id: new Types.ObjectId(groupId) },
+      { $inc: { memberCount: -1 } },
+    );
+
+    // Deactivate all challenge participations in this group
+    await this.communityChallengeParticipantModel.updateMany(
+      {
+        communityId: new Types.ObjectId(groupId),
+        userId: new Types.ObjectId(userId),
+        isActive: true,
+      },
+      { isActive: false },
+    );
+
+    // Update challenge member counts for all challenges user was part of
+    const userChallenges = await this.communityChallengeParticipantModel.find({
+      communityId: new Types.ObjectId(groupId),
+      userId: new Types.ObjectId(userId),
+    }).distinct('challengeId');
+
+    if (userChallenges.length > 0) {
+      await this.communityChallengeModel.updateMany(
+        { _id: { $in: userChallenges } },
+        { $inc: { memberCount: -1 } },
+      );
+    }
+
+    // Clear caches
+    const groupCacheKey = `${this.SINGLE_COMMUNITY_CACHE_KEY}:${groupId}`;
+    const challengesCacheKey = `community:challenges:communityId:${groupId}`;
+    const membersCacheKey = `community:members:${groupId}`;
+    await this.redisService.del(groupCacheKey);
+    await this.redisService.del(challengesCacheKey);
+    await this.redisService.del(membersCacheKey);
+
+    return { message: 'Left group successfully' };
   }
 }

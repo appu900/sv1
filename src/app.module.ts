@@ -20,6 +20,7 @@ import { RecipeModule } from './modules/recipe/recipe.module';
 import { FrameworkCategoryModule } from './modules/framework-category/framework-category.module';
 import { AnalyticsService } from './modules/analytics/analytics.service';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
+import { FeedbackModule } from './modules/feedback/feedback.module';
 import {EventEmitterModule} from "@nestjs/event-emitter"
 import { WinstonModule, WINSTON_MODULE_PROVIDER } from 'nest-winston';
 import createWinstonLogger from './logger';
@@ -48,6 +49,7 @@ import { Logger } from 'winston';
     RecipeModule,
     FrameworkCategoryModule,
     AnalyticsModule,
+    FeedbackModule,
   ],
   controllers: [AppController],
   providers: [AppService],

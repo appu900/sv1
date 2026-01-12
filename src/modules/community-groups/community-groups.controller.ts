@@ -26,6 +26,8 @@ import { userInfo } from 'os';
 import { CreateChallengeDto } from './dto/create-challenge.dto';
 import { JoinChallengeDto } from './dto/join-challenge.to';
 import { leveChallengeDto } from './dto/leaveChallenege.dto';
+import { UpdateChallengeDto } from './dto/update-challenge.dto';
+import { TransferOwnershipDto } from './dto/transfer-ownership.dto';
 
 @Controller('community-groups')
 export class CommunityGroupsController {
@@ -84,7 +86,7 @@ export class CommunityGroupsController {
   @Get(':id')
   @Roles(UserRole.USER)
   @UseGuards(JwtAuthGuard, RolesGuard)
-  fetchCommunityById(@Param() communityId: string, @GetUser() user: any) {
+  fetchCommunityById(@Param('id') communityId: string, @GetUser() user: any) {
     return this.communityGroupsService.findOne(communityId);
   }
 
@@ -154,5 +156,51 @@ export class CommunityGroupsController {
     const userId = user.userId;
     if (!userId) throw new UnauthorizedException();
     return this.communityGroupsService.leaveChallenge(dto, userId);
+  }
+
+  @Post('transfer-ownership')
+  @Roles(UserRole.USER)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  transferOwnership(@Body() dto: TransferOwnershipDto, @GetUser() user: any) {
+    const userId = user.userId;
+    if (!userId) throw new UnauthorizedException();
+    return this.communityGroupsService.transferOwnership(userId, dto.groupId, dto.newOwnerId);
+  }
+
+  @Patch('challenges/:challengeId')
+  @Roles(UserRole.USER)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  updateChallenge(
+    @Param('challengeId') challengeId: string,
+    @Body() dto: UpdateChallengeDto,
+    @GetUser() user: any,
+  ) {
+    const userId = user.userId;
+    if (!userId) throw new UnauthorizedException();
+    return this.communityGroupsService.updateChallenge(userId, challengeId, dto);
+  }
+
+  @Delete('challenges/:challengeId')
+  @Roles(UserRole.USER)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  deleteChallenge(
+    @Param('challengeId') challengeId: string,
+    @GetUser() user: any,
+  ) {
+    const userId = user.userId;
+    if (!userId) throw new UnauthorizedException();
+    return this.communityGroupsService.deleteChallenge(userId, challengeId);
+  }
+
+  @Post(':groupId/leave')
+  @Roles(UserRole.USER)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  leaveGroup(
+    @Param('groupId') groupId: string,
+    @GetUser() user: any,
+  ) {
+    const userId = user.userId;
+    if (!userId) throw new UnauthorizedException();
+    return this.communityGroupsService.leaveGroup(userId, groupId);
   }
 }

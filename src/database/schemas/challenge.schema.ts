@@ -32,6 +32,8 @@ export class CommunityChallenge{
     @Prop({default:1})
     memberCount:number;
 
+    @Prop({default:0})
+    totalFoodSaved:number;
    
     @Prop({default:false,index:true})
     isDeleted:boolean
