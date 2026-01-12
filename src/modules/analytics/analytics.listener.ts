@@ -24,6 +24,7 @@ import {
 import { FoodSavedEvent } from './analytics.service';
 import { OnEvent } from '@nestjs/event-emitter';
 import { Types } from 'mongoose';
+import { RedisService } from 'src/redis/redis.service';
 
 @Injectable()
 export class AnalyticsListner {
@@ -39,6 +40,7 @@ export class AnalyticsListner {
     private readonly communityChallengeModel: Model<CommunityChallengeDocument>,
     @InjectModel(CommunityChallengeParticipant.name)
     private readonly challengeParticipantModel: Model<CommunityChallengeParticipantDocument>,
+    private readonly redisService: RedisService,
   ) {}
 
   @OnEvent('food.saved', { async: true })
@@ -108,6 +110,12 @@ export class AnalyticsListner {
           },
         },
       );
+
+      // Invalidate Redis cache for each updated group
+      for (const groupId of groupIds) {
+        const cacheKey = `community:group:${groupId.toString()}`;
+        await this.redisService.del(cacheKey);
+      }
 
       this.logger.log(
         `Updated ${groupIds.length} community groups for user ${event.userId}`,
