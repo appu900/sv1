@@ -307,17 +307,14 @@ export class CommunityGroupsService {
     if (!isAuthorizedMemeber)
       throw new ForbiddenException('Only owner can Perform this Operation');
     
-    // Get all members before deactivating (to clear their caches)
     const allMembers = await this.communityGroupMemberModel.find({
       groupId: existingGroup._id,
       isActive: true,
     }).select('userId');
 
-    // Soft delete the group
     existingGroup.isDeleted = true;
     await existingGroup.save();
 
-    // Deactivate all members
     await this.communityGroupMemberModel.updateMany(
       { groupId: existingGroup._id, isActive: true },
       { isActive: false },
