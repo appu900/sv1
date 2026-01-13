@@ -45,6 +45,35 @@ export class BadgesService {
     return this.badgeModel.find(filter).sort({ rarityScore: -1, createdAt: -1 }).lean();
   }
 
+  async getBadgeStats() {
+    const [totalBadges, activeBadges, totalAwarded, uniqueRecipients] = await Promise.all([
+      this.badgeModel.countDocuments({ isDeleted: false }),
+      this.badgeModel.countDocuments({ isDeleted: false, isActive: true }),
+      this.userBadgeModel.countDocuments(),
+      this.userBadgeModel.distinct('userId').then(users => users.length),
+    ]);
+
+    const badgesByCategory = await this.badgeModel.aggregate([
+      { $match: { isDeleted: false } },
+      { $group: { _id: '$category', count: { $sum: 1 } } },
+    ]);
+
+    const categoryStats = badgesByCategory.reduce((acc, item) => {
+      acc[item._id] = item.count;
+      return acc;
+    }, {} as Record<string, number>);
+
+    return {
+      totalBadges,
+      activeBadges,
+      milestoneBadges: categoryStats[BadgeCategory.MILESTONE] || 0,
+      challengeBadges: categoryStats[BadgeCategory.CHALLENGE_WINNER] || 0,
+      specialBadges: categoryStats[BadgeCategory.SPECIAL] || 0,
+      totalAwarded,
+      uniqueRecipients,
+    };
+  }
+
   async getBadgeById(badgeId: string): Promise<Badge> {
     if (!Types.ObjectId.isValid(badgeId)) {
       throw new BadRequestException('Invalid badge ID');

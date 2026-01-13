@@ -7,6 +7,8 @@ import {
   IsUrl,
   Min,
 } from 'class-validator';
+
+import { Type } from 'class-transformer';
 import { BadgeCategory, MilestoneType } from '../../../database/schemas/badge.schema';
 
 export class CreateBadgeDto {
@@ -28,11 +30,13 @@ export class CreateBadgeDto {
   milestoneType?: MilestoneType;
 
   @IsOptional()
+  @Type(() => Number)
   @IsNumber()
   @Min(0)
   milestoneThreshold?: number;
 
   @IsOptional()
+  @Type(() => Number)
   @IsNumber()
   @Min(0)
   rarityScore?: number;
@@ -46,6 +50,7 @@ export class CreateBadgeDto {
   challengeId?: string;
 
   @IsOptional()
+  @Type(() => Boolean)
   @IsBoolean()
   isActive?: boolean;
 }

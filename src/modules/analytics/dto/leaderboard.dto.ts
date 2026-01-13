@@ -31,6 +31,12 @@ export class GetLeaderboardDto {
   limit?: number = 20;
 
   @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  @Min(0)
+  offset?: number = 0;
+
+  @IsOptional()
   @IsString()
   country?: string;
 

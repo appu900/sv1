@@ -56,6 +56,7 @@ export class AnalyticsController {
       period: query.period,
       metric: query.metric,
       limit: query.limit,
+      offset: query.offset,
       country: query.country,
       stateCode: query.stateCode,
     });

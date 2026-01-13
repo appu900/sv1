@@ -48,13 +48,22 @@ export class BadgesController {
       dto.imageUrl = imageUrl;
     }
 
-    return this.badgesService.createBadge(dto);
+    const badge = await this.badgesService.createBadge(dto);
+    return { badge };
   }
 
   @Get()
   @UseGuards(JwtAuthGuard)
   async getAllBadges(@Query('includeInactive') includeInactive?: string) {
-    return this.badgesService.getAllBadges(includeInactive === 'true');
+    const badges = await this.badgesService.getAllBadges(includeInactive === 'true');
+    return { badges };
+  }
+
+  @Get('stats')
+  @Roles(UserRole.ADMIN)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  async getBadgeStats() {
+    return this.badgesService.getBadgeStats();
   }
 
   @Get('leaderboard')
@@ -67,7 +76,8 @@ export class BadgesController {
   @Get(':badgeId')
   @UseGuards(JwtAuthGuard)
   async getBadgeById(@Param('badgeId') badgeId: string) {
-    return this.badgesService.getBadgeById(badgeId);
+    const badge = await this.badgesService.getBadgeById(badgeId);
+    return { badge };
   }
 
   @Patch(':badgeId')
@@ -88,7 +98,8 @@ export class BadgesController {
       dto.imageUrl = imageUrl;
     }
 
-    return this.badgesService.updateBadge(badgeId, dto);
+    const badge = await this.badgesService.updateBadge(badgeId, dto);
+    return { badge };
   }
 
   @Delete(':badgeId')
@@ -97,8 +108,6 @@ export class BadgesController {
   async deleteBadge(@Param('badgeId') badgeId: string) {
     return this.badgesService.deleteBadge(badgeId);
   }
-
-  
 
   @Post('award')
   @Roles(UserRole.ADMIN)

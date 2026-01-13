@@ -241,6 +241,7 @@ export class AnalyticsService {
     period?: 'ALL_TIME' | 'YEARLY' | 'MONTHLY' | 'WEEKLY';
     metric?: 'MEALS_COOKED' | 'FOOD_SAVED' | 'BOTH';
     limit?: number;
+    offset?: number;
     country?: string;
     stateCode?: string;
   }) {
@@ -248,6 +249,7 @@ export class AnalyticsService {
       period = 'ALL_TIME',
       metric = 'BOTH',
       limit = 20,
+      offset = 0,
       country,
       stateCode,
     } = options;
@@ -323,6 +325,7 @@ export class AnalyticsService {
 
     pipeline.push(
       { $sort: sortField },
+      { $skip: offset },
       { $limit: limit },
       {
         $lookup: {
@@ -352,10 +355,18 @@ export class AnalyticsService {
 
     const results = await this.userFoodAnallyticsProfileModel.aggregate(pipeline);
 
-    // Add rank to each entry
+    // Get total count for pagination
+    const countPipeline = pipeline.slice(0, -3); // Remove skip, limit, and lookup
+    const totalCount = await this.userFoodAnallyticsProfileModel.aggregate([
+      ...countPipeline,
+      { $count: 'total' }
+    ]);
+    const totalEntries = totalCount.length > 0 ? totalCount[0].total : 0;
+
+    // Add rank to each entry based on offset
     const leaderboard = results.map((entry, index) => ({
       ...entry,
-      rank: index + 1,
+      rank: offset + index + 1,
       foodSavedInKg: Number(entry.foodSavedInKg.toFixed(2)),
     }));
 
@@ -363,11 +374,12 @@ export class AnalyticsService {
       period,
       metric,
       limit,
+      offset,
       filters: {
         country: country || 'all',
         stateCode: stateCode || 'all',
       },
-      totalEntries: leaderboard.length,
+      totalEntries,
       leaderboard,
     };
   }

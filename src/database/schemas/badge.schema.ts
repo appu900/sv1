@@ -51,15 +51,14 @@ export class Badge {
   isActive: boolean;
 
   @Prop({ default: 0 })
-  rarityScore: number; // Higher = more rare/valuable
+  rarityScore: number; 
 
   @Prop({ type: String })
-  iconColor?: string; // Hex color for badge accent
+  iconColor?: string; 
 
   @Prop({ default: false })
   isDeleted: boolean;
 
-  // For challenge winner badges
   @Prop({ type: String })
   challengeId?: string;
 }
