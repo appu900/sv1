@@ -6,6 +6,8 @@ import {
   Logger,
   NotFoundException,
   UnauthorizedException,
+  Inject,
+  forwardRef,
 } from '@nestjs/common';
 import { CreateCommunityGroupDto } from './dto/create-community-group.dto';
 import { UpdateCommunityGroupDto } from './dto/update-community-group.dto';
@@ -39,6 +41,7 @@ import {
 import { JoinChallengeDto } from './dto/join-challenge.to';
 import { leveChallengeDto } from './dto/leaveChallenege.dto';
 import { ListBucketInventoryConfigurationsCommand } from '@aws-sdk/client-s3';
+import { BadgesService } from '../badges/badges.service';
 
 @Injectable()
 export class CommunityGroupsService {
@@ -57,6 +60,8 @@ export class CommunityGroupsService {
     private readonly communityChallengeParticipantModel: Model<CommunityChallengeParticipantDocument>,
     private readonly imageuploadService: ImageUploadService,
     private readonly redisService: RedisService,
+    @Inject(forwardRef(() => BadgesService))
+    private readonly badgesService: BadgesService,
   ) {}
 
   async syncJoinCodesToRedis() {
@@ -383,9 +388,14 @@ export class CommunityGroupsService {
     return result;
   }
 
-  async getChallangesByCommunityId(communityId: string) {
+  async getChallangesByCommunityId(communityId: string, userId?: string) {
     if (!Types.ObjectId.isValid(communityId)) throw new BadRequestException();
-    const cachedKey = `community:challenges:communityId:${communityId}`;
+    
+    // Include userId in cache key so each user gets personalized data
+    const cachedKey = userId && Types.ObjectId.isValid(userId)
+      ? `community:challenges:communityId:${communityId}:userId:${userId}`
+      : `community:challenges:communityId:${communityId}`;
+    
     const cachedData = await this.redisService.get(cachedKey);
     if (cachedData) return cachedData;
     
@@ -406,9 +416,24 @@ export class CommunityGroupsService {
       cancelled: challenges.filter(c => !c.status),
     };
 
+    // If userId provided, include user's participation stats for these challenges
+    let userParticipation: { challengeId: string; totalMealsCompleted: number }[] = [];
+    if (userId && Types.ObjectId.isValid(userId)) {
+      const participationDocs = await this.communityChallengeParticipantModel
+        .find({ communityId: new Types.ObjectId(communityId), userId: new Types.ObjectId(userId), isActive: true })
+        .select('challengeId totalMealsCompleted')
+        .lean();
+
+      userParticipation = participationDocs.map((p: any) => ({
+        challengeId: p.challengeId.toString(),
+        totalMealsCompleted: p.totalMealsCompleted || 0,
+      }));
+    }
+
     const result = {
       challenges,
       categorized,
+      userParticipation,
     };
 
     await this.redisService.set(cachedKey, JSON.stringify(result), 60 * 30);
@@ -435,9 +460,17 @@ export class CommunityGroupsService {
       isParticipant = !!participant;
     }
 
+    // Fetch all active participants for leaderboard, include zero counts too
+    const participants = await this.communityChallengeParticipantModel
+      .find({ challengeId: new Types.ObjectId(challengeId), isActive: true })
+      .select('userId communityId challengeId totalMealsCompleted foodSaved isActive')
+      .populate('userId', 'name email')
+      .lean();
+
     return {
       ...result,
       isParticipant,
+      participants,
     };
   }
 
@@ -848,5 +881,116 @@ export class CommunityGroupsService {
     await this.redisService.del(membersCacheKey);
 
     return { message: 'Left group successfully' };
+  }
+
+  /**
+   * Finalize a challenge and award badges to winners
+   * This should be called when a challenge ends (manually or via cron job)
+   */
+  async finalizeChallengeAndAwardBadges(
+    userId: string,
+    challengeId: string,
+    topWinnersCount: number = 3,
+  ) {
+    if (!Types.ObjectId.isValid(userId) || !Types.ObjectId.isValid(challengeId)) {
+      throw new BadRequestException('Invalid IDs');
+    }
+
+    const challenge = await this.communityChallengeModel.findById(
+      new Types.ObjectId(challengeId),
+    );
+
+    if (!challenge || challenge.isDeleted) {
+      throw new NotFoundException('Challenge not found');
+    }
+
+    // Verify user is the owner of the group (only owners can finalize)
+    const isOwner = await this.communityGroupMemberModel.findOne({
+      groupId: challenge.communityId,
+      userId: new Types.ObjectId(userId),
+      isActive: true,
+      role: GroupMemberRole.OWNER,
+    });
+
+    if (!isOwner) {
+      throw new ForbiddenException('Only group owner can finalize challenges');
+    }
+
+    // Get leaderboard - sorted by totalMealsCompleted
+    const participants = await this.communityChallengeParticipantModel
+      .find({ 
+        challengeId: new Types.ObjectId(challengeId), 
+        isActive: true 
+      })
+      .populate('userId', 'name email')
+      .sort({ totalMealsCompleted: -1 })
+      .lean();
+
+    if (participants.length === 0) {
+      return {
+        message: 'Challenge finalized (no participants)',
+        winnersAwarded: 0,
+      };
+    }
+
+    const totalParticipants = participants.length;
+    const winners = participants.slice(0, Math.min(topWinnersCount, totalParticipants));
+    const badgesAwarded: Array<{
+      userId: Types.ObjectId;
+      rank: number;
+      mealsCompleted: number;
+    }> = [];
+
+    // Award badges to top winners
+    for (let i = 0; i < winners.length; i++) {
+      const winner = winners[i];
+      const rank = i + 1;
+      
+      try {
+        const userBadge = await this.badgesService.awardChallengeWinnerBadge(
+          challengeId.toString(),
+          challenge.challengeName,
+          winner.userId.toString(),
+          rank,
+          totalParticipants,
+          winner.totalMealsCompleted || 0,
+        );
+
+        if (userBadge) {
+          badgesAwarded.push({
+            userId: winner.userId,
+            rank,
+            mealsCompleted: winner.totalMealsCompleted,
+          });
+        }
+      } catch (error) {
+        this.logger.error(
+          `Failed to award badge to winner ${winner.userId} for challenge ${challengeId}:`,
+          error,
+        );
+      }
+    }
+
+    // Mark challenge as finalized (you might want to add a 'finalized' field to schema)
+    challenge.status = false; // Deactivate challenge
+    await challenge.save();
+
+    // Clear cache
+    const cacheKey = `community:challenge:single:${challengeId}`;
+    const listCacheKey = `community:challenges:communityId:${challenge.communityId}`;
+    await this.redisService.del(cacheKey);
+    await this.redisService.del(listCacheKey);
+
+    return {
+      message: 'Challenge finalized and badges awarded',
+      winnersAwarded: badgesAwarded.length,
+      winners: badgesAwarded,
+      leaderboard: participants.slice(0, 10).map((p, idx) => ({
+        rank: idx + 1,
+        userId: p.userId,
+        mealsCompleted: p.totalMealsCompleted || 0,
+        foodSaved: p.foodSaved || 0,
+      })),
+    };
   }
 }

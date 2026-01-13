@@ -1,10 +1,10 @@
-import { IsString, IsUUID, IsOptional } from 'class-validator';
+import { IsString, IsMongoId, IsOptional } from 'class-validator';
 
 export class CreateRecipeRatingDto {
-  @IsUUID()
+  @IsMongoId()
   recipeId: string;
 
-  @IsUUID()
+  @IsMongoId()
   ratingTagId: string;
 
   @IsString()

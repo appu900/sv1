@@ -129,8 +129,9 @@ export class CommunityGroupsController {
   @Get(':communityId/challenges')
   @Roles(UserRole.USER)
   @UseGuards(JwtAuthGuard, RolesGuard)
-  getChallengesByCommunity(@Param('communityId') communityId: string) {
-    return this.communityGroupsService.getChallangesByCommunityId(communityId);
+  getChallengesByCommunity(@Param('communityId') communityId: string, @GetUser() user: any) {
+    const userId = user?.userId;
+    return this.communityGroupsService.getChallangesByCommunityId(communityId, userId);
   }
 
   @Get('challenges/:challengeId')
@@ -205,4 +206,19 @@ export class CommunityGroupsController {
     if (!userId) throw new UnauthorizedException();
     return this.communityGroupsService.leaveGroup(userId, groupId);
   }
-}
+  @Post('challenges/:challengeId/finalize')
+  @Roles(UserRole.USER)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  finalizeChallenge(
+    @Param('challengeId') challengeId: string,
+    @Body() body: { topWinnersCount?: number },
+    @GetUser() user: any,
+  ) {
+    const userId = user.userId;
+    if (!userId) throw new UnauthorizedException();
+    return this.communityGroupsService.finalizeChallengeAndAwardBadges(
+      userId,
+      challengeId,
+      body.topWinnersCount || 3,
+    );
+  }}

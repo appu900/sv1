@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { CommunityGroupsService } from './community-groups.service';
 import { CommunityGroupsController } from './community-groups.controller';
 import { MongooseModule } from '@nestjs/mongoose';
@@ -7,15 +7,19 @@ import { CommunityGroupMember, CommunityGroupMemberSchema } from 'src/database/s
 import { User, UserSchema } from 'src/database/schemas/user.auth.schema';
 import { CommunityChallenge, CommunityChallengesSchema } from 'src/database/schemas/challenge.schema';
 import { CommunityChallengeParticipant, CommunityChallengeParticipantSchema } from 'src/database/schemas/challenge.members.schema';
+import { BadgesModule } from '../badges/badges.module';
 
 @Module({
-  imports:[MongooseModule.forFeature([
-    {name:CommunityGroups.name,schema:CommunityGroupSchema},
-    {name:CommunityGroupMember.name,schema:CommunityGroupMemberSchema},
-    {name:User.name,schema:UserSchema},
-    {name:CommunityChallenge.name,schema:CommunityChallengesSchema},
-    {name:CommunityChallengeParticipant.name,schema:CommunityChallengeParticipantSchema}
-  ])],
+  imports:[
+    MongooseModule.forFeature([
+      {name:CommunityGroups.name,schema:CommunityGroupSchema},
+      {name:CommunityGroupMember.name,schema:CommunityGroupMemberSchema},
+      {name:User.name,schema:UserSchema},
+      {name:CommunityChallenge.name,schema:CommunityChallengesSchema},
+      {name:CommunityChallengeParticipant.name,schema:CommunityChallengeParticipantSchema}
+    ]),
+    forwardRef(() => BadgesModule),
+  ],
   controllers: [CommunityGroupsController],
   providers: [CommunityGroupsService],
 })

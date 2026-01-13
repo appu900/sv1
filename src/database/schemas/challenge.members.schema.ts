@@ -19,6 +19,10 @@ export class CommunityChallengeParticipant {
   @Prop({default:0})
   foodSaved:number;
 
+  // Total meals completed by participant in this challenge
+  @Prop({default:0})
+  totalMealsCompleted:number;
+
   @Prop({default:true})
   isActive:boolean
 }

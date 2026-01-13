@@ -1,9 +1,10 @@
-import { Body, Controller, Get, Post, UnauthorizedException, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query, UnauthorizedException, UseGuards } from '@nestjs/common';
 import { AnalyticsService } from './analytics.service';
 import { RolesGuard } from 'src/common/guards/roles.guard';
 import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
 import { GetUser } from 'src/common/decorators/Get.user.decorator';
 import { SaveFoodDto } from './dto/savefood.dto';
+import { GetLeaderboardDto } from './dto/leaderboard.dto';
 
 @Controller('analytics')
 export class AnalyticsController {
@@ -46,5 +47,34 @@ export class AnalyticsController {
   async getTrending(@GetUser() user: any) {
     // Trending is global; user context used to auth only
     return this.analyticsService.getTrendingRecipes(5);
+  }
+
+  @Get('leaderboard')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  async getLeaderboard(@Query() query: GetLeaderboardDto) {
+    return this.analyticsService.getLeaderboard({
+      period: query.period,
+      metric: query.metric,
+      limit: query.limit,
+      country: query.country,
+      stateCode: query.stateCode,
+    });
+  }
+
+  @Get('leaderboard/my-rank')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  async getMyRank(@Query() query: GetLeaderboardDto, @GetUser() user: any) {
+    const userId = user.userId;
+    if (!userId) throw new UnauthorizedException();
+    return this.analyticsService.getUserRank(userId, {
+      period: query.period,
+      metric: query.metric,
+    });
+  }
+
+  @Get('leaderboard/stats')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  async getLeaderboardStats() {
+    return this.analyticsService.getLeaderboardStats();
   }
 }

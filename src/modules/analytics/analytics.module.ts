@@ -1,4 +1,4 @@
-import { Global, Module } from '@nestjs/common';
+import { Global, Module, forwardRef } from '@nestjs/common';
 import { AnalyticsController } from './analytics.controller';
 import { AnalyticsService } from './analytics.service';
 import { AnalyticsListner } from './analytics.listener';
@@ -11,19 +11,23 @@ import { CommunityChallenge, CommunityChallengesSchema } from 'src/database/sche
 import { CommunityChallengeParticipant, CommunityChallengeParticipantSchema } from 'src/database/schemas/challenge.members.schema';
 import { Recipe, RecipeSchema } from 'src/database/schemas/recipe.schema';
 import { Feedback, FeedbackSchema } from 'src/database/schemas/feedback.schema';
+import { BadgesModule } from '../badges/badges.module';
 
 @Global()
 @Module({
-  imports: [MongooseModule.forFeature([
-    {name:UserFoodAnalyticsProfile.name,schema:UserFoodAnalyticalProfileSchema},
-    {name:Ingredient.name,schema:IngredientSchema},
-    {name:CommunityGroups.name,schema:CommunityGroupSchema},
-    {name:CommunityGroupMember.name,schema:CommunityGroupMemberSchema},
-    {name:CommunityChallenge.name,schema:CommunityChallengesSchema},
-    {name:CommunityChallengeParticipant.name,schema:CommunityChallengeParticipantSchema},
-    {name:Recipe.name,schema:RecipeSchema},
-    {name:Feedback.name,schema:FeedbackSchema},
-  ])],
+  imports: [
+    MongooseModule.forFeature([
+      {name:UserFoodAnalyticsProfile.name,schema:UserFoodAnalyticalProfileSchema},
+      {name:Ingredient.name,schema:IngredientSchema},
+      {name:CommunityGroups.name,schema:CommunityGroupSchema},
+      {name:CommunityGroupMember.name,schema:CommunityGroupMemberSchema},
+      {name:CommunityChallenge.name,schema:CommunityChallengesSchema},
+      {name:CommunityChallengeParticipant.name,schema:CommunityChallengeParticipantSchema},
+      {name:Recipe.name,schema:RecipeSchema},
+      {name:Feedback.name,schema:FeedbackSchema},
+    ]),
+    forwardRef(() => BadgesModule),
+  ],
   providers: [AnalyticsService,AnalyticsListner],
   controllers: [AnalyticsController],
   exports:[]

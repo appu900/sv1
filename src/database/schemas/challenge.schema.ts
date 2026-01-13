@@ -34,6 +34,10 @@ export class CommunityChallenge{
 
     @Prop({default:0})
     totalFoodSaved:number;
+    
+    // Total number of meals completed for this challenge (competition metric)
+    @Prop({default:0})
+    totalMealsCompleted:number;
    
     @Prop({default:false,index:true})
     isDeleted:boolean

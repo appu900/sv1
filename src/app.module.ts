@@ -24,6 +24,7 @@ import { FeedbackModule } from './modules/feedback/feedback.module';
 import { FavouriteModule } from './modules/favourite/favourite.module';
 import { RatingTagsModule } from './modules/rating-tags/rating-tags.module';
 import { RecipeRatingsModule } from './modules/recipe-ratings/recipe-ratings.module';
+import { BadgesModule } from './modules/badges/badges.module';
 import {EventEmitterModule} from "@nestjs/event-emitter"
 import { WinstonModule, WINSTON_MODULE_PROVIDER } from 'nest-winston';
 import createWinstonLogger from './logger';
@@ -56,6 +57,7 @@ import { Logger } from 'winston';
     FavouriteModule,
     RatingTagsModule,
     RecipeRatingsModule,
+    BadgesModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -171,6 +171,7 @@ export class AnalyticsListner {
         {
           $inc: {
             totalFoodSaved: event.foodSavedInGrams,
+            totalMealsCompleted: 1,
           },
         },
       );
@@ -185,6 +186,7 @@ export class AnalyticsListner {
         {
           $inc: {
             totalFoodSaved: event.foodSavedInGrams,
+            totalMealsCompleted: 1,
           },
         },
       );

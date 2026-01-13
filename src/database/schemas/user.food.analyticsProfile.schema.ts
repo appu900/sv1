@@ -6,17 +6,17 @@ export class UserFoodAnalyticsProfile{
     @Prop({type:Types.ObjectId,index:true,ref:'User'})
     userId:Types.ObjectId
     
-    @Prop({default:0})
+    @Prop({default:0, index:true}) 
     numberOfMealsCooked:number;
 
-    @Prop({default:0})
+    @Prop({default:0, index:true}) 
     foodSavedInGrams:number;
 
     @Prop({default:[]})
     savedRecipes:Types.ObjectId[]
 
     @Prop({default:[], type:[String]})
-    cookedRecipes:string[]  // framework_ids of cooked recipes
+    cookedRecipes:string[]  
 }
 
 
