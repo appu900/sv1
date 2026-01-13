@@ -203,9 +203,13 @@ export class IngredientsService {
 
     const baseKey = "Ingredients:all"
     const cachedIngrediants = await this.redisService.getVersioned(baseKey)
+
     if(cachedIngrediants) {
       console.log("cached hit for ingredinats:all")
-      return cachedIngrediants
+      console.log(cachedIngrediants)
+      const newdata = JSON.parse(cachedIngrediants as string)
+      console.log("newdata", newdata)
+      return newdata
     }
 
     this.logger.warn('Cache miss for Ingredients:all');
