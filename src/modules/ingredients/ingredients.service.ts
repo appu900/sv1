@@ -19,6 +19,8 @@ import { CreateCatgoryDto } from './dto/ingrediants.category.dto';
 import { CreateIngredientDto } from './dto/create-ingredient.dto';
 import { UpdateIngredientDto } from './dto/update-ingredient.dto';
 import { ImageUploadService } from '../image-upload/image-upload.service';
+import { SqsService } from 'src/sqs/sqs.service';
+import { CacheInvalidationEvent } from 'src/contracts/cache-invalidation.event';
 
 @Injectable()
 export class IngredientsService {
@@ -30,6 +32,7 @@ export class IngredientsService {
     private readonly ingredientModel: Model<IngredientDocument>,
     private readonly redisService: RedisService,
     private readonly imageuploadService: ImageUploadService,
+    private readonly sqsService:SqsService
   ) {}
 
   // Category Management
@@ -192,9 +195,21 @@ export class IngredientsService {
   }
 
   async getAllIngredients() {
-    const cachedKey = 'Ingredients:all';
-    const cachedData = await this.redisService.get(cachedKey);
-    if (cachedData) return JSON.parse(cachedData);
+    // const cachedKey = 'Ingredients:all';
+
+    // const cachedData = await this.redisService.get(cachedKey);
+    // if (cachedData) return JSON.parse(cachedData)
+    // console.log('cahed fall')
+
+    const baseKey = "Ingredients:all"
+    const cachedIngrediants = await this.redisService.getVersioned(baseKey)
+    if(cachedIngrediants) {
+      console.log("cached hit for ingredinats:all")
+      return cachedIngrediants
+    }
+
+    this.logger.warn('Cache miss for Ingredients:all');
+
 
     const ingredients = await this.ingredientModel
       .find()
@@ -207,7 +222,12 @@ export class IngredientsService {
       .sort({ order: 1, name: 1 })
       .lean();
 
-    await this.redisService.set(cachedKey, JSON.stringify(ingredients), 60 * 20);
+    // await this.redisService.set(cachedKey, JSON.stringify(ingredients), 60 * 20);
+    await this.redisService.setVersioned(
+    baseKey,
+    ingredients,
+    60 * 20,
+  );
     return ingredients;
   }
 
@@ -327,7 +347,31 @@ export class IngredientsService {
       .populate('relatedHacks', 'title type')
       .populate('stickerId', 'title imageUrl');
 
-    await this.clearIngredientCache();
+    // await this.clearIngredientCache();
+     const ingredients = await this.ingredientModel
+      .find()
+      .populate('categoryId', 'name imageUrl')
+      .populate('suitableDiets', 'name')
+      .populate('parentIngredients', 'name')
+      .populate('sponsorId', 'title logo')
+      .populate('relatedHacks', 'title type')
+      .populate('stickerId', 'title imageUrl')
+      .sort({ order: 1, name: 1 })
+      .lean();
+      
+
+      // ** new caching startegy 
+      const{oldVersion,newVersion} = await this.redisService.setVersioned("Ingredients:all",JSON.stringify(ingredients),3600)
+      if(oldVersion > 0){
+        await this.sqsService.publishCacheInvalidation({
+          eventType:'CACHE_INVALIDATION',
+          baseKey:'Ingredients:all',
+          invalidateVersions:[oldVersion],
+          timestamp:Date.now()
+        })
+        this.logger.log(`cache invalidation pushed with version ${newVersion} for key Ingredinats:all`)
+      }
+      
 
     return updatedIngredient;
   }

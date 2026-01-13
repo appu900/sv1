@@ -26,9 +26,7 @@ export class CommunityChallenge{
     
     @Prop({default:true,index:true})
     status:boolean
-
-
-
+    
     @Prop({default:1})
     memberCount:number;
 

@@ -16,6 +16,7 @@ import {
   DietCategorySchema,
 } from 'src/database/schemas/diet.schema';
 import { ImageUploadModule } from '../image-upload/image-upload.module';
+import { SqsModule } from 'src/sqs/sqs.module';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { ImageUploadModule } from '../image-upload/image-upload.module';
       { name: DietCategory.name, schema: DietCategorySchema },
     ]),
     ImageUploadModule,
+    SqsModule
   ],
   controllers: [IngredientsController],
   providers: [IngredientsService],

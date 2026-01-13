@@ -9,12 +9,12 @@ export class RedisService implements OnModuleDestroy {
   constructor() {
     const options: RedisOptions = {
       maxRetriesPerRequest: null,
-      enableReadyCheck: false,       // Valkey compatibility
+      enableReadyCheck: false, // Valkey compatibility
       retryStrategy: (attempt) => {
         console.log(`Redis reconnect attempt #${attempt}`);
         return Math.min(attempt * 200, 2000);
       },
-      tls: {},                       // REQUIRED for Aiven Valkey
+      tls: {}, // REQUIRED for Aiven Valkey
       username: process.env.REDIS_USERNAME,
       password: process.env.REDIS_PASSWORD,
     };
@@ -34,7 +34,6 @@ export class RedisService implements OnModuleDestroy {
 
     this.setupEventHandlers();
   }
-
   private setupEventHandlers() {
     this.client.on('connect', () => console.log('Redis: connected'));
     this.client.on('ready', () => console.log('Redis: ready'));
@@ -51,6 +50,8 @@ export class RedisService implements OnModuleDestroy {
       return false;
     }
   }
+
+  // ** version helper
 
   async isJoinCodeUsed(code: string): Promise<boolean> {
     return (await this.client.sismember(this.JOIN_CODE_SET_KEY, code)) === 1;
@@ -83,8 +84,46 @@ export class RedisService implements OnModuleDestroy {
   }
 
   async setSession(sessionId: string, userId: string, ttlSeconds: number) {
-    await this.client.set(`auth:session:${sessionId}`, userId, 'EX', ttlSeconds);
+    await this.client.set(
+      `auth:session:${sessionId}`,
+      userId,
+      'EX',
+      ttlSeconds,
+    );
   }
+
+  async getVersion(baseKey: string): Promise<number> {
+    const v = await this.client.get(`${baseKey}:version`);
+    if (!v) return 0;
+    const parsed = Number(v);
+    return isNaN(parsed) ? 0 : parsed;
+  }
+
+  async incrementVersion(baseKey: string) {
+    return this.client.incr(`${baseKey}:version`);
+  }
+
+  async getVersioned<T>(baseKey: string) :Promise<T | null>{
+    const version = await this.getVersion(baseKey);
+    if(version === 0) return null;
+    const data = await this.client.get(`${baseKey}:v${version}`);
+    return data ? JSON.parse(data) : null
+  }
+
+  // ** write through update 
+  async setVersioned(baseKey:string,value:any,ttlSeconds:number):Promise<{oldVersion:number,newVersion:number}>{
+    const oldVersion = await this.getVersion(baseKey)
+    const newVersion = await this.incrementVersion(baseKey);
+    await this.client.set(`${baseKey}:v${newVersion}`,JSON.stringify(value))
+    return{oldVersion,newVersion}
+  }
+
+  // ** invalidation worker 
+  async deleteVersion(baseKey:string,version:number){
+    await this.client.del(`${baseKey}:v${version}`)
+  }
+
+
 
   async getSession(sessionId: string) {
     return this.client.get(`auth:session:${sessionId}`);

@@ -29,6 +29,7 @@ import {EventEmitterModule} from "@nestjs/event-emitter"
 import { WinstonModule, WINSTON_MODULE_PROVIDER } from 'nest-winston';
 import createWinstonLogger from './logger';
 import { Logger } from 'winston';
+import { SqsModule } from './sqs/sqs.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
@@ -55,9 +56,7 @@ import { Logger } from 'winston';
     AnalyticsModule,
     FeedbackModule,
     FavouriteModule,
-    RatingTagsModule,
-    RecipeRatingsModule,
-    BadgesModule,
+    SqsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
