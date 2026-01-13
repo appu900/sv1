@@ -38,8 +38,10 @@ export class FeedbackService {
       data: createFeedbackDto.data || {},
     });
 
-    // Emit food saved event if food_saved is provided
-    if (createFeedbackDto.data?.food_saved) {
+    // Emit food.saved event ONLY when user initially completes cooking (prompted: false)
+    // This ensures analytics are tracked when user finishes in MakeItSurveyModal
+    // For PostMakeScreen surveys (prompted: true), analytics are tracked separately via saveFoodAnalytics
+    if (!createFeedbackDto.prompted && createFeedbackDto.data?.food_saved) {
       this.eventEmitter.emit('food.saved', {
         userId,
         foodSavedInGrams: createFeedbackDto.data.food_saved * 1000, // Convert kg to grams

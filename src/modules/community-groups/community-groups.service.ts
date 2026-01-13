@@ -883,10 +883,7 @@ export class CommunityGroupsService {
     return { message: 'Left group successfully' };
   }
 
-  /**
-   * Finalize a challenge and award badges to winners
-   * This should be called when a challenge ends (manually or via cron job)
-   */
+
   async finalizeChallengeAndAwardBadges(
     userId: string,
     challengeId: string,
@@ -904,7 +901,6 @@ export class CommunityGroupsService {
       throw new NotFoundException('Challenge not found');
     }
 
-    // Verify user is the owner of the group (only owners can finalize)
     const isOwner = await this.communityGroupMemberModel.findOne({
       groupId: challenge.communityId,
       userId: new Types.ObjectId(userId),
@@ -916,7 +912,6 @@ export class CommunityGroupsService {
       throw new ForbiddenException('Only group owner can finalize challenges');
     }
 
-    // Get leaderboard - sorted by totalMealsCompleted
     const participants = await this.communityChallengeParticipantModel
       .find({ 
         challengeId: new Types.ObjectId(challengeId), 
@@ -971,11 +966,9 @@ export class CommunityGroupsService {
       }
     }
 
-    // Mark challenge as finalized (you might want to add a 'finalized' field to schema)
-    challenge.status = false; // Deactivate challenge
+    challenge.status = false; 
     await challenge.save();
 
-    // Clear cache
     const cacheKey = `community:challenge:single:${challengeId}`;
     const listCacheKey = `community:challenges:communityId:${challenge.communityId}`;
     await this.redisService.del(cacheKey);
@@ -993,4 +986,74 @@ export class CommunityGroupsService {
       })),
     };
   }
+
+ 
+  async autoFinalizeExpiredChallenges(topWinnersCount: number = 3) {
+    const now = new Date();
+
+    const expiredActiveChallenges = await this.communityChallengeModel
+      .find({ status: true, isDeleted: false, endDate: { $lt: now } })
+      .select('_id communityId challengeName endDate')
+      .lean();
+
+    if (expiredActiveChallenges.length === 0) {
+      return { message: 'No expired active challenges to finalize', finalized: 0 };
+    }
+
+    const results: Array<{
+      challengeId: string;
+      finalized: boolean;
+      winnersAwarded?: number;
+      error?: string;
+    }> = [];
+
+    for (const ch of expiredActiveChallenges) {
+      try {
+        const owner = await this.communityGroupMemberModel.findOne({
+          groupId: new Types.ObjectId(ch.communityId as any),
+          role: GroupMemberRole.OWNER,
+          isActive: true,
+        }).select('userId');
+
+        if (!owner) {
+          results.push({
+            challengeId: (ch._id as any).toString(),
+            finalized: false,
+            error: 'Group owner not found',
+          });
+          continue;
+        }
+
+        const res = await this.finalizeChallengeAndAwardBadges(
+          owner.userId.toString(),
+          (ch._id as any).toString(),
+          topWinnersCount,
+        );
+
+        results.push({
+          challengeId: (ch._id as any).toString(),
+          finalized: true,
+          winnersAwarded: (res as any)?.winnersAwarded ?? 0,
+        });
+      } catch (err: any) {
+        this.logger.error(
+          `Auto-finalize failed for challenge ${(ch._id as any).toString()}:`,
+          err,
+        );
+        results.push({
+          challengeId: (ch._id as any).toString(),
+          finalized: false,
+          error: err?.message || 'Unknown error',
+        });
+      }
+    }
+
+    return {
+      message: 'Auto-finalization complete',
+      finalized: results.filter(r => r.finalized).length,
+      results,
+    };
+  }
+
+  // Challenge event handling occurs in AnalyticsListener; avoid duplication here.
 }
