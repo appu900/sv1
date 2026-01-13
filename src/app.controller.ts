@@ -17,6 +17,7 @@ export class AppController {
 
   @Get('health')
   healthCheck(): string {
+    console.log('Health check endpoint accessed');
     this.logger.info('Health check endpoint called');
     return 'OK';
   }

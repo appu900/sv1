@@ -2,16 +2,14 @@ import './instrumentation';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
-import { WinstonModule } from 'nest-winston';
-import createWinstonLogger from './logger';
+import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 
 async function bootstrap() {
-  const logger = createWinstonLogger();
-  const app = await NestFactory.create(AppModule, {
-    logger: WinstonModule.createLogger({
-      instance: logger,
-    }),
-  });
+  const app = await NestFactory.create(AppModule);
+
+  // Get the logger from the module
+  const logger = app.get(WINSTON_MODULE_NEST_PROVIDER);
+  app.useLogger(logger);
 
   app.setGlobalPrefix('api');
   app.enableCors({
@@ -25,9 +23,10 @@ async function bootstrap() {
     transform: true,
     forbidNonWhitelisted: false,
     whitelist: true
-  }))
+  }));
+
   app.use((req, res, next) => {
-    logger.info(`Request: ${req.method} ${req.url}`, {
+    logger.log(`Request: ${req.method} ${req.url}`, {
       method: req.method,
       path: req.url,
       ip: req.ip,
@@ -35,9 +34,8 @@ async function bootstrap() {
     });
     next();
   });
+
   await app.listen(process.env.PORT ?? 3000, '0.0.0.0');
-  logger.info(`Application is running on: http://0.0.0.0:${process.env.PORT ?? 3000}`);
-  logger.info(`Environment: ${process.env.NODE_ENV || 'development'}`);
-  logger.info(`Redis running on remote server: ${process.env.REDIS_URL}`);
+  logger.log(`Application is running on: http://0.0.0.0:${process.env.PORT ?? 3000}`);
 }
 bootstrap();
