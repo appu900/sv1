@@ -192,6 +192,13 @@ export class CommunityGroupsService {
         { _id: group._id },
         { $inc: { memberCount: 1 } },
       );
+
+      // Clear caches when user rejoins
+      const groupCacheKey = `${this.SINGLE_COMMUNITY_CACHE_KEY}:${group._id.toString()}`;
+      const userGroupsKey = `community:Groups:${userId}`;
+      await this.redisService.del(groupCacheKey);
+      await this.redisService.del(userGroupsKey);
+
       return { message: 'joined sucessfully' };
     }
     // ** rejoin if u are not a active member and want to rejoin again
@@ -206,6 +213,12 @@ export class CommunityGroupsService {
         { _id: group._id },
         { $inc: { memberCount: 1 } },
       );
+
+      // Clear caches when new member joins
+      const groupCacheKey = `${this.SINGLE_COMMUNITY_CACHE_KEY}:${group._id.toString()}`;
+      const userGroupsKey = `community:Groups:${userId}`;
+      await this.redisService.del(groupCacheKey);
+      await this.redisService.del(userGroupsKey);
 
       return { message: 'Joined this group sucessfully' };
     } catch (error) {
