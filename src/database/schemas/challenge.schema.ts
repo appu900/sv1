@@ -1,5 +1,5 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { Types } from 'mongoose';
+import { Types, Document } from 'mongoose';
 
 @Schema({timestamps:true})
 export class CommunityChallenge{
@@ -45,3 +45,15 @@ export class CommunityChallenge{
 
 export type CommunityChallengeDocument = CommunityChallenge & Document
 export const CommunityChallengesSchema = SchemaFactory.createForClass(CommunityChallenge)
+
+// Add virtual property for isActive
+CommunityChallengesSchema.virtual('isActive').get(function() {
+  const now = new Date();
+  return this.status && 
+         new Date(this.startDate) <= now && 
+         new Date(this.endDate) >= now;
+});
+
+// Ensure virtuals are included when converting to JSON
+CommunityChallengesSchema.set('toJSON', { virtuals: true });
+CommunityChallengesSchema.set('toObject', { virtuals: true });

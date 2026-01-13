@@ -25,11 +25,26 @@ export class AnalyticsController {
     return this.analyticsService.getUserCookedRecipes(userId);
   }
 
+  @Get('cooked-recipes/details')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  async getCookedRecipesDetails(@GetUser() user: any) {
+    const userId = user.userId;
+    if (!userId) throw new UnauthorizedException();
+    return this.analyticsService.getUserCookedRecipesDetails(userId);
+  }
+
   @Get('stats')
   @UseGuards(JwtAuthGuard, RolesGuard)
   async getStats(@GetUser() user: any) {
     const userId = user.userId;
     if (!userId) throw new UnauthorizedException();
     return this.analyticsService.getStats(userId);
+  }
+
+  @Get('trending')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  async getTrending(@GetUser() user: any) {
+    // Trending is global; user context used to auth only
+    return this.analyticsService.getTrendingRecipes(5);
   }
 }

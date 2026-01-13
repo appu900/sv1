@@ -348,8 +348,8 @@ export class CommunityGroupsService {
     )
       throw new BadRequestException();
     const authorizedUser = await this.communityGroupMemberModel.findOne({
-      groupId: dto.communityId,
-      userId,
+      groupId: new Types.ObjectId(dto.communityId),
+      userId: new Types.ObjectId(userId),
       isActive: true,
       role: GroupMemberRole.OWNER,
     });
@@ -386,7 +386,7 @@ export class CommunityGroupsService {
     const challenges = await this.communityChallengeModel.find({
       communityId: new Types.ObjectId(communityId),
       isDeleted: false,
-    });
+    }).lean({ virtuals: true });
 
     const now = new Date();
     const categorized = {
@@ -405,15 +405,30 @@ export class CommunityGroupsService {
     return result;
   }
 
-  async getChallengeById(challengeId: string) {
-    const cachedKey = `community:challenge:single:${challengeId}`;
-    const cachedData = await this.redisService.get(cachedKey);
-    if (cachedData) return cachedData;
-    const result = await this.communityChallengeModel.findById(
-      new Types.ObjectId(challengeId),
-    );
-    await this.redisService.set(cachedKey, JSON.stringify(result), 60 * 20);
-    return result;
+  async getChallengeById(challengeId: string, userId?: string) {
+    if (!Types.ObjectId.isValid(challengeId)) throw new BadRequestException();
+    
+    const result = await this.communityChallengeModel
+      .findById(new Types.ObjectId(challengeId))
+      .lean({ virtuals: true });
+    
+    if (!result) throw new NotFoundException('Challenge not found');
+
+    // Check if user is a participant
+    let isParticipant = false;
+    if (userId && Types.ObjectId.isValid(userId)) {
+      const participant = await this.communityChallengeParticipantModel.findOne({
+        userId: new Types.ObjectId(userId),
+        challengeId: new Types.ObjectId(challengeId),
+        isActive: true,
+      });
+      isParticipant = !!participant;
+    }
+
+    return {
+      ...result,
+      isParticipant,
+    };
   }
 
 
@@ -477,7 +492,7 @@ export class CommunityGroupsService {
       throw new BadRequestException();
     const isUserCommunityMember = await this.communityGroupMemberModel.findOne({
       groupId: new Types.ObjectId(dto.communityId),
-      userId: userId,
+      userId: new Types.ObjectId(userId),
       isActive: true,
     });
     if (!isUserCommunityMember)

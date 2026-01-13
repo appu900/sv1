@@ -164,6 +164,16 @@ export class RecipeService {
       }
 
       await this.redisService.del(this.CACHE_KEY_ALL);
+      // Also clear per-category caches for affected framework categories
+      try {
+        for (const catId of recipeData.frameworkCategories || []) {
+          await this.redisService.del(
+            `${this.CACHE_KEY_CATEGORY}:${catId.toString()}`,
+          );
+        }
+      } catch (e) {
+        console.warn('Failed clearing category cache after create:', e?.message);
+      }
 
       return savedRecipe;
     } catch (error) {
@@ -485,12 +495,22 @@ export class RecipeService {
       await this.redisService.del(this.CACHE_KEY_ALL);
       await this.redisService.del(`${this.CACHE_KEY_SINGLE}:${id}`);
 
-      if (existingRecipe.frameworkCategories) {
-        for (const catId of existingRecipe.frameworkCategories) {
+      // Clear caches for previous and new category IDs
+      try {
+        const prevCats = existingRecipe.frameworkCategories || [];
+        for (const catId of prevCats) {
           await this.redisService.del(
             `${this.CACHE_KEY_CATEGORY}:${catId.toString()}`,
           );
         }
+        const newCats = updatedRecipe.frameworkCategories || [];
+        for (const catId of newCats) {
+          await this.redisService.del(
+            `${this.CACHE_KEY_CATEGORY}:${catId.toString()}`,
+          );
+        }
+      } catch (e) {
+        console.warn('Failed clearing category cache after update:', e?.message);
       }
 
       return updatedRecipe;
