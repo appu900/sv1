@@ -177,10 +177,22 @@ export class BadgesController {
   async checkMyMilestones(@GetUser() user: any) {
     const userId = user.userId;
     const newBadges = await this.badgesService.checkAndAwardMilestoneBadges(userId);
+    
+    const populatedBadges = await Promise.all(
+      newBadges.map(async (userBadge) => {
+        const badge = await this.badgesService.getBadgeById(userBadge.badgeId.toString());
+        const plainUserBadge = (userBadge as any).toObject ? (userBadge as any).toObject() : userBadge;
+        return {
+          ...plainUserBadge,
+          badge,
+        };
+      })
+    );
+    
     return {
       message: `Checked milestones`,
       newBadgesAwarded: newBadges.length,
-      badges: newBadges,
+      badges: populatedBadges,
     };
   }
 }
