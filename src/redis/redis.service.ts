@@ -15,6 +15,8 @@ export class RedisService implements OnModuleDestroy {
         return Math.min(attempt * 200, 2000);
       },
       tls: {}, // REQUIRED for Aiven Valkey
+      username: process.env.REDIS_USERNAME,
+      password: process.env.REDIS_PASSWORD,
     };
 
     if (process.env.REDIS_URL) {
