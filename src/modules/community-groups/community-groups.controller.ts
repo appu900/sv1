@@ -221,4 +221,20 @@ export class CommunityGroupsController {
       challengeId,
       body.topWinnersCount || 3,
     );
-  }}
+  }
+
+  @Post('challenges/auto-finalize')
+  @Roles(UserRole.USER)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  autoFinalizeChallenges(
+    @Body() body: { topWinnersCount?: number },
+    @GetUser() user: any,
+  ) {
+    const userId = user.userId;
+    if (!userId) throw new UnauthorizedException();
+    // Anyone authenticated can trigger; service uses group owner for permissions internally
+    return this.communityGroupsService.autoFinalizeExpiredChallenges(
+      body.topWinnersCount || 3,
+    );
+  }
+}

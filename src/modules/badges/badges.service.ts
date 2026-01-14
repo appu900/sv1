@@ -277,14 +277,19 @@ export class BadgesService {
     });
 
     if (!analytics) {
+      this.logger.warn(`No analytics found for user ${userId}`);
       return [];
     }
+
+    this.logger.log(`User ${userId} analytics: mealsCooked=${analytics.numberOfMealsCooked}, foodSaved=${analytics.foodSavedInGrams}`);
 
     const milestoneBadges = await this.badgeModel.find({
       category: BadgeCategory.MILESTONE,
       isActive: true,
       isDeleted: false,
     });
+
+    this.logger.log(`Found ${milestoneBadges.length} active milestone badges to check`);
 
     const newBadges: UserBadge[] = [];
 
@@ -295,7 +300,10 @@ export class BadgesService {
         badgeId: badge._id,
       });
 
-      if (hasbadge) continue;
+      if (hasbadge) {
+        this.logger.debug(`User already has badge: ${badge.name}`);
+        continue;
+      }
 
       let shouldAward = false;
       let achievedValue = 0;
@@ -304,18 +312,23 @@ export class BadgesService {
         case MilestoneType.TOTAL_MEALS_COOKED:
           achievedValue = analytics.numberOfMealsCooked;
           shouldAward = achievedValue >= (badge.milestoneThreshold || 0);
+          this.logger.log(`Checking ${badge.name}: achieved=${achievedValue}, threshold=${badge.milestoneThreshold}, shouldAward=${shouldAward}`);
           break;
 
         case MilestoneType.TOTAL_FOOD_SAVED:
           achievedValue = analytics.foodSavedInGrams;
           shouldAward = achievedValue >= (badge.milestoneThreshold || 0);
+          this.logger.log(`Checking ${badge.name}: achieved=${achievedValue}, threshold=${badge.milestoneThreshold}, shouldAward=${shouldAward}`);
           break;
 
         // Add more milestone types as needed
+        default:
+          this.logger.debug(`Badge ${badge.name} has unhandled milestone type: ${badge.milestoneType}`);
       }
 
       if (shouldAward) {
         try {
+          this.logger.log(`Awarding badge ${badge.name} to user ${userId}`);
           const userBadge = await this.awardBadge({
             userId: userId.toString(),
             badgeId: badge._id.toString(),
@@ -331,6 +344,7 @@ export class BadgesService {
       }
     }
 
+    this.logger.log(`Awarded ${newBadges.length} new badges to user ${userId}`);
     return newBadges;
   }
 

@@ -27,6 +27,11 @@ export class FeedbackService {
   ) {}
 
   async create(userId: string, createFeedbackDto: CreateFeedbackDto) {
+    console.log('[FeedbackService] Create called with:', {
+      userId,
+      createDto: JSON.stringify(createFeedbackDto),
+    });
+
     if (!Types.ObjectId.isValid(userId)) {
       throw new BadRequestException('Invalid user ID');
     }
@@ -38,8 +43,12 @@ export class FeedbackService {
       data: createFeedbackDto.data || {},
     });
 
-    // Emit food saved event if food_saved is provided
-    if (createFeedbackDto.data?.food_saved) {
+    console.log('[FeedbackService] Feedback created with data:', JSON.stringify(feedback.data));
+
+    // Emit food.saved event ONLY when user initially completes cooking (prompted: false)
+    // This ensures analytics are tracked when user finishes in MakeItSurveyModal
+    // For PostMakeScreen surveys (prompted: true), analytics are tracked separately via saveFoodAnalytics
+    if (!createFeedbackDto.prompted && createFeedbackDto.data?.food_saved) {
       this.eventEmitter.emit('food.saved', {
         userId,
         foodSavedInGrams: createFeedbackDto.data.food_saved * 1000, // Convert kg to grams
@@ -91,6 +100,12 @@ export class FeedbackService {
     userId: string,
     updateFeedbackDto: UpdateFeedbackDto,
   ) {
+    console.log('[FeedbackService] Update called with:', {
+      feedbackId,
+      userId,
+      updateDto: JSON.stringify(updateFeedbackDto),
+    });
+
     if (!Types.ObjectId.isValid(feedbackId)) {
       throw new BadRequestException('Invalid feedback ID');
     }
@@ -108,6 +123,8 @@ export class FeedbackService {
       throw new ForbiddenException('Access denied');
     }
 
+    console.log('[FeedbackService] Existing feedback data:', JSON.stringify(feedback.data));
+
     // Update fields
     if (updateFeedbackDto.prompted !== undefined) {
       feedback.prompted = updateFeedbackDto.prompted;
@@ -118,6 +135,11 @@ export class FeedbackService {
         ...feedback.data,
         ...updateFeedbackDto.data,
       };
+      
+      // Mark the data field as modified for Mongoose to persist nested changes
+      feedback.markModified('data');
+
+      console.log('[FeedbackService] Updated feedback data:', JSON.stringify(feedback.data));
 
       if (updateFeedbackDto.data.food_saved !== undefined) {
         const previousFoodSaved = feedback.data.food_saved || 0;
@@ -138,6 +160,8 @@ export class FeedbackService {
 
     feedback.updatedAt = new Date();
     await feedback.save();
+
+    console.log('[FeedbackService] Feedback saved, final data:', JSON.stringify(feedback.data));
 
     return { feedback };
   }

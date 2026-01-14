@@ -1,5 +1,5 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { Types } from 'mongoose';
+import { Types, Schema as MongooseSchema } from 'mongoose';
 
 @Schema({ timestamps: true })
 export class Feedback {
@@ -12,11 +12,16 @@ export class Feedback {
   @Prop({ type: Boolean, default: false })
   prompted: boolean;
 
-  @Prop({ type: Object })
+  @Prop({
+    type: MongooseSchema.Types.Mixed,
+    default: {},
+  })
   data: {
     did_you_like_it?: boolean;
     food_saved?: number;
     meal_id?: string;
+    rating?: number; // 1-5 carrot rating
+    review?: string; // Optional text review
   };
 
   @Prop({ type: Date, default: Date.now })

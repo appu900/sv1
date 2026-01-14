@@ -1,9 +1,13 @@
 import {
   IsBoolean,
+  IsInt,
   IsNumber,
   IsObject,
   IsOptional,
   IsString,
+  Max,
+  MaxLength,
+  Min,
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
@@ -20,6 +24,18 @@ class FeedbackDataDto {
   @IsOptional()
   @IsString()
   meal_id?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @IsInt()
+  @Min(1)
+  @Max(5)
+  rating?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  review?: string;
 }
 
 export class UpdateFeedbackDto {

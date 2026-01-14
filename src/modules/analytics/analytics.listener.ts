@@ -132,36 +132,38 @@ export class AnalyticsListner {
     try {
       const now = new Date();
 
-      // Find all active challenges the user is participating in
-      const userChallenges = await this.challengeParticipantModel
+      // Find all groups where user is an active member
+      const userGroups = await this.communityGroupMemberModel
         .find({
           userId: new Types.ObjectId(event.userId),
           isActive: true,
         })
-        .populate('challengeId')
+        .select('groupId')
         .lean();
 
-      if (userChallenges.length === 0) {
+      if (userGroups.length === 0) {
         return;
       }
 
-      // Filter for challenges that are currently active (within date range)
-      const activeChallengeIds = userChallenges
-        .filter((cp: any) => {
-          const challenge = cp.challengeId;
-          return (
-            challenge &&
-            !challenge.isDeleted &&
-            challenge.status &&
-            new Date(challenge.startDate) <= now &&
-            new Date(challenge.endDate) >= now
-          );
+      const groupIds = userGroups.map(g => g.groupId);
+
+      // Find all active challenges in those groups (currently within date range)
+      const activeChallenges = await this.communityChallengeModel
+        .find({
+          communityId: { $in: groupIds },
+          isDeleted: false,
+          status: true,
+          startDate: { $lte: now },
+          endDate: { $gte: now },
         })
-        .map((cp) => cp.challengeId);
+        .select('_id communityId')
+        .lean();
 
-      if (activeChallengeIds.length === 0) {
+      if (activeChallenges.length === 0) {
         return;
       }
+
+      const activeChallengeIds = activeChallenges.map((ch: any) => ch._id);
 
       // Update totalFoodSaved for all active challenges
       await this.communityChallengeModel.updateMany(
@@ -176,20 +178,27 @@ export class AnalyticsListner {
         },
       );
 
-      // Update participant's food saved
-      await this.challengeParticipantModel.updateMany(
-        {
-          userId: new Types.ObjectId(event.userId),
-          challengeId: { $in: activeChallengeIds },
-          isActive: true,
-        },
-        {
-          $inc: {
-            totalFoodSaved: event.foodSavedInGrams,
-            totalMealsCompleted: 1,
+      // Ensure participant docs exist and increment counters per active challenge
+      for (const challenge of activeChallenges) {
+        await this.challengeParticipantModel.findOneAndUpdate(
+          {
+            userId: new Types.ObjectId(event.userId),
+            challengeId: (challenge as any)._id,
+            communityId: (challenge as any).communityId,
+            isActive: true,
           },
-        },
-      );
+          {
+            $inc: {
+              foodSaved: event.foodSavedInGrams,
+              totalMealsCompleted: 1,
+            },
+          },
+          {
+            upsert: true,
+            setDefaultsOnInsert: true,
+          },
+        );
+      }
 
       // Invalidate Redis cache for each updated challenge
       for (const challengeId of activeChallengeIds) {
