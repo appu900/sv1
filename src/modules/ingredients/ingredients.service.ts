@@ -21,7 +21,7 @@ import { UpdateIngredientDto } from './dto/update-ingredient.dto';
 import { ImageUploadService } from '../image-upload/image-upload.service';
 import { SqsService } from 'src/sqs/sqs.service';
 import { CacheInvalidationEvent } from 'src/contracts/cache-invalidation.event';
-
+import { WINSTON_MODULE_PROVIDER } from 'nest-winston';
 @Injectable()
 export class IngredientsService {
   private readonly logger = new Logger(IngredientsService.name);
@@ -33,6 +33,7 @@ export class IngredientsService {
     private readonly redisService: RedisService,
     private readonly imageuploadService: ImageUploadService,
     private readonly sqsService:SqsService
+    
   ) {}
 
   // Category Management
@@ -206,10 +207,8 @@ export class IngredientsService {
 
     if(cachedIngrediants) {
       console.log("cached hit for ingredinats:all")
-      console.log(cachedIngrediants)
-      const newdata = JSON.parse(cachedIngrediants as string)
-      console.log("newdata", newdata)
-      return newdata
+      this.logger.log('Cache hit for Ingredients:all');
+      return cachedIngrediants;
     }
 
     this.logger.warn('Cache miss for Ingredients:all');
