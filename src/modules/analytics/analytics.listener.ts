@@ -41,11 +41,15 @@ export class AnalyticsListner {
     @InjectModel(CommunityChallengeParticipant.name)
     private readonly challengeParticipantModel: Model<CommunityChallengeParticipantDocument>,
     private readonly redisService: RedisService,
-  ) {}
+  ) {
+    this.logger.log('AnalyticsListener initialized and ready to receive events');
+  }
 
   @OnEvent('food.saved', { async: true })
   async updateUserProfile(event: FoodSavedEvent) {
     try {
+      this.logger.log(`[AnalyticsListener] Received food.saved event:`, JSON.stringify(event));
+      
       // Prepare update operation
       const updateOperation: any = {
         $inc: {
@@ -61,13 +65,16 @@ export class AnalyticsListner {
         };
       }
 
+      this.logger.log(`[AnalyticsListener] Updating profile with:`, JSON.stringify(updateOperation));
+
       // Update user analytics profile
-      await this.profileModel.findOneAndUpdate(
+      const result = await this.profileModel.findOneAndUpdate(
         { userId: new Types.ObjectId(event.userId) },
         updateOperation,
-        { upsert: true },
+        { upsert: true, new: true },
       );
-      this.logger.log(`Updated profile for user ${event.userId}`);
+      
+      this.logger.log(`[AnalyticsListener] Profile updated successfully for user ${event.userId}. New values: numberOfMealsCooked=${result.numberOfMealsCooked}, foodSavedInGrams=${result.foodSavedInGrams}`);
 
       // Update all community groups the user is a member of
       await this.updateCommunityGroups(event);

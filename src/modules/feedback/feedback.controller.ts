@@ -48,6 +48,35 @@ export class FeedbackController {
     return this.feedbackService.getStats(userId);
   }
 
+  // Admin endpoints - MUST come before :id route
+  @Get('admin/all')
+  @Roles(UserRole.ADMIN)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  async getAllFeedbacksAdmin() {
+    return this.feedbackService.getAllFeedbacksWithDetails();
+  }
+
+  @Get('admin/recipe/:recipeId')
+  @Roles(UserRole.ADMIN)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  async getFeedbacksByRecipeAdmin(@Param('recipeId') recipeId: string) {
+    return this.feedbackService.getFeedbacksByRecipe(recipeId);
+  }
+
+  @Get('admin/stats')
+  @Roles(UserRole.ADMIN)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  async getFeedbackStatsAdmin() {
+    return this.feedbackService.getAdminStats();
+  }
+
+  @Delete('admin/:id')
+  @Roles(UserRole.ADMIN)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  async removeAdmin(@Param('id') id: string) {
+    return this.feedbackService.adminDelete(id);
+  }
+
   @Get(':id')
   @Roles(UserRole.USER, UserRole.ADMIN)
   @UseGuards(JwtAuthGuard, RolesGuard)
