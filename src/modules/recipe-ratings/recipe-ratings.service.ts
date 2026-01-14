@@ -9,27 +9,21 @@ import { Model, isValidObjectId, Types } from 'mongoose';
 import { RecipeRating, RecipeRatingDocument } from 'src/database/schemas/recipe-rating.schema';
 import { CreateRecipeRatingDto } from './dto/create-recipe-rating.dto';
 import { UpdateRecipeRatingDto } from './dto/update-recipe-rating.dto';
-import { RatingTagsService } from '../rating-tags/rating-tags.service';
 
 @Injectable()
 export class RecipeRatingsService {
   constructor(
     @InjectModel(RecipeRating.name)
     private recipeRatingModel: Model<RecipeRatingDocument>,
-    private ratingTagsService: RatingTagsService,
   ) {}
 
   async create(
     userId: string,
     createRecipeRatingDto: CreateRecipeRatingDto,
   ): Promise<RecipeRating> {
-    // Verify that the rating tag exists
-    const ratingTag = await this.ratingTagsService.findOne(
-      createRecipeRatingDto.ratingTagId,
-    );
-
-    if (!ratingTag.isActive) {
-      throw new BadRequestException('Selected rating tag is not active');
+    // Validate rating value (1-5)
+    if (createRecipeRatingDto.rating < 1 || createRecipeRatingDto.rating > 5) {
+      throw new BadRequestException('Rating must be between 1 and 5');
     }
 
     // Check if user has already rated this recipe
@@ -48,7 +42,6 @@ export class RecipeRatingsService {
       ...createRecipeRatingDto,
       userId: new Types.ObjectId(userId),
       recipeId: new Types.ObjectId(createRecipeRatingDto.recipeId),
-      ratingTagId: new Types.ObjectId(createRecipeRatingDto.ratingTagId),
     });
 
     return await recipeRating.save();
@@ -58,7 +51,6 @@ export class RecipeRatingsService {
     return await this.recipeRatingModel
       .find()
       .populate('userId', 'name email')
-      .populate('ratingTagId')
       .sort({ createdAt: -1 })
       .lean();
   }
@@ -71,7 +63,6 @@ export class RecipeRatingsService {
     return await this.recipeRatingModel
       .find({ recipeId: new Types.ObjectId(recipeId) })
       .populate('userId', 'name email')
-      .populate('ratingTagId')
       .sort({ createdAt: -1 })
       .lean();
   }
@@ -83,7 +74,6 @@ export class RecipeRatingsService {
 
     return await this.recipeRatingModel
       .find({ userId: new Types.ObjectId(userId) })
-      .populate('ratingTagId')
       .sort({ createdAt: -1 })
       .lean();
   }
@@ -101,14 +91,13 @@ export class RecipeRatingsService {
         userId: new Types.ObjectId(userId),
         recipeId: new Types.ObjectId(recipeId),
       })
-      .populate('ratingTagId')
       .lean();
   }
 
   async getRecipeRatingStats(recipeId: string): Promise<{
     totalRatings: number;
-    ratingBreakdown: Array<{ tagName: string; count: number; order: number }>;
-    averageRatingOrder: number;
+    averageRating: number;
+    ratingDistribution: { rating: number; count: number; percentage: number }[];
   }> {
     if (!isValidObjectId(recipeId)) {
       throw new BadRequestException(`Invalid recipe ID "${recipeId}"`);
@@ -116,41 +105,46 @@ export class RecipeRatingsService {
 
     const ratings = await this.recipeRatingModel
       .find({ recipeId: new Types.ObjectId(recipeId) })
-      .populate('ratingTagId')
       .lean();
 
-    const ratingBreakdown = ratings.reduce((acc, rating: any) => {
-      const tagName = rating.ratingTagId?.name || 'Unknown';
-      const tagOrder = rating.ratingTagId?.order || 0;
-      const existing = acc.find((item) => item.tagName === tagName);
-
-      if (existing) {
-        existing.count++;
-      } else {
-        acc.push({
-          tagName,
-          count: 1,
-          order: tagOrder,
-        });
-      }
-
-      return acc;
-    }, [] as Array<{ tagName: string; count: number; order: number }>);
-
-    // Sort by order descending
-    ratingBreakdown.sort((a, b) => b.order - a.order);
-
     const totalRatings = ratings.length;
-    const averageRatingOrder =
-      totalRatings > 0
-        ? ratings.reduce((sum, r: any) => sum + (r.ratingTagId?.order || 0), 0) /
-          totalRatings
-        : 0;
+
+    if (totalRatings === 0) {
+      return {
+        totalRatings: 0,
+        averageRating: 0,
+        ratingDistribution: [
+          { rating: 5, count: 0, percentage: 0 },
+          { rating: 4, count: 0, percentage: 0 },
+          { rating: 3, count: 0, percentage: 0 },
+          { rating: 2, count: 0, percentage: 0 },
+          { rating: 1, count: 0, percentage: 0 },
+        ],
+      };
+    }
+
+    // Calculate rating distribution
+    const distribution = ratings.reduce((acc, rating: any) => {
+      const ratingValue = rating.rating || 0;
+      acc[ratingValue] = (acc[ratingValue] || 0) + 1;
+      return acc;
+    }, {} as Record<number, number>);
+
+    // Create distribution array with percentages
+    const ratingDistribution = [5, 4, 3, 2, 1].map(rating => ({
+      rating,
+      count: distribution[rating] || 0,
+      percentage: Math.round(((distribution[rating] || 0) / totalRatings) * 100),
+    }));
+
+    // Calculate average rating
+    const sumRatings = ratings.reduce((sum, r: any) => sum + (r.rating || 0), 0);
+    const averageRating = Math.round((sumRatings / totalRatings) * 10) / 10; // Round to 1 decimal
 
     return {
       totalRatings,
-      ratingBreakdown,
-      averageRatingOrder,
+      averageRating,
+      ratingDistribution,
     };
   }
 
@@ -162,7 +156,6 @@ export class RecipeRatingsService {
     const recipeRating = await this.recipeRatingModel
       .findById(id)
       .populate('userId', 'name email')
-      .populate('ratingTagId')
       .lean();
 
     if (!recipeRating) {
@@ -192,19 +185,11 @@ export class RecipeRatingsService {
       throw new BadRequestException('You can only update your own ratings');
     }
 
-    // Verify rating tag if being updated
-    if (updateRecipeRatingDto.ratingTagId) {
-      const ratingTag = await this.ratingTagsService.findOne(
-        updateRecipeRatingDto.ratingTagId,
-      );
-
-      if (!ratingTag.isActive) {
-        throw new BadRequestException('Selected rating tag is not active');
+    // Validate rating if being updated
+    if (updateRecipeRatingDto.rating !== undefined) {
+      if (updateRecipeRatingDto.rating < 1 || updateRecipeRatingDto.rating > 5) {
+        throw new BadRequestException('Rating must be between 1 and 5');
       }
-
-      updateRecipeRatingDto.ratingTagId = new Types.ObjectId(
-        updateRecipeRatingDto.ratingTagId,
-      ) as any;
     }
 
     Object.assign(recipeRating, updateRecipeRatingDto);

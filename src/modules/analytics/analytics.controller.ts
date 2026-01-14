@@ -78,4 +78,10 @@ export class AnalyticsController {
   async getLeaderboardStats() {
     return this.analyticsService.getLeaderboardStats();
   }
+
+  @Get('recipe-rating-stats')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  async getRecipeRatingStats(@Query('framework_id') frameworkId: string) {
+    return this.analyticsService.getRecipeRatingStats(frameworkId);
+  }
 }

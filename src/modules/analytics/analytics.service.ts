@@ -473,4 +473,77 @@ export class AnalyticsService {
       topWeekly: weeklyLeaders.leaderboard.slice(0, 3),
     };
   }
+
+  /**
+   * Rating stats aggregated from Feedbacks (data.rating)
+   */
+  async getRecipeRatingStats(frameworkId: string): Promise<{
+    totalRatings: number;
+    averageRating: number;
+    ratingDistribution: { rating: number; count: number; percentage: number }[];
+  }> {
+    if (!frameworkId) {
+      return {
+        totalRatings: 0,
+        averageRating: 0,
+        ratingDistribution: [
+          { rating: 5, count: 0, percentage: 0 },
+          { rating: 4, count: 0, percentage: 0 },
+          { rating: 3, count: 0, percentage: 0 },
+          { rating: 2, count: 0, percentage: 0 },
+          { rating: 1, count: 0, percentage: 0 },
+        ],
+      };
+    }
+
+    const ratings = await this.feedbackModel
+      .find({
+        framework_id: frameworkId,
+        'data.rating': { $exists: true, $ne: null },
+      })
+      .select('data.rating')
+      .lean();
+
+    const totalRatings = ratings.length;
+    if (totalRatings === 0) {
+      return {
+        totalRatings: 0,
+        averageRating: 0,
+        ratingDistribution: [
+          { rating: 5, count: 0, percentage: 0 },
+          { rating: 4, count: 0, percentage: 0 },
+          { rating: 3, count: 0, percentage: 0 },
+          { rating: 2, count: 0, percentage: 0 },
+          { rating: 1, count: 0, percentage: 0 },
+        ],
+      };
+    }
+
+    const distribution: Record<number, number> = ratings.reduce(
+      (acc: Record<number, number>, r: any) => {
+        const v = Number(r?.data?.rating) || 0;
+        if (v >= 1 && v <= 5) acc[v] = (acc[v] || 0) + 1;
+        return acc;
+      },
+      {},
+    );
+
+    const ratingDistribution = [5, 4, 3, 2, 1].map(r => ({
+      rating: r,
+      count: distribution[r] || 0,
+      percentage: Math.round(((distribution[r] || 0) / totalRatings) * 100),
+    }));
+
+    const sumRatings = ratings.reduce(
+      (sum: number, r: any) => sum + (Number(r?.data?.rating) || 0),
+      0,
+    );
+    const averageRating = Math.round((sumRatings / totalRatings) * 10) / 10;
+
+    return {
+      totalRatings,
+      averageRating,
+      ratingDistribution,
+    };
+  }
 }

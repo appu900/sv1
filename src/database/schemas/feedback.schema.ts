@@ -17,6 +17,8 @@ export class Feedback {
     did_you_like_it?: boolean;
     food_saved?: number;
     meal_id?: string;
+    rating?: number; // 1-5 carrot rating
+    review?: string; // Optional text review
   };
 
   @Prop({ type: Date, default: Date.now })

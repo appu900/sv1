@@ -11,8 +11,8 @@ export class RecipeRating {
   @Prop({ type: Types.ObjectId, required: true, index: true })
   recipeId: Types.ObjectId;
 
-  @Prop({ type: Types.ObjectId, ref: 'RatingTag', required: true })
-  ratingTagId: Types.ObjectId;
+  @Prop({ type: Number, required: true, min: 1, max: 5 })
+  rating: number;
 
   @Prop({ type: String })
   review?: string;
