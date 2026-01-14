@@ -207,9 +207,7 @@ export class IngredientsService {
     if(cachedIngrediants) {
       console.log("cached hit for ingredinats:all")
       console.log(cachedIngrediants)
-      const newdata = JSON.parse(cachedIngrediants as string)
-      console.log("newdata", newdata)
-      return newdata
+      return cachedIngrediants;
     }
 
     this.logger.warn('Cache miss for Ingredients:all');
