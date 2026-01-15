@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
+import OpenAI from "openai";
 import {
   Ingredient,
   IngredientDocument,
@@ -12,17 +13,21 @@ import {
   UserFoodAnalyticalProfileDocument,
   UserFoodAnalyticsProfile,
 } from 'src/database/schemas/user.food.analyticsProfile.schema';
-
+import { User } from 'src/database/schemas/user.auth.schema';
 export interface FoodSavedEvent {
   userId: string;
   foodSavedInGrams: number;
   ingredinatIds: string[];
   timestamp: Date;
   frameworkId?: string;  // Recipe/framework that was cooked
+  totalPriceInINR?: number; // Total price saved in INR
 }
 
 @Injectable()
 export class AnalyticsService {
+   private readonly openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+  });
   constructor(
     @InjectModel(UserFoodAnalyticsProfile.name)
     private readonly userFoodAnallyticsProfileModel: Model<UserFoodAnalyticalProfileDocument>,
@@ -30,30 +35,97 @@ export class AnalyticsService {
     private readonly ingredinatModel: Model<IngredientDocument>,
     @InjectModel(Recipe.name)
     private readonly recipeModel: Model<RecipeDocument>,
-    @InjectModel(Feedback.name)
+    @InjectModel(User.name)
+    private readonly userModel: Model<User>,
+       @InjectModel(Feedback.name)
     private readonly feedbackModel: Model<FeedbackDocument>,
     private readonly eventEmmiter: EventEmitter2,
   ) {}
+async saveFood(userId: string, ingredinatIds: string[], frameworkId?: string) {
+  const ingredinats = await this.ingredinatModel.find({ _id: { $in: ingredinatIds } }).lean();
+  if (!ingredinats.length) throw new Error('No ingredients found');
 
-  async saveFood(userId: string, ingredinatIds: string[], frameworkId?: string) {
-    const ingredinats = await this.ingredinatModel
-      .find({ _id: { $in: ingredinatIds } })
-      .select('averageWeight')
-      .lean();
-    const foodSavedInGrams = ingredinats.reduce(
-      (sum, i) => sum + (i.averageWeight || 0),
-      0,
-    );
-    // ** update the user analytics profile
-    this.eventEmmiter.emit('food.saved', {
-      userId,
-      foodSavedInGrams,
-      ingredinatIds,
-      timestamp: new Date(),
-      frameworkId,
-    } as FoodSavedEvent);
-    return { sucess: true, foodsaved: foodSavedInGrams };
+  const foodSavedInGrams = ingredinats.reduce(
+    (sum, i) => sum + (i.averageWeight || 0),
+    0,
+  );
+
+  const user = await this.userModel.findOne({ _id: userId, role: "USER" }).lean();
+  if (!user) throw new Error('User not found');
+
+  const country = user.country || "India";
+  const ingredientNames = ingredinats.map(i => i.name).join(', ');
+
+  // Run AI price calculations in parallel
+  const aiResults = await Promise.all(
+    ingredinats.map(i =>
+      this.calculatePriceWithAI(i.name, i.averageWeight || 0, country)
+    )
+  );
+
+  // Extract total INR
+  const totalPriceInINR = aiResults.reduce(
+    (sum, r) => sum + (r.priceInINR || 0),
+    0
+  );
+
+  // Emit event
+  this.eventEmmiter.emit('food.saved', {
+    userId,
+    foodSavedInGrams,
+    ingredinatIds,
+    timestamp: new Date(),
+    frameworkId,
+    totalPriceInINR,
+  });
+
+  return {
+    success: true,
+    foodSavedInGrams,
+    ingredientNames,
+    country,
+    totalPriceInINR,
+    breakdown: aiResults,
+  };
+}
+
+//ai
+  async calculatePriceWithAI(ingredientName: string, weightInGrams: number, country: string) {
+    const response = await this.openai.chat.completions.create({
+      model: "gpt-4.1",
+      messages: [
+        {
+          role: "system",
+          content: `You are a helpful AI assistant. You will calculate the price of food ingredients based on country and weight that either in english hindi or any language you need to get it based on country what is that in any cases may be typo is there. You MUST respond ONLY in JSON strictly`
+        },
+        {
+          role: "user",
+          content: `
+Calculate or estimate the price of:
+- ingredient: ${ingredientName}
+- weight: ${weightInGrams} grams
+- country: ${country}
+
+Return strictly in JSON like:
+{
+  "ingredient": "...",
+  "weightInGrams": 0,
+  "country": "...",
+  "priceInINR": 0
+}
+Convert price to INR always.
+`
+        }
+      ],
+      temperature: 0.2
+    });
+
+    const message = response.choices[0]?.message?.content;
+    if (!message) throw new Error("AI returned no content");
+
+    return JSON.parse(message);
   }
+  
 
   async getUserCookedRecipes(userId: string) {
     const profile = await this.userFoodAnallyticsProfileModel

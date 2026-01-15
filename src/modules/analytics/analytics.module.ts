@@ -12,7 +12,7 @@ import { CommunityChallengeParticipant, CommunityChallengeParticipantSchema } fr
 import { Recipe, RecipeSchema } from 'src/database/schemas/recipe.schema';
 import { Feedback, FeedbackSchema } from 'src/database/schemas/feedback.schema';
 import { BadgesModule } from '../badges/badges.module';
-
+import { User,UserSchema } from 'src/database/schemas/user.auth.schema';
 @Global()
 @Module({
   imports: [
@@ -25,6 +25,7 @@ import { BadgesModule } from '../badges/badges.module';
       {name:CommunityChallengeParticipant.name,schema:CommunityChallengeParticipantSchema},
       {name:Recipe.name,schema:RecipeSchema},
       {name:Feedback.name,schema:FeedbackSchema},
+      {name:User.name,schema:UserSchema},
     ]),
     forwardRef(() => BadgesModule),
   ],

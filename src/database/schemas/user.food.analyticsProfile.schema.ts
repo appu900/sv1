@@ -17,6 +17,8 @@ export class UserFoodAnalyticsProfile{
 
     @Prop({default:[], type:[String]})
     cookedRecipes:string[]  
+    @Prop({default:0})
+    totalMoneySaved:number;
 }
 
 
