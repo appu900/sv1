@@ -2,8 +2,8 @@ import { IsArray, IsBoolean, IsNotEmpty, IsNumber, IsOptional, IsString } from '
 
 export class UserProfileDto {
   @IsString()
-  @IsNotEmpty()
-  vegType: string;
+  @IsOptional()
+  vegType?: string;
 
   @IsBoolean()
   @IsOptional()

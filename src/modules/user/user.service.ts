@@ -82,11 +82,9 @@ export class UserService {
       updateData.country = dto.country;
     }
 
-    const result = await this.userModel.findByIdAndUpdate(
-      userId,
-      { $set: updateData },
-      { new: true },
-    );
+    const result = await this.userModel
+      .findByIdAndUpdate(userId, { $set: updateData }, { new: true })
+      .lean();
     if (!result) {
       throw new BadRequestException('can not perform this operation');
     }
