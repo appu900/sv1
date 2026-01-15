@@ -5,7 +5,7 @@ export const options = {
   stages: [
     { duration: "1m", target: 50 },
     { duration: "1m", target: 250 },
-    { duration: "1m", target: 0 },
+    { duration: "1m", target: 350 },
   ],
   thresholds: {
     http_req_duration: ["p(90)<500", "p(95)<800", "p(99)<1200"],

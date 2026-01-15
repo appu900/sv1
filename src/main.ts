@@ -12,12 +12,29 @@ async function bootstrap() {
   app.useLogger(logger);
 
   app.setGlobalPrefix('api');
-  app.enableCors({
-    origin: ['http://localhost:3001', 'http://localhost:3000','https://crm.saveful.devsomeware.com'],
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-  });
+app.enableCors({
+  origin: (origin, callback) => {
+    // Allow mobile apps (no origin)
+    if (!origin) {
+      return callback(null, true);
+    }
+
+    const allowedOrigins = [
+      'http://localhost:3001',
+      'http://localhost:3000',
+      'https://crm.saveful.devsomeware.com',
+    ];
+
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    return callback(new Error('Not allowed by CORS'), false);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+});
 
   app.useGlobalPipes(new ValidationPipe({
     transform: true,
