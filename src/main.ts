@@ -14,16 +14,19 @@ async function bootstrap() {
   app.setGlobalPrefix('api');
 app.enableCors({
   origin: (origin, callback) => {
-    // Allow mobile apps (no origin)
-    if (!origin) {
-      return callback(null, true);
-    }
+    // Allow no origin (mobile, Postman)
+    if (!origin) return callback(null, true);
 
     const allowedOrigins = [
-      'http://localhost:3001',
       'http://localhost:3000',
+      'http://localhost:3001',
       'https://crm.saveful.devsomeware.com',
     ];
+
+    // Allow expo dev
+    if (origin.startsWith('exp://') || origin.startsWith('http://192.168.')) {
+      return callback(null, true);
+    }
 
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
@@ -32,8 +35,6 @@ app.enableCors({
     return callback(new Error('Not allowed by CORS'), false);
   },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
 });
 
   app.useGlobalPipes(new ValidationPipe({
