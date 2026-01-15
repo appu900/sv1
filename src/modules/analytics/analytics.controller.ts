@@ -13,9 +13,13 @@ export class AnalyticsController {
   @Post('')
   @UseGuards(JwtAuthGuard, RolesGuard)
   async saveFood(@Body() dto: SaveFoodDto, @GetUser() user: any) {
-    const userId = user.userId;
-    console.log("this is request body",dto)
-    return this.analyticsService.saveFood(userId, dto.ingredinatsIds, dto.frameworkId);
+    try {
+      const userId = user.userId;
+      const result = await this.analyticsService.saveFood(userId, dto.ingredinatsIds, dto.frameworkId, dto.ingredients);
+      return result;
+    } catch (error) {
+      throw error;
+    }
   }
 
   @Get('cooked-recipes')

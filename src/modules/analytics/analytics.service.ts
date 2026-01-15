@@ -14,6 +14,7 @@ import {
   UserFoodAnalyticsProfile,
 } from 'src/database/schemas/user.food.analyticsProfile.schema';
 import { User } from 'src/database/schemas/user.auth.schema';
+
 export interface FoodSavedEvent {
   userId: string;
   foodSavedInGrams: number;
@@ -21,6 +22,13 @@ export interface FoodSavedEvent {
   timestamp: Date;
   frameworkId?: string;  // Recipe/framework that was cooked
   totalPriceInINR?: number; // Total price saved in INR
+}
+
+export interface PriceCalculationResult {
+  ingredient: string;
+  weightInGrams: number;
+  country: string;
+  priceInINR: number;
 }
 
 @Injectable()
@@ -41,66 +49,83 @@ export class AnalyticsService {
     private readonly feedbackModel: Model<FeedbackDocument>,
     private readonly eventEmmiter: EventEmitter2,
   ) {}
-async saveFood(userId: string, ingredinatIds: string[], frameworkId?: string) {
-  const ingredinats = await this.ingredinatModel.find({ _id: { $in: ingredinatIds } }).lean();
-  if (!ingredinats.length) throw new Error('No ingredients found');
+async saveFood(userId: string, ingredinatIds: string[], frameworkId?: string, directIngredients?: { name: string; averageWeight: number }[]) {
+  try {
+    // Load user first
+    const user = await this.userModel.findOne({ _id: userId, role: "USER" }).lean();
+    if (!user) throw new Error('User not found');
+    const country = user.country || "India";
 
-  const foodSavedInGrams = ingredinats.reduce(
-    (sum, i) => sum + (i.averageWeight || 0),
-    0,
-  );
+    let ingredinats: Array<{ name: string; averageWeight: number }>; 
+    // Prefer DB lookup by IDs if provided
+    if (ingredinatIds && ingredinatIds.length > 0) {
+      const dbIngredients = await this.ingredinatModel.find({ _id: { $in: ingredinatIds } }).lean();
+      ingredinats = dbIngredients.map(i => ({ name: i.name, averageWeight: i.averageWeight || 0 }));
+    } else {
+      // Fallback to direct payload from client
+      ingredinats = (directIngredients || []).map(i => ({ name: i.name, averageWeight: i.averageWeight || 0 }));
+    }
 
-  const user = await this.userModel.findOne({ _id: userId, role: "USER" }).lean();
-  if (!user) throw new Error('User not found');
+    if (!ingredinats.length) throw new Error('No ingredients found');
 
-  const country = user.country || "India";
-  const ingredientNames = ingredinats.map(i => i.name).join(', ');
+    const foodSavedInGrams = ingredinats.reduce((sum, i) => sum + (i.averageWeight || 0), 0);
+    const ingredientNames = ingredinats.map(i => i.name).join(', ');
 
-  // Run AI price calculations in parallel
-  const aiResults = await Promise.all(
-    ingredinats.map(i =>
-      this.calculatePriceWithAI(i.name, i.averageWeight || 0, country)
-    )
-  );
+    // Run AI price calculations in parallel with error handling
+    let aiResults: PriceCalculationResult[] = [];
+    let totalPriceInINR: number = 0;
+    
+    try {
+      aiResults = await Promise.all(
+        ingredinats.map(i => this.calculatePriceWithAI(i.name, i.averageWeight || 0, country))
+      );
+      totalPriceInINR = aiResults.reduce((sum, r) => sum + (r.priceInINR || 0), 0);
+    } catch (aiError) {
+      // If AI fails, continue without price calculation
+      aiResults = ingredinats.map(i => ({
+        ingredient: i.name,
+        weightInGrams: i.averageWeight,
+        country,
+        priceInINR: 0
+      }));
+    }
 
-  // Extract total INR
-  const totalPriceInINR = aiResults.reduce(
-    (sum, r) => sum + (r.priceInINR || 0),
-    0
-  );
+    // Emit event to persist analytics
+    this.eventEmmiter.emit('food.saved', {
+      userId,
+      foodSavedInGrams,
+      ingredinatIds,
+      timestamp: new Date(),
+      frameworkId,
+      totalPriceInINR,
+    });
 
-  // Emit event
-  this.eventEmmiter.emit('food.saved', {
-    userId,
-    foodSavedInGrams,
-    ingredinatIds,
-    timestamp: new Date(),
-    frameworkId,
-    totalPriceInINR,
-  });
-
-  return {
-    success: true,
-    foodSavedInGrams,
-    ingredientNames,
-    country,
-    totalPriceInINR,
-    breakdown: aiResults,
-  };
+    return {
+      success: true,
+      foodSavedInGrams,
+      ingredientNames,
+      country,
+      totalPriceInINR,
+      breakdown: aiResults,
+    };
+  } catch (error) {
+    throw error;
+  }
 }
 
 //ai
-  async calculatePriceWithAI(ingredientName: string, weightInGrams: number, country: string) {
-    const response = await this.openai.chat.completions.create({
-      model: "gpt-4.1",
-      messages: [
-        {
-          role: "system",
-          content: `You are a helpful AI assistant. You will calculate the price of food ingredients based on country and weight that either in english hindi or any language you need to get it based on country what is that in any cases may be typo is there. You MUST respond ONLY in JSON strictly`
-        },
-        {
-          role: "user",
-          content: `
+  async calculatePriceWithAI(ingredientName: string, weightInGrams: number, country: string): Promise<PriceCalculationResult> {
+    try {
+      const response = await this.openai.chat.completions.create({
+        model: "gpt-4.1",
+        messages: [
+          {
+            role: "system",
+            content: `You are a helpful AI assistant. You will calculate the price of food ingredients based on country and weight that either in english hindi or any language you need to get it based on country what is that in any cases may be typo is there. You MUST respond ONLY in JSON strictly`
+          },
+          {
+            role: "user",
+            content: `
 Calculate or estimate the price of:
 - ingredient: ${ingredientName}
 - weight: ${weightInGrams} grams
@@ -115,15 +140,31 @@ Return strictly in JSON like:
 }
 Convert price to INR always.
 `
-        }
-      ],
-      temperature: 0.2
-    });
+          }
+        ],
+        temperature: 0.2
+      });
 
-    const message = response.choices[0]?.message?.content;
-    if (!message) throw new Error("AI returned no content");
-
-    return JSON.parse(message);
+      const message = response.choices[0]?.message?.content;
+      if (!message) {
+        throw new Error("AI returned no content");
+      }
+      
+      try {
+        const parsed = JSON.parse(message);
+        return parsed;
+      } catch (parseError) {
+        throw new Error(`Failed to parse AI response: ${parseError.message}`);
+      }
+    } catch (error) {
+      // Return default values if AI fails to prevent app crash
+      return {
+        ingredient: ingredientName,
+        weightInGrams,
+        country,
+        priceInINR: 0
+      };
+    }
   }
   
 
@@ -190,13 +231,16 @@ Convert price to INR always.
 
     // Convert grams to kg for display
     const foodSavedInKg = (profile.foodSavedInGrams || 0) / 1000;
+    const totalMoneySaved = Number(profile.totalMoneySaved || 0);
     
     return {
       food_savings_user: foodSavedInKg.toFixed(2),
       completed_meals_count: profile.numberOfMealsCooked || 0,
       best_food_savings: null, // TODO: Track best savings
       total_co2_savings: null, // TODO: Calculate CO2 savings
-      total_cost_savings: null, // TODO: Calculate cost savings
+      // Return the accumulated money saved for the user.
+      // Amount is computed based on the user's country during saveFood.
+      total_cost_savings: totalMoneySaved.toFixed(2),
       best_co2_savings: null,
       best_cost_savings: null,
     };
