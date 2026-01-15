@@ -67,6 +67,12 @@ export class AuthService {
       user.role,
       sessionId,
     );
+    
+    // Generate refresh token
+    const refreshToken = this.jwt.sign(
+      { sub: user._id.toString(), sid: sessionId, role: user.role, type: 'refresh' },
+      { expiresIn: '7d' }
+    );
 
     // ** create user foodanalytics profile
 
@@ -76,6 +82,7 @@ export class AuthService {
       success: true,
       message: 'user created sucessfully',
       accessToken,
+      refreshToken,
       user: {
         id: user._id.toString(),
         email: user.email,
@@ -105,10 +112,18 @@ export class AuthService {
       user.role,
       sessionId,
     );
+    
+    // Generate refresh token (same as access token but stored separately)
+    const refreshToken = this.jwt.sign(
+      { sub: user._id.toString(), sid: sessionId, role: user.role, type: 'refresh' },
+      { expiresIn: '7d' }
+    );
+    
     return {
       success: true,
       message: 'login sucessful',
       accessToken,
+      refreshToken,
       user: {
         id: user._id.toString(),
         email: user.email,
@@ -116,6 +131,56 @@ export class AuthService {
         role: user.role,
       },
     };
+  }
+
+  async refreshToken(refreshToken: string) {
+    if (!refreshToken) {
+      throw new UnauthorizedException('Refresh token required');
+    }
+
+    try {
+      // Verify the refresh token
+      const payload = this.jwt.verify(refreshToken);
+      
+      if (payload.type !== 'refresh') {
+        throw new UnauthorizedException('Invalid token type');
+      }
+
+      // Check if session is still valid in Redis
+      const userId = await this.redis.getSession(payload.sid);
+      if (!userId) {
+        throw new UnauthorizedException('Session expired');
+      }
+
+      // Get user to ensure they still exist
+      const user = await this.userService.findById(payload.sub);
+      if (!user) {
+        throw new UnauthorizedException('User not found');
+      }
+
+      // Generate new tokens
+      const newSessionId = nanoid();
+      await this.redis.setSession(newSessionId, user._id.toString(), 60 * 60 * 24 * 7);
+      
+      const newAccessToken = this.generateAccessToken(
+        user._id.toString(),
+        user.role,
+        newSessionId,
+      );
+      
+      const newRefreshToken = this.jwt.sign(
+        { sub: user._id.toString(), sid: newSessionId, role: user.role, type: 'refresh' },
+        { expiresIn: '7d' }
+      );
+
+      return {
+        success: true,
+        accessToken: newAccessToken,
+        refreshToken: newRefreshToken,
+      };
+    } catch (error) {
+      throw new UnauthorizedException('Invalid or expired refresh token');
+    }
   }
 
   async loginWithRole(dto: UserLoginDto, requiredRole: UserRole) {
@@ -161,6 +226,32 @@ export class AuthService {
       throw new BadRequestException('invalid userId');
     const user = await this.userService.findById(userId);
     if (!user) throw new UnauthorizedException();
-    return user;
+    
+    // Transform user data to match app expectations
+    // Support both flat fields and nested dietaryProfile
+    return {
+      id: user._id.toString(),
+      _id: user._id, // Keep MongoDB ID for backward compatibility
+      email: user.email,
+      name: user.name,
+      first_name: user.name, // App expects first_name
+      role: user.role,
+      country: user.country,
+      stateCode: user.stateCode,
+      
+      // Flatten dietary profile for easier access
+      vegType: user.dietaryProfile?.vegType || 'OMNI',
+      dairyFree: user.dietaryProfile?.dairyFree || false,
+      nutFree: user.dietaryProfile?.nutFree || false,
+      glutenFree: user.dietaryProfile?.glutenFree || false,
+      hasDiabetes: user.dietaryProfile?.hasDiabetes || false,
+      otherAllergies: user.dietaryProfile?.otherAllergies || [],
+      noOfAdults: user.dietaryProfile?.noOfAdults,
+      noOfChildren: user.dietaryProfile?.noOfChildren,
+      tastePreference: user.dietaryProfile?.tastePrefrence || [],
+      
+      // Keep nested structure for backward compatibility
+      dietaryProfile: user.dietaryProfile,
+    };
   }
 }
