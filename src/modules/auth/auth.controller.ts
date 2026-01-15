@@ -35,6 +35,11 @@ export class AuthController {
     return this.authservice.login(dto);
   }
 
+  @Post('refresh')
+  async refreshToken(@Body('refreshToken') refreshToken: string) {
+    return this.authservice.refreshToken(refreshToken);
+  }
+
   @Post('admin/login')
   async adminLogin(@Body('') dto: UserLoginDto) {
     return this.authservice.loginWithRole(dto, UserRole.ADMIN);
