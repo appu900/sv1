@@ -15,6 +15,8 @@ import {
   Ingredient,
   IngredientDocument,
 } from 'src/database/schemas/ingredient.schema';
+import { User, UserDocument } from 'src/database/schemas/user.auth.schema';
+import { Recipe, RecipeDocument } from 'src/database/schemas/recipe.schema';
 
 @Injectable()
 export class FeedbackService {
@@ -23,6 +25,10 @@ export class FeedbackService {
     private readonly feedbackModel: Model<FeedbackDocument>,
     @InjectModel(Ingredient.name)
     private readonly ingredientModel: Model<IngredientDocument>,
+    @InjectModel(User.name)
+    private readonly userModel: Model<UserDocument>,
+    @InjectModel(Recipe.name)
+    private readonly recipeModel: Model<RecipeDocument>,
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
@@ -36,6 +42,52 @@ export class FeedbackService {
       throw new BadRequestException('Invalid user ID');
     }
 
+    // Check if feedback already exists for this user and meal_id (unique cooking session)
+    // Previously checked framework_id which caused duplicate cooking sessions to update instead of create
+    const existingFeedback = await this.feedbackModel.findOne({
+      userId: new Types.ObjectId(userId),
+      'data.meal_id': createFeedbackDto.data?.meal_id,
+    });
+
+    if (existingFeedback) {
+      console.log('[FeedbackService] Found existing feedback, updating instead of creating new');
+      
+      // Update existing feedback
+      existingFeedback.prompted = createFeedbackDto.prompted || existingFeedback.prompted;
+      existingFeedback.data = {
+        ...existingFeedback.data,
+        ...createFeedbackDto.data,
+      };
+      existingFeedback.markModified('data');
+      existingFeedback.updatedAt = new Date();
+      
+      await existingFeedback.save();
+      
+      console.log('[FeedbackService] Feedback updated with data:', JSON.stringify(existingFeedback.data));
+
+      // Emit food.saved event if food_saved is provided and differs
+      // Check if this is a prompted:false submission (initial cook completion)
+      if (!createFeedbackDto.prompted && createFeedbackDto.data?.food_saved !== undefined) {
+        const previousFoodSaved = existingFeedback.data?.food_saved || 0;
+        const newFoodSaved = createFeedbackDto.data.food_saved;
+        const difference = newFoodSaved - previousFoodSaved;
+
+        // Emit event with the difference to avoid double-counting
+        if (difference !== 0) {
+          this.eventEmitter.emit('food.saved', {
+            userId,
+            foodSavedInGrams: difference * 1000,
+            ingredinatIds: [],
+            timestamp: new Date(),
+            frameworkId: createFeedbackDto.framework_id,
+          } as FoodSavedEvent);
+        }
+      }
+
+      return { feedback: existingFeedback };
+    }
+
+    // Create new feedback if none exists
     const feedback = await this.feedbackModel.create({
       userId: new Types.ObjectId(userId),
       framework_id: createFeedbackDto.framework_id,
@@ -48,7 +100,12 @@ export class FeedbackService {
     // Emit food.saved event ONLY when user initially completes cooking (prompted: false)
     // This ensures analytics are tracked when user finishes in MakeItSurveyModal
     // For PostMakeScreen surveys (prompted: true), analytics are tracked separately via saveFoodAnalytics
-    if (!createFeedbackDto.prompted && createFeedbackDto.data?.food_saved) {
+    if (!createFeedbackDto.prompted && createFeedbackDto.data?.food_saved !== undefined) {
+      console.log('[FeedbackService] Emitting food.saved event:', {
+        userId,
+        foodSavedInGrams: createFeedbackDto.data.food_saved * 1000,
+        frameworkId: createFeedbackDto.framework_id,
+      });
       this.eventEmitter.emit('food.saved', {
         userId,
         foodSavedInGrams: createFeedbackDto.data.food_saved * 1000, // Convert kg to grams
@@ -56,6 +113,8 @@ export class FeedbackService {
         timestamp: new Date(),
         frameworkId: createFeedbackDto.framework_id,
       } as FoodSavedEvent);
+    } else {
+      console.log('[FeedbackService] NOT emitting food.saved event. prompted:', createFeedbackDto.prompted, 'food_saved:', createFeedbackDto.data?.food_saved);
     }
 
     return { feedback };
@@ -189,6 +248,24 @@ export class FeedbackService {
     return { message: 'Feedback deleted successfully' };
   }
 
+  async adminDelete(feedbackId: string) {
+    if (!Types.ObjectId.isValid(feedbackId)) {
+      throw new BadRequestException('Invalid feedback ID');
+    }
+
+    const feedback = await this.feedbackModel.findById(
+      new Types.ObjectId(feedbackId),
+    );
+
+    if (!feedback) {
+      throw new NotFoundException('Feedback not found');
+    }
+
+    await this.feedbackModel.deleteOne({ _id: new Types.ObjectId(feedbackId) });
+
+    return { message: 'Feedback deleted successfully' };
+  }
+
   async getStats(userId: string) {
     if (!Types.ObjectId.isValid(userId)) {
       throw new BadRequestException('Invalid user ID');
@@ -209,6 +286,101 @@ export class FeedbackService {
         total_feedbacks: totalFeedbacks,
         total_food_saved: totalFoodSaved,
       },
+    };
+  }
+
+  // Admin methods
+  async getAllFeedbacksWithDetails() {
+    const feedbacks = await this.feedbackModel
+      .find()
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // Populate user and recipe details
+    const feedbacksWithDetails = await Promise.all(
+      feedbacks.map(async (feedback) => {
+        const user = await this.userModel
+          .findById(feedback.userId)
+          .select('name email')
+          .lean();
+        
+        const recipe = await this.recipeModel
+          .findById(feedback.framework_id)
+          .select('title heroImageUrl')
+          .lean();
+
+        return {
+          ...feedback,
+          user: user ? { name: user.name, email: user.email } : null,
+          recipe: recipe ? { title: recipe.title, heroImageUrl: recipe.heroImageUrl } : null,
+        };
+      }),
+    );
+
+    return { feedbacks: feedbacksWithDetails };
+  }
+
+  async getFeedbacksByRecipe(recipeId: string) {
+    if (!Types.ObjectId.isValid(recipeId)) {
+      throw new BadRequestException('Invalid recipe ID');
+    }
+
+    const feedbacks = await this.feedbackModel
+      .find({ framework_id: recipeId })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // Populate user and recipe details
+    const feedbacksWithDetails = await Promise.all(
+      feedbacks.map(async (feedback) => {
+        const user = await this.userModel
+          .findById(feedback.userId)
+          .select('name email')
+          .lean();
+        
+        const recipe = await this.recipeModel
+          .findById(feedback.framework_id)
+          .select('title heroImageUrl')
+          .lean();
+
+        return {
+          ...feedback,
+          user: user ? { name: user.name, email: user.email } : null,
+          recipe: recipe ? { title: recipe.title, heroImageUrl: recipe.heroImageUrl } : null,
+        };
+      }),
+    );
+
+    return { feedbacks: feedbacksWithDetails };
+  }
+
+  async getAdminStats() {
+    const allFeedbacks = await this.feedbackModel.find().lean();
+
+    const totalFeedbacks = allFeedbacks.length;
+    const withRatings = allFeedbacks.filter((f) => f.data?.rating).length;
+    const withReviews = allFeedbacks.filter((f) => f.data?.review && f.data.review.trim().length > 0).length;
+    
+    const ratings = allFeedbacks
+      .map((f) => f.data?.rating)
+      .filter((r) => r !== undefined && r !== null);
+    
+    const averageRating = ratings.length > 0 
+      ? ratings.reduce((sum, r) => sum + r, 0) / ratings.length 
+      : 0;
+
+    // Calculate rating distribution
+    const ratingDistribution = [1, 2, 3, 4, 5].map((rating) => ({
+      rating,
+      count: allFeedbacks.filter((f) => f.data?.rating === rating).length,
+    }));
+
+    return {
+      totalFeedbacks,
+      withRatings,
+      withReviews,
+      averageRating: Math.round(averageRating * 10) / 10,
+      ratingDistribution,
     };
   }
 }

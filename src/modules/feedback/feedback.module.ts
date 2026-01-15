@@ -7,12 +7,16 @@ import {
   Ingredient,
   IngredientSchema,
 } from 'src/database/schemas/ingredient.schema';
+import { User, UserSchema } from 'src/database/schemas/user.auth.schema';
+import { Recipe, RecipeSchema } from 'src/database/schemas/recipe.schema';
 
 @Module({
   imports: [
     MongooseModule.forFeature([
       { name: Feedback.name, schema: FeedbackSchema },
       { name: Ingredient.name, schema: IngredientSchema },
+      { name: User.name, schema: UserSchema },
+      { name: Recipe.name, schema: RecipeSchema },
     ]),
   ],
   controllers: [FeedbackController],
