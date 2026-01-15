@@ -157,7 +157,6 @@ Convert price to INR always.
         throw new Error(`Failed to parse AI response: ${parseError.message}`);
       }
     } catch (error) {
-      // Return default values if AI fails to prevent app crash
       return {
         ingredient: ingredientName,
         weightInGrams,
@@ -462,6 +461,7 @@ Convert price to INR always.
           numberOfMealsCooked: 1,
           foodSavedInGrams: 1,
           foodSavedInKg: { $divide: ['$foodSavedInGrams', 1000] },
+          totalMoneySaved: 1,
           badgeCount: { $size: '$badges' },
           combinedScore: 1,
           updatedAt: 1,
@@ -484,6 +484,7 @@ Convert price to INR always.
       ...entry,
       rank: offset + index + 1,
       foodSavedInKg: Number(entry.foodSavedInKg.toFixed(2)),
+      totalMoneySaved: Number((entry.totalMoneySaved || 0).toFixed(2)),
     }));
 
     return {
@@ -558,9 +559,7 @@ Convert price to INR always.
     };
   }
 
-  /**
-   * Get leaderboard stats summary
-   */
+  
   async getLeaderboardStats() {
     const [allTimeLeaders, monthlyLeaders, weeklyLeaders, totalActiveUsers] =
       await Promise.all([
