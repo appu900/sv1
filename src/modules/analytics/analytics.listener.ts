@@ -64,6 +64,9 @@ export class AnalyticsListner {
         updateOperation.$addToSet = {
           cookedRecipes: event.frameworkId,
         };
+        this.logger.log(`[AnalyticsListener] Adding frameworkId to cookedRecipes: ${event.frameworkId}`);
+      } else {
+        this.logger.warn('[AnalyticsListener] No frameworkId provided in event');
       }
 
       this.logger.log(`[AnalyticsListener] Updating profile with:`, JSON.stringify(updateOperation));

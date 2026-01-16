@@ -6,7 +6,7 @@ export class UserBadge {
   @Prop({ type: Types.ObjectId, ref: 'User', required: true, index: true })
   userId: Types.ObjectId;
 
-  @Prop({ type: Types.ObjectId, ref: 'Badge', required: true, index: true })
+  @Prop({ type: Types.ObjectId, ref: 'Badge', required: true })
   badgeId: Types.ObjectId;
 
   @Prop({ type: Date, default: Date.now })

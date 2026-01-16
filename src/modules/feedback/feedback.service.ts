@@ -64,26 +64,6 @@ export class FeedbackService {
       await existingFeedback.save();
       
       console.log('[FeedbackService] Feedback updated with data:', JSON.stringify(existingFeedback.data));
-
-      // Emit food.saved event if food_saved is provided and differs
-      // Check if this is a prompted:false submission (initial cook completion)
-      if (!createFeedbackDto.prompted && createFeedbackDto.data?.food_saved !== undefined) {
-        const previousFoodSaved = existingFeedback.data?.food_saved || 0;
-        const newFoodSaved = createFeedbackDto.data.food_saved;
-        const difference = newFoodSaved - previousFoodSaved;
-
-        // Emit event with the difference to avoid double-counting
-        if (difference !== 0) {
-          this.eventEmitter.emit('food.saved', {
-            userId,
-            foodSavedInGrams: difference * 1000,
-            ingredinatIds: [],
-            timestamp: new Date(),
-            frameworkId: createFeedbackDto.framework_id,
-          } as FoodSavedEvent);
-        }
-      }
-
       return { feedback: existingFeedback };
     }
 
@@ -97,25 +77,6 @@ export class FeedbackService {
 
     console.log('[FeedbackService] Feedback created with data:', JSON.stringify(feedback.data));
 
-    // Emit food.saved event ONLY when user initially completes cooking (prompted: false)
-    // This ensures analytics are tracked when user finishes in MakeItSurveyModal
-    // For PostMakeScreen surveys (prompted: true), analytics are tracked separately via saveFoodAnalytics
-    if (!createFeedbackDto.prompted && createFeedbackDto.data?.food_saved !== undefined) {
-      console.log('[FeedbackService] Emitting food.saved event:', {
-        userId,
-        foodSavedInGrams: createFeedbackDto.data.food_saved * 1000,
-        frameworkId: createFeedbackDto.framework_id,
-      });
-      this.eventEmitter.emit('food.saved', {
-        userId,
-        foodSavedInGrams: createFeedbackDto.data.food_saved * 1000, // Convert kg to grams
-        ingredinatIds: [],
-        timestamp: new Date(),
-        frameworkId: createFeedbackDto.framework_id,
-      } as FoodSavedEvent);
-    } else {
-      console.log('[FeedbackService] NOT emitting food.saved event. prompted:', createFeedbackDto.prompted, 'food_saved:', createFeedbackDto.data?.food_saved);
-    }
 
     return { feedback };
   }
@@ -195,26 +156,11 @@ export class FeedbackService {
         ...updateFeedbackDto.data,
       };
       
-      // Mark the data field as modified for Mongoose to persist nested changes
       feedback.markModified('data');
 
       console.log('[FeedbackService] Updated feedback data:', JSON.stringify(feedback.data));
 
-      if (updateFeedbackDto.data.food_saved !== undefined) {
-        const previousFoodSaved = feedback.data.food_saved || 0;
-        const newFoodSaved = updateFeedbackDto.data.food_saved;
-        const difference = newFoodSaved - previousFoodSaved;
-
-        if (difference !== 0) {
-          this.eventEmitter.emit('food.saved', {
-            userId,
-            foodSavedInGrams: difference * 1000, 
-            ingredinatIds: [],
-            timestamp: new Date(),
-            frameworkId: feedback.framework_id,
-          } as FoodSavedEvent);
-        }
-      }
+    
     }
 
     feedback.updatedAt = new Date();

@@ -111,7 +111,7 @@ export class RecipeComponentWrapper {
 
 @Schema({ timestamps: true })
 export class Recipe {
-  @Prop({ required: true, index: true })
+  @Prop({ required: true })
   title: string;
 
   @Prop({ required: true })
@@ -141,7 +141,6 @@ export class Recipe {
   @Prop({
     type: [{ type: Types.ObjectId, ref: 'Hackscategory' }],
     required: true,
-    index: true,
   })
   frameworkCategories: Types.ObjectId[]; 
 
@@ -164,7 +163,7 @@ export class Recipe {
   @Prop({ default: 0 })
   order?: number;
 
-  @Prop({ default: true, index: true })
+  @Prop({ default: true })
   isActive: boolean;
 }
 

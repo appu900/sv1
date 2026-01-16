@@ -20,6 +20,5 @@ export type FrameworkCategoryDocument = FrameworkCategory & Document;
 export const FrameworkCategorySchema =
   SchemaFactory.createForClass(FrameworkCategory);
 
-FrameworkCategorySchema.index({ title: 1 });
 FrameworkCategorySchema.index({ isActive: 1 });
 FrameworkCategorySchema.index({ order: 1 });

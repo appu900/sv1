@@ -27,13 +27,13 @@ export enum Month {
 
 @Schema({ timestamps: true })
 export class Ingredient {
-  @Prop({ required: true, index: true })
+  @Prop({ required: true })
   name: string;
 
   @Prop({ required: true })
   averageWeight: number; 
 
-  @Prop({ type: Types.ObjectId, ref: 'IngredientsCategory', required: true, index: true })
+  @Prop({ type: Types.ObjectId, ref: 'IngredientsCategory', required: true })
   categoryId: Types.ObjectId;
 
   @Prop({ type: [{ type: Types.ObjectId, ref: 'DietCategory' }], default: [] })
