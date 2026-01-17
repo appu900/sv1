@@ -5,11 +5,32 @@ import {
   IsOptional,
   IsBoolean,
   IsUrl,
+  IsArray,
+  IsDateString,
+  ValidateNested,
   Min,
 } from 'class-validator';
 
-import { Type } from 'class-transformer';
-import { BadgeCategory, MilestoneType } from '../../../database/schemas/badge.schema';
+import { Type, Transform } from 'class-transformer';
+import { BadgeCategory, MilestoneType, MetricType } from '../../../database/schemas/badge.schema';
+
+class SponsorMetadataDto {
+  @IsOptional()
+  @IsString()
+  campaignId?: string;
+
+  @IsOptional()
+  @IsString()
+  redemptionCode?: string;
+
+  @IsOptional()
+  @IsUrl()
+  sponsorLink?: string;
+
+  @IsOptional()
+  @IsString()
+  termsAndConditions?: string;
+}
 
 export class CreateBadgeDto {
   @IsString()
@@ -36,6 +57,10 @@ export class CreateBadgeDto {
   milestoneThreshold?: number;
 
   @IsOptional()
+  @IsEnum(MetricType)
+  metricType?: MetricType;
+
+  @IsOptional()
   @Type(() => Number)
   @IsNumber()
   @Min(0)
@@ -50,7 +75,47 @@ export class CreateBadgeDto {
   challengeId?: string;
 
   @IsOptional()
-  @Type(() => Boolean)
+  @Transform(({ value }) => {
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+    return Boolean(value);
+  })
   @IsBoolean()
   isActive?: boolean;
+
+  // Sponsor Badge Fields
+  @IsOptional()
+  @Transform(({ value }) => {
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+    return Boolean(value);
+  })
+  @IsBoolean()
+  isSponsorBadge?: boolean;
+
+  @IsOptional()
+  @IsString()
+  sponsorName?: string;
+
+  @IsOptional()
+  @IsUrl()
+  sponsorLogoUrl?: string;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  sponsorCountries?: string[]; // ISO country codes like ["AU", "IN", "NZ"]
+
+  @IsOptional()
+  @IsDateString()
+  sponsorValidFrom?: string;
+
+  @IsOptional()
+  @IsDateString()
+  sponsorValidUntil?: string;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => SponsorMetadataDto)
+  sponsorMetadata?: SponsorMetadataDto;
 }

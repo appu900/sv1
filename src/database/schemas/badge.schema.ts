@@ -2,29 +2,73 @@ import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document } from 'mongoose';
 
 export enum BadgeCategory {
-  MILESTONE = 'MILESTONE',
-  CHALLENGE_WINNER = 'CHALLENGE_WINNER',
-  SPECIAL = 'SPECIAL',
+  ONBOARDING = 'ONBOARDING',
+  USAGE = 'USAGE',
+  COOKING = 'COOKING',
+  MONEY_SAVED = 'MONEY_SAVED',
+  FOOD_SAVED = 'FOOD_SAVED',
+  PLANNING = 'PLANNING',
+  BONUS = 'BONUS',
+  SPONSOR = 'SPONSOR', 
+  CHALLENGE_WINNER = 'CHALLENGE_WINNER', 
+  SPECIAL = 'SPECIAL', 
 }
 
 export enum MilestoneType {
-  TOTAL_MEALS_COOKED = 'TOTAL_MEALS_COOKED',
-  TOTAL_FOOD_SAVED = 'TOTAL_FOOD_SAVED',
-  MONTHLY_MEALS_COOKED = 'MONTHLY_MEALS_COOKED',
-  YEARLY_MEALS_COOKED = 'YEARLY_MEALS_COOKED',
-  MONTHLY_FOOD_SAVED = 'MONTHLY_FOOD_SAVED',
-  YEARLY_FOOD_SAVED = 'YEARLY_FOOD_SAVED',
+
+  FIRST_RECIPE_COOKED = 'FIRST_RECIPE_COOKED', 
+  
+  TOTAL_APP_SESSIONS_3 = 'TOTAL_APP_SESSIONS_3', 
+  TOTAL_APP_SESSIONS_7 = 'TOTAL_APP_SESSIONS_7', 
+  TOTAL_APP_SESSIONS_20 = 'TOTAL_APP_SESSIONS_20',
+  TOTAL_APP_SESSIONS_50 = 'TOTAL_APP_SESSIONS_50', 
+  
+  RECIPES_COOKED_5 = 'RECIPES_COOKED_5', 
+  RECIPES_COOKED_10 = 'RECIPES_COOKED_10',
+  RECIPES_COOKED_25 = 'RECIPES_COOKED_25', 
+  RECIPES_COOKED_50 = 'RECIPES_COOKED_50', 
+  
+  MONEY_SAVED_25 = 'MONEY_SAVED_25', 
+  MONEY_SAVED_50 = 'MONEY_SAVED_50', 
+  MONEY_SAVED_100 = 'MONEY_SAVED_100', 
+  MONEY_SAVED_250 = 'MONEY_SAVED_250', 
+  MONEY_SAVED_500 = 'MONEY_SAVED_500', 
+  
+  FIRST_FOOD_SAVED = 'FIRST_FOOD_SAVED', 
+  FOOD_SAVED_5KG = 'FOOD_SAVED_5KG', 
+  FOOD_SAVED_10KG = 'FOOD_SAVED_10KG',
+  FOOD_SAVED_15KG = 'FOOD_SAVED_15KG',
+  FOOD_SAVED_20KG = 'FOOD_SAVED_20KG',
+  
+  SHOPPING_LIST_1 = 'SHOPPING_LIST_1', 
+  SHOPPING_LIST_5 = 'SHOPPING_LIST_5', 
+  SHOPPING_LIST_10 = 'SHOPPING_LIST_10', 
+  SHOPPING_LIST_25 = 'SHOPPING_LIST_25', 
+  
+  
+  WEEKDAY_MEALS_5 = 'WEEKDAY_MEALS_5', 
+  
   COOKING_STREAK = 'COOKING_STREAK',
   CHALLENGE_PARTICIPATION = 'CHALLENGE_PARTICIPATION',
+}
+
+export enum MetricType {
+  RECIPES_COOKED = 'RECIPES_COOKED',
+  APP_SESSIONS = 'APP_SESSIONS',
+  MONEY_SAVED_CUMULATIVE = 'MONEY_SAVED_CUMULATIVE',
+  FOOD_WEIGHT_SAVED = 'FOOD_WEIGHT_SAVED',
+  SHOPPING_LISTS_CREATED = 'SHOPPING_LISTS_CREATED',
+  WEEKDAY_MEALS_COOKED = 'WEEKDAY_MEALS_COOKED',
+  FIRST_EVENT = 'FIRST_EVENT',
 }
 
 @Schema({ timestamps: true })
 export class Badge {
   @Prop({ required: true, trim: true })
-  name: string;
+  name: string; 
 
   @Prop({ required: true, trim: true })
-  description: string;
+  description: string; 
 
   @Prop({ required: true })
   imageUrl: string;
@@ -45,7 +89,14 @@ export class Badge {
   milestoneType?: MilestoneType;
 
   @Prop({ type: Number })
-  milestoneThreshold?: number;
+  milestoneThreshold?: number; 
+
+  @Prop({
+    type: String,
+    enum: MetricType,
+    required: false,
+  })
+  metricType?: MetricType;
 
   @Prop({ default: true, index: true })
   isActive: boolean;
@@ -54,19 +105,47 @@ export class Badge {
   rarityScore: number; 
 
   @Prop({ type: String })
-  iconColor?: string; 
+  iconColor?: string;
 
   @Prop({ default: false })
   isDeleted: boolean;
 
   @Prop({ type: String })
   challengeId?: string;
+  
+  @Prop({ default: false })
+  isSponsorBadge: boolean;
+  
+  @Prop({ type: String })
+  sponsorName?: string; 
+  
+  @Prop({ type: String })
+  sponsorLogoUrl?: string;
+  
+  @Prop({ type: [String], default: [] })
+  sponsorCountries?: string[]; 
+  
+  @Prop({ type: Date })
+  sponsorValidFrom?: Date;
+  
+  @Prop({ type: Date })
+  sponsorValidUntil?: Date;
+  
+  @Prop({ type: Object })
+  sponsorMetadata?: {
+    campaignId?: string;
+    redemptionCode?: string;
+    sponsorLink?: string;
+    termsAndConditions?: string;
+  };
 }
 
 export type BadgeDocument = Badge & Document;
 export const BadgeSchema = SchemaFactory.createForClass(Badge);
 
-// Indexes for efficient queries
 BadgeSchema.index({ category: 1, isActive: 1 });
 BadgeSchema.index({ milestoneType: 1 });
+BadgeSchema.index({ metricType: 1 });
 BadgeSchema.index({ challengeId: 1 });
+BadgeSchema.index({ isSponsorBadge: 1, sponsorCountries: 1 });
+BadgeSchema.index({ milestoneThreshold: 1 });

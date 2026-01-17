@@ -24,6 +24,9 @@ export class UserBadge {
     period?: string; // e.g., "2024-01", "2024-Q1"
     rank?: number; // For leaderboard position
     totalParticipants?: number;
+    metricType?: string; // Type of metric achieved
+    userCountry?: string; // Country code for sponsor badges
+    sponsorCampaignId?: string; // Sponsor campaign tracking
   };
 
   @Prop({ default: false })
@@ -31,6 +34,9 @@ export class UserBadge {
 
   @Prop({ default: false })
   isViewed: boolean; // Track if user has seen this badge
+  
+  @Prop({ default: false })
+  isFeatured: boolean; // Highlight special badges in UI
 }
 
 export type UserBadgeDocument = UserBadge & Document;

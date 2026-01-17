@@ -9,6 +9,7 @@ import {
   UseGuards,
   UseInterceptors,
   UploadedFile,
+  UploadedFiles,
   Query,
 } from '@nestjs/common';
 import { BadgesService } from './badges.service';
@@ -20,7 +21,7 @@ import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/role.decorators';
 import { UserRole } from '../../database/schemas/user.auth.schema';
 import { GetUser } from '../../common/decorators/Get.user.decorator';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { FileInterceptor, FilesInterceptor, FileFieldsInterceptor } from '@nestjs/platform-express';
 import { ImageUploadService } from '../image-upload/image-upload.service';
 
 @Controller('badges')
@@ -34,18 +35,28 @@ export class BadgesController {
   @Post()
   @Roles(UserRole.ADMIN)
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @UseInterceptors(FileInterceptor('badgeImage'))
+  @UseInterceptors(FileFieldsInterceptor([
+    { name: 'badgeImage', maxCount: 1 },
+    { name: 'sponsorLogo', maxCount: 1 },
+  ]))
   async createBadge(
     @Body() dto: CreateBadgeDto,
-    @UploadedFile() file?: Express.Multer.File,
+    @UploadedFiles() files?: { badgeImage?: Express.Multer.File[], sponsorLogo?: Express.Multer.File[] },
   ) {
-    // Upload image if provided
-    if (file) {
+    if (files?.badgeImage?.[0]) {
       const imageUrl = await this.imageUploadService.uploadFile(
-        file,
+        files.badgeImage[0],
         'saveful/badges',
       );
       dto.imageUrl = imageUrl;
+    }
+
+    if (files?.sponsorLogo?.[0]) {
+      const logoUrl = await this.imageUploadService.uploadFile(
+        files.sponsorLogo[0],
+        'saveful/badges/sponsors',
+      );
+      dto.sponsorLogoUrl = logoUrl;
     }
 
     const badge = await this.badgesService.createBadge(dto);
@@ -56,6 +67,20 @@ export class BadgesController {
   @UseGuards(JwtAuthGuard)
   async getAllBadges(@Query('includeInactive') includeInactive?: string) {
     const badges = await this.badgesService.getAllBadges(includeInactive === 'true');
+    return { badges };
+  }
+
+  @Get('category/:category')
+  @UseGuards(JwtAuthGuard)
+  async getBadgesByCategory(@Param('category') category: string) {
+    const badges = await this.badgesService.getBadgesByCategory(category as any);
+    return { badges };
+  }
+
+  @Get('sponsor')
+  @UseGuards(JwtAuthGuard)
+  async getSponsorBadges(@Query('country') country?: string) {
+    const badges = await this.badgesService.getSponsorBadges(country);
     return { badges };
   }
 
@@ -83,19 +108,31 @@ export class BadgesController {
   @Patch(':badgeId')
   @Roles(UserRole.ADMIN)
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @UseInterceptors(FileInterceptor('badgeImage'))
+  @UseInterceptors(FileFieldsInterceptor([
+    { name: 'badgeImage', maxCount: 1 },
+    { name: 'sponsorLogo', maxCount: 1 },
+  ]))
   async updateBadge(
     @Param('badgeId') badgeId: string,
     @Body() dto: UpdateBadgeDto,
-    @UploadedFile() file?: Express.Multer.File,
+    @UploadedFiles() files?: { badgeImage?: Express.Multer.File[], sponsorLogo?: Express.Multer.File[] },
   ) {
-    // Upload new image if provided
-    if (file) {
+    // Upload new badge image if provided
+    if (files?.badgeImage?.[0]) {
       const imageUrl = await this.imageUploadService.uploadFile(
-        file,
+        files.badgeImage[0],
         'saveful/badges',
       );
       dto.imageUrl = imageUrl;
+    }
+
+    // Upload new sponsor logo if provided
+    if (files?.sponsorLogo?.[0]) {
+      const logoUrl = await this.imageUploadService.uploadFile(
+        files.sponsorLogo[0],
+        'saveful/badges/sponsors',
+      );
+      dto.sponsorLogoUrl = logoUrl;
     }
 
     const badge = await this.badgesService.updateBadge(badgeId, dto);
@@ -161,6 +198,13 @@ export class BadgesController {
     return this.badgesService.getUserBadgeStats(userId);
   }
 
+  @Get('user/:userId/progress')
+  @UseGuards(JwtAuthGuard)
+  async getUserBadgeProgress(@Param('userId') userId: string) {
+    const progress = await this.badgesService.getUserBadgeProgress(userId);
+    return { progress };
+  }
+
   @Post('user/mark-viewed/:badgeId')
   @UseGuards(JwtAuthGuard)
   async markBadgeAsViewed(
@@ -172,27 +216,38 @@ export class BadgesController {
     return { message: 'Badge marked as viewed' };
   }
 
+  @Post('check-and-award')
+  @UseGuards(JwtAuthGuard)
+  async checkAndAwardBadges(
+    @Body() dto: { userId: string; userCountry?: string },
+  ) {
+    const newBadges = await this.badgesService.checkAndAwardBadges(
+      dto.userId,
+      dto.userCountry,
+    );
+    return { newBadges, count: newBadges.length };
+  }
+
+  @Delete('revoke/:userId/:badgeId')
+  @Roles(UserRole.ADMIN)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  async revokeBadge(
+    @Param('userId') userId: string,
+    @Param('badgeId') badgeId: string,
+  ) {
+    return this.badgesService.revokeBadge(userId, badgeId);
+  }
+
   @Post('user/check-milestones')
   @UseGuards(JwtAuthGuard)
   async checkMyMilestones(@GetUser() user: any) {
     const userId = user.userId;
-    const newBadges = await this.badgesService.checkAndAwardMilestoneBadges(userId);
-    
-    const populatedBadges = await Promise.all(
-      newBadges.map(async (userBadge) => {
-        const badge = await this.badgesService.getBadgeById(userBadge.badgeId.toString());
-        const plainUserBadge = (userBadge as any).toObject ? (userBadge as any).toObject() : userBadge;
-        return {
-          ...plainUserBadge,
-          badge,
-        };
-      })
-    );
+    const newBadges = await this.badgesService.checkAndAwardBadges(userId);
     
     return {
       message: `Checked milestones`,
       newBadgesAwarded: newBadges.length,
-      badges: populatedBadges,
+      badges: newBadges,
     };
   }
 }
