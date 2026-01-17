@@ -427,13 +427,10 @@ Notes:
     };
   }
 
-  /**
-   * Get leaderboard with filters
-   * Shows users ranked by meals cooked and/or food saved
-   */
+ 
   async getLeaderboard(options: {
     period?: 'ALL_TIME' | 'YEARLY' | 'MONTHLY' | 'WEEKLY';
-    metric?: 'MEALS_COOKED' | 'FOOD_SAVED' | 'BOTH';
+    metric?: 'MEALS_COOKED' | 'FOOD_SAVED' | 'MONEY_SAVED' | 'BADGES' | 'CO2_SAVED' | 'BOTH';
     limit?: number;
     offset?: number;
     country?: string;
@@ -502,8 +499,14 @@ Notes:
       sortField = { numberOfMealsCooked: -1 };
     } else if (metric === 'FOOD_SAVED') {
       sortField = { foodSavedInGrams: -1 };
+    } else if (metric === 'MONEY_SAVED') {
+      sortField = { totalMoneySaved: -1 };
+    } else if (metric === 'BADGES') {
+      // Will sort by badge count after lookup
+      sortField = { badgeCount: -1 };
+    } else if (metric === 'CO2_SAVED') {
+      sortField = { totalCo2SavedInGrams: -1 };
     } else {
-      // BOTH: Sort by a combined score (meals + food saved in kg)
       pipeline.push({
         $addFields: {
           combinedScore: {
@@ -517,30 +520,51 @@ Notes:
       sortField = { combinedScore: -1 };
     }
 
-    pipeline.push(
-      { $sort: sortField },
-      { $skip: offset },
-      { $limit: limit },
-      {
+    if (metric === 'BADGES') {
+      pipeline.push({
         $lookup: {
           from: 'userbadges',
           localField: 'userId',
           foreignField: 'userId',
           as: 'badges',
         },
-      },
-      {
-        $project: {
-          rank: 1,
-          userId: '$user._id',
-          userName: '$user.name',
-          userEmail: '$user.email',
-          country: '$user.country',
-          stateCode: '$user.stateCode',
+      });
+      pipeline.push({
+        $addFields: {
+          badgeCount: { $size: '$badges' },
+        },
+      });
+    }
+
+    pipeline.push({ $sort: sortField });
+    pipeline.push({ $skip: offset });
+    pipeline.push({ $limit: limit });
+
+    // Add badge lookup if not already done
+    if (metric !== 'BADGES') {
+      pipeline.push({
+        $lookup: {
+          from: 'userbadges',
+          localField: 'userId',
+          foreignField: 'userId',
+          as: 'badges',
+        },
+      });
+    }
+
+    pipeline.push({
+      $project: {
+        rank: 1,
+        userId: '$user._id',
+        userName: '$user.name',
+        country: '$user.country',
+        stateCode: '$user.stateCode',
           numberOfMealsCooked: 1,
           foodSavedInGrams: 1,
           foodSavedInKg: { $divide: ['$foodSavedInGrams', 1000] },
           totalMoneySaved: 1,
+          totalCo2SavedInGrams: { $ifNull: ['$totalCo2SavedInGrams', 0] },
+          totalCo2SavedKg: { $divide: [{ $ifNull: ['$totalCo2SavedInGrams', 0] }, 1000] },
           badgeCount: { $size: '$badges' },
           combinedScore: 1,
           updatedAt: 1,
@@ -550,20 +574,20 @@ Notes:
 
     const results = await this.userFoodAnallyticsProfileModel.aggregate(pipeline);
 
-    // Get total count for pagination
-    const countPipeline = pipeline.slice(0, -3); // Remove skip, limit, and lookup
+    const countPipeline = pipeline.slice(0, -3);
     const totalCount = await this.userFoodAnallyticsProfileModel.aggregate([
       ...countPipeline,
       { $count: 'total' }
     ]);
     const totalEntries = totalCount.length > 0 ? totalCount[0].total : 0;
 
-    // Add rank to each entry based on offset
     const leaderboard = results.map((entry, index) => ({
       ...entry,
       rank: offset + index + 1,
       foodSavedInKg: Number(entry.foodSavedInKg.toFixed(2)),
       totalMoneySaved: Number((entry.totalMoneySaved || 0).toFixed(2)),
+      totalCo2SavedInGrams: entry.totalCo2SavedInGrams || 0,
+      totalCo2SavedKg: Number((entry.totalCo2SavedKg || 0).toFixed(2)),
     }));
 
     return {
@@ -580,23 +604,20 @@ Notes:
     };
   }
 
-  /**
-   * Get user's rank and position in leaderboard
-   */
+ 
   async getUserRank(userId: string, options: {
     period?: 'ALL_TIME' | 'YEARLY' | 'MONTHLY' | 'WEEKLY';
     metric?: 'MEALS_COOKED' | 'FOOD_SAVED' | 'BOTH';
   }) {
     const { period = 'ALL_TIME', metric = 'BOTH' } = options;
 
-    // Get full leaderboard
     const leaderboardData = await this.getLeaderboard({
       period,
       metric,
-      limit: 1000, // Get more entries to find user's rank
+      limit: 1000, 
     });
 
-    // Find user in leaderboard
+   
     const userEntry = leaderboardData.leaderboard.find(
       (entry) => entry.userId.toString() === userId,
     );
@@ -608,7 +629,6 @@ Notes:
       };
     }
 
-    // Get surrounding users (above and below)
     const userIndex = leaderboardData.leaderboard.indexOf(userEntry);
     const surrounding = {
       above: leaderboardData.leaderboard.slice(
@@ -668,9 +688,6 @@ Notes:
     };
   }
 
-  /**
-   * Rating stats aggregated from Feedbacks (data.rating)
-   */
   async getRecipeRatingStats(frameworkId: string): Promise<{
     totalRatings: number;
     averageRating: number;
