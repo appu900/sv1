@@ -20,8 +20,9 @@ export interface FoodSavedEvent {
   foodSavedInGrams: number;
   ingredinatIds: string[];
   timestamp: Date;
-  frameworkId?: string;  // Recipe/framework that was cooked
-  totalPriceInINR?: number; // Total price saved in INR
+  frameworkId?: string;  
+  totalPriceInINR?: number; 
+  totalCo2SavedInGrams?: number; 
 }
 
 export interface PriceCalculationResult {
@@ -29,6 +30,13 @@ export interface PriceCalculationResult {
   weightInGrams: number;
   country: string;
   priceInINR: number;
+}
+
+export interface Co2CalculationResult {
+  ingredient: string;
+  weightInGrams: number;
+  country: string;
+  co2SavedKg: number;
 }
 
 @Injectable()
@@ -74,12 +82,19 @@ async saveFood(userId: string, ingredinatIds: string[], frameworkId?: string, di
     // Run AI price calculations in parallel with error handling
     let aiResults: PriceCalculationResult[] = [];
     let totalPriceInINR: number = 0;
+    let co2Results: Co2CalculationResult[] = [];
+    let totalCo2SavedInGrams: number = 0;
     
     try {
       aiResults = await Promise.all(
         ingredinats.map(i => this.calculatePriceWithAI(i.name, i.averageWeight || 0, country))
       );
       totalPriceInINR = aiResults.reduce((sum, r) => sum + (r.priceInINR || 0), 0);
+
+      co2Results = await Promise.all(
+        ingredinats.map(i => this.calculateCo2SavedWithAI(i.name, i.averageWeight || 0, country))
+      );
+      totalCo2SavedInGrams = co2Results.reduce((sum, r) => sum + Math.max(0, (r.co2SavedKg || 0) * 1000), 0);
     } catch (aiError) {
       // If AI fails, continue without price calculation
       aiResults = ingredinats.map(i => ({
@@ -87,6 +102,12 @@ async saveFood(userId: string, ingredinatIds: string[], frameworkId?: string, di
         weightInGrams: i.averageWeight,
         country,
         priceInINR: 0
+      }));
+      co2Results = ingredinats.map(i => ({
+        ingredient: i.name,
+        weightInGrams: i.averageWeight,
+        country,
+        co2SavedKg: 0,
       }));
     }
 
@@ -98,6 +119,7 @@ async saveFood(userId: string, ingredinatIds: string[], frameworkId?: string, di
       timestamp: new Date(),
       frameworkId,
       totalPriceInINR,
+      totalCo2SavedInGrams,
     });
 
     return {
@@ -107,6 +129,8 @@ async saveFood(userId: string, ingredinatIds: string[], frameworkId?: string, di
       country,
       totalPriceInINR,
       breakdown: aiResults,
+      co2Breakdown: co2Results,
+      totalCo2SavedInKg: Number((totalCo2SavedInGrams / 1000).toFixed(3)),
     };
   } catch (error) {
     throw error;
@@ -162,6 +186,60 @@ Convert price to INR always.
         weightInGrams,
         country,
         priceInINR: 0
+      };
+    }
+  }
+  
+  async calculateCo2SavedWithAI(ingredientName: string, weightInGrams: number, country: string): Promise<Co2CalculationResult> {
+    try {
+      const response = await this.openai.chat.completions.create({
+        model: "gpt-4.1",
+        messages: [
+          {
+            role: "system",
+            content: `You are a helpful AI that estimates CO2e emissions avoided by preventing food waste or by cooking at home. Respond ONLY in strict JSON.`
+          },
+          {
+            role: "user",
+            content: `
+Estimate the CO2e emissions avoided for:
+- ingredient: ${ingredientName}
+- weight: ${weightInGrams} grams
+- country: ${country}
+
+Return strictly JSON:
+{
+  "ingredient": "...",
+  "weightInGrams": 0,
+  "country": "...",
+  "co2SavedKg": 0
+}
+Notes:
+- Output is CO2e saved (kg), not produced.
+- Consider typical farm-to-fork footprint and waste avoidance.
+`
+          }
+        ],
+        temperature: 0.2
+      });
+
+      const message = response.choices[0]?.message?.content;
+      if (!message) {
+        throw new Error("AI returned no content");
+      }
+
+      try {
+        const parsed = JSON.parse(message);
+        return parsed;
+      } catch (parseError) {
+        throw new Error(`Failed to parse AI response: ${parseError.message}`);
+      }
+    } catch (error) {
+      return {
+        ingredient: ingredientName,
+        weightInGrams,
+        country,
+        co2SavedKg: 0,
       };
     }
   }
@@ -231,12 +309,13 @@ Convert price to INR always.
     // Convert grams to kg for display
     const foodSavedInKg = (profile.foodSavedInGrams || 0) / 1000;
     const totalMoneySaved = Number(profile.totalMoneySaved || 0);
+    const totalCo2SavedKg = Number((profile.totalCo2SavedInGrams || 0) / 1000);
     
     return {
       food_savings_user: foodSavedInKg.toFixed(2),
       completed_meals_count: profile.numberOfMealsCooked || 0,
       best_food_savings: null, // TODO: Track best savings
-      total_co2_savings: null, // TODO: Calculate CO2 savings
+      total_co2_savings: totalCo2SavedKg.toFixed(2),
       // Return the accumulated money saved for the user.
       // Amount is computed based on the user's country during saveFood.
       total_cost_savings: totalMoneySaved.toFixed(2),

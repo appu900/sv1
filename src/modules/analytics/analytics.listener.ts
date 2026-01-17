@@ -56,6 +56,7 @@ export class AnalyticsListner {
           foodSavedInGrams: event.foodSavedInGrams,
           numberOfMealsCooked: 1,
           totalMoneySaved: event.totalPriceInINR || 0,
+          totalCo2SavedInGrams: event.totalCo2SavedInGrams || 0,
         },
       };
 

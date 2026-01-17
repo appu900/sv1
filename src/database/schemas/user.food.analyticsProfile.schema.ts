@@ -19,6 +19,9 @@ export class UserFoodAnalyticsProfile{
     cookedRecipes:string[]  
     @Prop({default:0})
     totalMoneySaved:number;
+
+    @Prop({default:0, index:true})
+    totalCo2SavedInGrams:number;
 }
 
 
