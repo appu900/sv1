@@ -6,11 +6,13 @@ import {
   TrackSurvey,
   TrackSurveySchema,
 } from 'src/database/schemas/track-survey.schema';
+import { User, UserSchema } from 'src/database/schemas/user.auth.schema';
 
 @Module({
   imports: [
     MongooseModule.forFeature([
       { name: TrackSurvey.name, schema: TrackSurveySchema },
+      { name: User.name, schema: UserSchema },
     ]),
   ],
   controllers: [TrackSurveyController],

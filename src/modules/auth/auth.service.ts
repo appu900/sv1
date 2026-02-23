@@ -480,8 +480,6 @@ export class AuthService {
       throw new BadRequestException('invalid userId');
     const user = await this.userService.findById(userId);
     if (!user) throw new UnauthorizedException();
-    
-    // Transform user data to match app expectations
     // Support both flat fields and nested dietaryProfile
     return {
       id: user._id.toString(),
@@ -511,6 +509,47 @@ export class AuthService {
       
       // Keep nested structure for backward compatibility
       dietaryProfile: user.dietaryProfile,
+    };
+  }
+
+  /**
+   * Returns a derived onboarding snapshot for the authenticated user.
+   *
+   * The canonical signal for "onboarding complete" is whether the user has a
+   * country set (written when the onboarding carousel calls
+   * PUT /auth/dietary-profile). We map the stored user fields back to the
+   * legacy Onboarding shape so all existing client code keeps working.
+   *
+   * Returns { onboarding: null } when country is not yet set so that
+   * InitialNavigator and OnboardingScreen correctly route to the onboarding
+   * flow instead of silently skipping it on app restart.
+   */
+  async getOnboarding(userId: string) {
+    if (!Types.ObjectId.isValid(userId))
+      throw new BadRequestException('invalid userId');
+    const user = await this.userService.findById(userId);
+    if (!user) throw new UnauthorizedException();
+
+    if (!user.country) {
+      return { onboarding: null };
+    }
+
+    return {
+      onboarding: {
+        // Legacy clients read `suburb` as the country/location code.
+        suburb: user.country,
+        postcode: (user as any).pincode ?? '',
+        no_of_people: {
+          adults: user.dietaryProfile?.noOfAdults ?? 0,
+          children: user.dietaryProfile?.noOfChildren ?? 0,
+        },
+        dietary_requirements: [],
+        allergies: user.dietaryProfile?.otherAllergies ?? [],
+        taste_preference: user.dietaryProfile?.tastePrefrence ?? [],
+        // track_survey_day is not stored on the user document; return a safe
+        // default so callers that pass it to getWeekNumber don't crash.
+        track_survey_day: 'monday',
+      },
     };
   }
 }

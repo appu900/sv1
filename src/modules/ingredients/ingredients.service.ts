@@ -3,6 +3,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  OnModuleInit,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
@@ -24,7 +25,7 @@ import { SqsService } from 'src/sqs/sqs.service';
 import { CacheInvalidationEvent } from 'src/contracts/cache-invalidation.event';
 import { WINSTON_MODULE_PROVIDER } from 'nest-winston';
 @Injectable()
-export class IngredientsService {
+export class IngredientsService implements OnModuleInit {
   private readonly logger = new Logger(IngredientsService.name);
   constructor(
     @InjectModel(IngredientsCategory.name)
@@ -36,6 +37,17 @@ export class IngredientsService {
     private readonly sqsService:SqsService
     
   ) {}
+
+  async onModuleInit() {
+    // Flush all country-filtered ingredient caches on startup so stale results
+    // from before the strict-country-filter fix are never served.
+    try {
+      await this.redisService.delByPattern('Ingredients:all:country:*');
+      console.log('[IngredientsService] Country caches flushed on startup');
+    } catch (e) {
+      console.warn('[IngredientsService] Could not flush country caches on startup:', e?.message);
+    }
+  }
 
   // Category Management
   async create(dto: CreateCatgoryDto, files: { image: Express.Multer.File[] }) {
@@ -243,14 +255,9 @@ export class IngredientsService {
       }
       this.logger.warn(`Cache miss for ${baseKey}`);
 
-      // Return ingredients tagged with this country, plus globally-available
-      // ingredients (empty countries array or no countries field).
+      // Return only ingredients explicitly tagged with this country.
       const matchQuery: any = {
-        $or: [
-          { countries: country },
-          { countries: { $size: 0 } },
-          { countries: { $exists: false } },
-        ],
+        countries: country,
       };
 
       const ingredients = await this.ingredientModel
@@ -455,7 +462,6 @@ export class IngredientsService {
       throw new NotFoundException('Invalid ingredient ID');
     }
 
-    // First, delete the ingredient from the database
     const deletedIngredient = await this.ingredientModel.findByIdAndDelete(id);
     
     if (!deletedIngredient) {
@@ -470,7 +476,6 @@ export class IngredientsService {
       }
     }
 
-    // Invalidate cache with versioned strategy - fetch remaining ingredients
     const ingredients = await this.ingredientModel
       .find()
       .populate('categoryId', 'name imageUrl')

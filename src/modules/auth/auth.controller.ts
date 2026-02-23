@@ -114,4 +114,16 @@ export class AuthController {
     this.logger.log(`🔑 POST /auth/reset-password`);
     return this.authservice.resetPassword(dto);
   }
+
+  /**
+   * Returns a derived onboarding record for the authenticated user.
+   * Onboarding is considered complete once the user has a country set
+   * (written by PUT /auth/dietary-profile at the end of the onboarding carousel).
+   * Returns { onboarding: null } when not yet complete.
+   */
+  @Get('onboarding')
+  @UseGuards(JwtAuthGuard)
+  async getOnboarding(@GetUser() user: any) {
+    return this.authservice.getOnboarding(user.userId);
+  }
 }

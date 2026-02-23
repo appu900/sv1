@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  OnModuleInit,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
@@ -13,7 +14,7 @@ import { ImageUploadService } from '../image-upload/image-upload.service';
 import { normalizeCountry } from '../../utils/countries.util';
 
 @Injectable()
-export class RecipeService {
+export class RecipeService implements OnModuleInit {
   private readonly CACHE_TTL = 1200; // 20 minutes
   private readonly CACHE_KEY_ALL = 'recipes:all';
   private readonly CACHE_KEY_SINGLE = 'recipes:single';
@@ -24,6 +25,19 @@ export class RecipeService {
     private readonly redisService: RedisService,
     private readonly imageUploadService: ImageUploadService,
   ) {}
+
+  async onModuleInit() {
+    // Flush all country-filtered caches so stale results from before the
+    // strict-country-filter fix are never served.
+    try {
+      await this.redisService.delByPattern(`${this.CACHE_KEY_ALL}:country:*`);
+      await this.redisService.delByPattern(`${this.CACHE_KEY_CATEGORY}:*:country:*`);
+      await this.redisService.delByPattern('recipes:ingredient:*:country:*');
+      console.log('[RecipeService] Country caches flushed on startup');
+    } catch (e) {
+      console.warn('[RecipeService] Could not flush country caches on startup:', e?.message);
+    }
+  }
 
 
   private processComponents(components: any[]): any[] {
@@ -271,16 +285,12 @@ export class RecipeService {
       );
 
       // Build the match query with optional country filter.
-      // Recipes with an empty countries array are globally available.
-      // Recipes with a non-empty countries array are only shown to users
-      // whose country is listed.
+      // When a country is provided, only return recipes explicitly tagged
+      // with that country. Recipes with no countries field or an empty array
+      // are NOT shown to country-specific users.
       const matchQuery: any = { isActive: true };
       if (country) {
-        matchQuery.$or = [
-          { countries: country },
-          { countries: { $size: 0 } },
-          { countries: { $exists: false } },
-        ];
+        matchQuery.countries = country;
       }
 
       const recipes = await this.recipeModel
@@ -414,11 +424,7 @@ export class RecipeService {
       isActive: true,
     };
     if (country) {
-      matchQuery.$or = [
-        { countries: country },
-        { countries: { $size: 0 } },
-        { countries: { $exists: false } },
-      ];
+      matchQuery.countries = country;
     }
 
     const recipes = await this.recipeModel
@@ -480,13 +486,9 @@ export class RecipeService {
     if (country) {
       matchQuery.$and = [
         { $or: ingredientConditions },
-        { $or: [
-          { countries: country },
-          { countries: { $size: 0 } },
-          { countries: { $exists: false } },
-        ]},
+        { countries: country },
       ];
-      delete matchQuery.$or; // move to $and
+      delete matchQuery.$or; // moved to $and
     }
 
     // Find recipes where the ingredient appears in:

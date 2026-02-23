@@ -64,7 +64,8 @@ async saveFood(userId: string, ingredinatIds: string[], frameworkId?: string, di
     // Load user first
     const user = await this.userModel.findOne({ _id: userId, role: "USER" }).lean();
     if (!user) throw new Error('User not found');
-    const country = user.country || "IN";
+    if (!user.country) throw new Error('User has no country set — please complete onboarding');
+    const country = user.country;
 
     let ingredinats: Array<{ name: string; averageWeight: number }>; 
     // Prefer DB lookup by IDs if provided
@@ -376,16 +377,11 @@ Notes:
     const ids = results.map(r => r._id).filter(Boolean);
     if (!ids.length) return { trending: [] };
 
-    // Build recipe filter: match IDs + optional country restriction.
-    // Include recipes explicitly tagged for the country, plus globally-available
-    // recipes (empty countries array or no countries field).
+    // Build recipe filter: match IDs + optional strict country restriction.
+    // Only recipes explicitly tagged with the given country are returned.
     const recipeFilter: any = { _id: { $in: ids.map(id => new Types.ObjectId(id)) } };
     if (country) {
-      recipeFilter.$or = [
-        { countries: country },
-        { countries: { $size: 0 } },
-        { countries: { $exists: false } },
-      ];
+      recipeFilter.countries = country;
     }
 
     const recipes = await this.recipeModel

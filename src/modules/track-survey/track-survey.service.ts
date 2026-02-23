@@ -6,6 +6,7 @@ import {
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { TrackSurvey, TrackSurveyDocument } from 'src/database/schemas/track-survey.schema';
+import { User, UserDocument } from 'src/database/schemas/user.auth.schema';
 import { CreateTrackSurveyDto } from './dto/create-track-survey.dto';
 import {
   SurveyEligibilityDto,
@@ -18,6 +19,8 @@ export class TrackSurveyService {
   constructor(
     @InjectModel(TrackSurvey.name)
     private trackSurveyModel: Model<TrackSurveyDocument>,
+    @InjectModel(User.name)
+    private userModel: Model<UserDocument>,
   ) {}
 
   private getWeekStart(surveyDay: number): Date {
@@ -53,7 +56,9 @@ export class TrackSurveyService {
       FR: { costPerGram: 0.003, symbol: '€' },  // France – EUR per gram (~€3/kg)
     };
 
-    const countryRate = COUNTRY_RATES[dto.country ?? 'IN'] ?? COUNTRY_RATES['IN'];
+    if (!dto.country) throw new BadRequestException('User has no country set — please complete onboarding');
+    const countryRate = COUNTRY_RATES[dto.country];
+    if (!countryRate) throw new BadRequestException(`Unsupported country code: ${dto.country}`);
     const COST_PER_GRAM = countryRate.costPerGram;
     const CO2_PER_GRAM = 2.5;
 
@@ -68,7 +73,6 @@ export class TrackSurveyService {
       herbsBunch: 50,
     };
 
-    // Calculate total waste in grams
     const scrapsWeight = dto.scraps * WEIGHTS.cupfulScraps;
     const leftoversWeight = dto.uneatenLeftovers * WEIGHTS.containerLeftovers;
     const produceWeight =
@@ -81,12 +85,9 @@ export class TrackSurveyService {
 
     const totalWasteGrams = scrapsWeight + leftoversWeight + produceWeight;
 
-    // Calculate average weekly waste (baseline comparison)
-    // Assume average household wastes ~5kg per week
-    const avgWeeklyWaste = 5000; // grams
+    const avgWeeklyWaste = 5000;
     const foodSaved = Math.max(0, avgWeeklyWaste - totalWasteGrams);
 
-    // Calculate savings — keep 2 decimal places for currency precision
     const co2_savings = Math.round(foodSaved * CO2_PER_GRAM);
     const cost_savings = Math.round(foodSaved * COST_PER_GRAM * 100) / 100;
 
@@ -141,9 +142,6 @@ export class TrackSurveyService {
     };
   }
 
-  /**
-   * Create a new track survey
-   */
   async createSurvey(
     userId: string,
     dto: CreateTrackSurveyDto,
@@ -158,11 +156,9 @@ export class TrackSurveyService {
       );
     }
 
-    // Determine survey day
     const surveyDay = dto.surveyDay ?? new Date().getDay();
     const weekStart = this.getWeekStart(surveyDay);
 
-    // Check if survey already exists for this week
     const existingSurvey = await this.trackSurveyModel.findOne({
       userId: userIdObj,
       surveyWeek: weekStart,
@@ -172,13 +168,15 @@ export class TrackSurveyService {
       throw new BadRequestException('Survey already exists for this week');
     }
 
-    // Calculate savings
+    const user = await this.userModel.findById(userId).lean();
+    if (!user) throw new BadRequestException('User not found');
+    if (!user.country) throw new BadRequestException('User has no country set — please complete onboarding');
+    dto.country = user.country;
+
     const calculatedSavings = this.calculateSavings(dto);
 
-    // Check if this is the first survey (baseline)
     const isBaseline = eligibility.surveys_count === 0;
 
-    // Get personal bests
     const personalBests = await this.getPersonalBests(userId);
 
     const survey = new this.trackSurveyModel({
@@ -200,16 +198,11 @@ export class TrackSurveyService {
 
     const saved = await survey.save();
 
-    // Attach previous personal bests (computed before this survey was saved)
-    // so the client can display "Your previous best was X" correctly.
     const dto_response = this.toResponseDto(saved);
     dto_response.prev_personal_bests = personalBests;
     return dto_response;
   }
 
-  /**
-   * Get all surveys for a user
-   */
   async getUserSurveys(userId: string): Promise<TrackSurveyResponseDto[]> {
     const userIdObj = new Types.ObjectId(userId);
 
@@ -221,9 +214,6 @@ export class TrackSurveyService {
     return surveys.map((s) => this.toResponseDto(s));
   }
 
-  /**
-   * Get latest survey for a user
-   */
   async getLatestSurvey(userId: string): Promise<TrackSurveyResponseDto> {
     const userIdObj = new Types.ObjectId(userId);
 
@@ -239,9 +229,6 @@ export class TrackSurveyService {
     return this.toResponseDto(survey);
   }
 
-  /**
-   * Get personal bests for a user
-   */
   private async getPersonalBests(userId: string) {
     const userIdObj = new Types.ObjectId(userId);
 
@@ -266,9 +253,6 @@ export class TrackSurveyService {
     };
   }
 
-  /**
-   * Get weekly savings summary
-   */
   async getWeeklySummary(userId: string): Promise<WeeklySavingsSummaryDto> {
     const userIdObj = new Types.ObjectId(userId);
 
