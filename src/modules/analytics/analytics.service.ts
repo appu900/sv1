@@ -14,6 +14,7 @@ import {
   UserFoodAnalyticsProfile,
 } from 'src/database/schemas/user.food.analyticsProfile.schema';
 import { User } from 'src/database/schemas/user.auth.schema';
+import { normalizeCountry } from '../../utils/countries.util';
 
 export interface FoodSavedEvent {
   userId: string;
@@ -327,6 +328,7 @@ Notes:
   }
 
   async getTrendingRecipes(limit: number = 5, country?: string) {
+    country = normalizeCountry(country);
     // Define current month range
     const now = new Date();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -374,12 +376,15 @@ Notes:
     const ids = results.map(r => r._id).filter(Boolean);
     if (!ids.length) return { trending: [] };
 
-    // Build recipe filter: match IDs + optional country restriction
+    // Build recipe filter: match IDs + optional country restriction.
+    // Include recipes explicitly tagged for the country, plus globally-available
+    // recipes (empty countries array or no countries field).
     const recipeFilter: any = { _id: { $in: ids.map(id => new Types.ObjectId(id)) } };
     if (country) {
       recipeFilter.$or = [
-        { countries: { $size: 0 } },
         { countries: country },
+        { countries: { $size: 0 } },
+        { countries: { $exists: false } },
       ];
     }
 

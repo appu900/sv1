@@ -15,8 +15,10 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { RecipeService } from './recipe.service';
+import { ServingScaleService } from './serving-scale.service';
 import { CreateRecipeDto } from './dto/create-recipe.dto';
 import { UpdateRecipeDto } from './dto/update-recipe.dto';
+import { ScaleServingsDto } from './dto/scale-servings.dto';
 import { JwtAuthGuard } from './../../common/guards/jwt-auth.guard';
 import { RolesGuard } from './../../common/guards/roles.guard';
 import { Roles } from './../../common/decorators/role.decorators';
@@ -28,7 +30,10 @@ import { validate } from 'class-validator';
 export class RecipeController {
   private readonly logger = new Logger(RecipeController.name);
 
-  constructor(private readonly recipeService: RecipeService) {}
+  constructor(
+    private readonly recipeService: RecipeService,
+    private readonly servingScaleService: ServingScaleService,
+  ) {}
 
   @Post()
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -178,6 +183,30 @@ export class RecipeController {
     return this.recipeService.findByIngredient(ingredientId, country);
   }
 
+  @Post('scale-servings')
+  async scaleServings(@Body() body: ScaleServingsDto) {
+    this.logger.log(
+      `Scaling servings: ${body.originalServings} → ${body.desiredServings} (${body.ingredients?.length || 0} ingredients)`,
+    );
+
+    const dto = plainToClass(ScaleServingsDto, body, {
+      enableImplicitConversion: true,
+    });
+
+    const errors = await validate(dto);
+    if (errors.length > 0) {
+      throw new BadRequestException({
+        message: 'Validation failed',
+        errors: errors.map((e) => ({
+          property: e.property,
+          constraints: e.constraints,
+        })),
+      });
+    }
+
+    return this.servingScaleService.scaleServings(dto);
+  }
+
   @Get(':id')
   async findOne(@Param('id') id: string) {
     return this.recipeService.findOne(id);
@@ -195,7 +224,6 @@ export class RecipeController {
     this.logger.log(`Received recipe update request for ID: ${id}`);
     this.logger.debug('Raw body keys:', Object.keys(body));
 
-    // Same parsing logic as create
     const parsedBody = { ...body };
 
     const jsonFields = [
@@ -245,7 +273,6 @@ export class RecipeController {
       JSON.stringify(updateRecipeDto, null, 2),
     );
 
-    // Validate
     const errors = await validate(updateRecipeDto, {
       whitelist: true,
       forbidNonWhitelisted: false,

@@ -18,6 +18,7 @@ import { RedisService } from 'src/redis/redis.service';
 import { CreateCatgoryDto } from './dto/ingrediants.category.dto';
 import { CreateIngredientDto } from './dto/create-ingredient.dto';
 import { UpdateIngredientDto } from './dto/update-ingredient.dto';
+import { normalizeCountry } from '../../utils/countries.util';
 import { ImageUploadService } from '../image-upload/image-upload.service';
 import { SqsService } from 'src/sqs/sqs.service';
 import { CacheInvalidationEvent } from 'src/contracts/cache-invalidation.event';
@@ -229,6 +230,7 @@ export class IngredientsService {
   }
 
   async getAllIngredients(country?: string) {
+    country = normalizeCountry(country);
     const baseKey = country
       ? `Ingredients:all:country:${country.toLowerCase()}`
       : 'Ingredients:all';
@@ -241,11 +243,13 @@ export class IngredientsService {
       }
       this.logger.warn(`Cache miss for ${baseKey}`);
 
-      // Filter: empty countries array = globally available; or country matches
+      // Return ingredients tagged with this country, plus globally-available
+      // ingredients (empty countries array or no countries field).
       const matchQuery: any = {
         $or: [
-          { countries: { $size: 0 } },
           { countries: country },
+          { countries: { $size: 0 } },
+          { countries: { $exists: false } },
         ],
       };
 

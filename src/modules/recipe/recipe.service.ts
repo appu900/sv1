@@ -10,6 +10,7 @@ import { CreateRecipeDto } from './dto/create-recipe.dto';
 import { UpdateRecipeDto } from './dto/update-recipe.dto';
 import { RedisService } from '../../redis/redis.service';
 import { ImageUploadService } from '../image-upload/image-upload.service';
+import { normalizeCountry } from '../../utils/countries.util';
 
 @Injectable()
 export class RecipeService {
@@ -235,6 +236,8 @@ export class RecipeService {
  
  
   async findAll(country?: string): Promise<Recipe[]> {
+    // Normalize ISO code (e.g. 'IN') → full name (e.g. 'India') to match DB values.
+    country = normalizeCountry(country);
     // Country-specific cache key so each country gets its own cached result
     const cacheKey = country
       ? `${this.CACHE_KEY_ALL}:country:${country.toLowerCase()}`
@@ -274,8 +277,9 @@ export class RecipeService {
       const matchQuery: any = { isActive: true };
       if (country) {
         matchQuery.$or = [
-          { countries: { $size: 0 } },
           { countries: country },
+          { countries: { $size: 0 } },
+          { countries: { $exists: false } },
         ];
       }
 
@@ -390,6 +394,7 @@ export class RecipeService {
     if (!Types.ObjectId.isValid(categoryId)) {
       throw new BadRequestException('Invalid category ID format');
     }
+    country = normalizeCountry(country);
 
     const cacheKey = country
       ? `${this.CACHE_KEY_CATEGORY}:${categoryId}:country:${country.toLowerCase()}`
@@ -410,8 +415,9 @@ export class RecipeService {
     };
     if (country) {
       matchQuery.$or = [
-        { countries: { $size: 0 } },
         { countries: country },
+        { countries: { $size: 0 } },
+        { countries: { $exists: false } },
       ];
     }
 
@@ -446,6 +452,7 @@ export class RecipeService {
     if (!Types.ObjectId.isValid(ingredientId)) {
       throw new BadRequestException('Invalid ingredient ID format');
     }
+    country = normalizeCountry(country);
 
     const cacheKey = country
       ? `recipes:ingredient:${ingredientId}:country:${country.toLowerCase()}`
@@ -473,12 +480,11 @@ export class RecipeService {
     if (country) {
       matchQuery.$and = [
         { $or: ingredientConditions },
-        {
-          $or: [
-            { countries: { $size: 0 } },
-            { countries: country },
-          ],
-        },
+        { $or: [
+          { countries: country },
+          { countries: { $size: 0 } },
+          { countries: { $exists: false } },
+        ]},
       ];
       delete matchQuery.$or; // move to $and
     }
