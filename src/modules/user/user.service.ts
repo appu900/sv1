@@ -82,6 +82,10 @@ export class UserService {
       updateData.country = dto.country;
     }
 
+    if (dto.pincode) {
+      updateData.pincode = dto.pincode;
+    }
+
     const result = await this.userModel
       .findByIdAndUpdate(userId, { $set: updateData }, { new: true })
       .lean();
@@ -89,6 +93,20 @@ export class UserService {
       throw new BadRequestException('can not perform this operation');
     }
     return result;
+  }
+
+  async updatePasswordHash(userId: string, passwordHash: string): Promise<void> {
+    if (!Types.ObjectId.isValid(userId)) {
+      throw new BadRequestException('Invalid userId');
+    }
+    const result = await this.userModel.findByIdAndUpdate(
+      new Types.ObjectId(userId),
+      { $set: { passwordHash } },
+      { new: true },
+    );
+    if (!result) {
+      throw new NotFoundException('User not found');
+    }
   }
 
  

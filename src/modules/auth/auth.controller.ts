@@ -13,6 +13,8 @@ import { UserService } from '../user/user.service';
 import { UserProfileDto } from '../user/dto/user.profile.dto';
 import { RequestOtpDto } from './dto/request-otp.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 
 @Controller('auth')
@@ -95,5 +97,21 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   async updateDietaryProfile(@Body() dto: UserProfileDto, @GetUser() user: any) {
     return this.userService.updateProfile(dto, user.userId);
+  }
+
+  @Post('forgot-password')
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 5, ttl: 3600 } }) // 5 requests per hour per IP
+  async forgotPassword(@Body() dto: ForgotPasswordDto) {
+    this.logger.log(`🔑 POST /auth/forgot-password - Email: ${dto.email}`);
+    return this.authservice.forgotPassword(dto);
+  }
+
+  @Post('reset-password')
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 10, ttl: 3600 } }) // 10 attempts per hour per IP
+  async resetPassword(@Body() dto: ResetPasswordDto) {
+    this.logger.log(`🔑 POST /auth/reset-password`);
+    return this.authservice.resetPassword(dto);
   }
 }

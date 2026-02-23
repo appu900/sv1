@@ -536,5 +536,68 @@ If you didn’t request this, you can safely ignore this email.
     console.error('[EmailService] All welcome email retry attempts failed:', lastError);
     throw lastError;
   }
+
+  async sendPasswordResetOTPEmail(
+    email: string,
+    otpCode: string,
+    expiryMinutes: number = 15,
+  ): Promise<void> {
+    const htmlTemplate = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light">
+<meta name="supported-color-schemes" content="light">
+<title>Reset your Saveful password</title>
+<style>
+  :root { color-scheme: light; supported-color-schemes: light; }
+  body { margin: 0; padding: 0; background-color: #f6f3fb !important; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; color: #2b1e44 !important; }
+  table, td { border-collapse: collapse; background-color: #f6f3fb !important; }
+  img { display: block; border: 0; }
+  .container { max-width: 600px; background-color: #ffffff !important; border-radius: 16px; overflow: hidden; }
+  .content { padding: 32px 28px; text-align: center; background-color: #ffffff !important; }
+  h1 { font-size: 22px; margin: 0 0 12px; font-weight: 700; color: #2b1e44 !important; }
+  p { font-size: 15px; line-height: 1.6; margin: 0 0 16px; color: #3d3558 !important; }
+  .otp-box { background-color: #fff4ec !important; border-radius: 12px; padding: 20px 0; font-size: 30px; font-weight: 700; letter-spacing: 6px; color: #F7931E !important; width: 100%; max-width: 320px; margin: 28px auto 16px; }
+  .hint { font-size: 13px; color: #7a7391 !important; }
+  .divider { height: 1px; background-color: #eeeaf7 !important; margin: 28px 0; }
+  .logo { margin: 24px auto 0; width: 110px; }
+  .logo-light { display: block; }
+  .logo-dark { display: none; }
+  .footer { padding: 22px; font-size: 13px; color: #7a7391 !important; background-color: #ffffff !important; text-align: center; }
+  @media (prefers-color-scheme: dark) { .logo-light { display: none !important; } .logo-dark { display: block !important; } }
+  @media (max-width: 480px) { .content { padding: 26px 18px; } h1 { font-size: 20px; } .otp-box { font-size: 26px; letter-spacing: 4px; } }
+</style>
+</head>
+<body bgcolor="#f6f3fb" style="background-color:#f6f3fb;">
+<table width="100%" bgcolor="#f6f3fb" style="background-color:#f6f3fb;" role="presentation">
+<tr><td align="center" bgcolor="#f6f3fb" style="background-color:#f6f3fb; padding:16px;">
+<table class="container" width="100%" bgcolor="#ffffff" style="background-color:#ffffff;" role="presentation">
+<tr><td class="content" bgcolor="#ffffff" style="background-color:#ffffff;">
+<h1>Reset your password</h1>
+<p>We received a request to reset your Saveful account password.<br/>Use the code below to set a new password.</p>
+<div class="otp-box">${otpCode}</div>
+<p class="hint">This code expires in ${expiryMinutes} minutes.</p>
+<div class="divider"></div>
+<p style="margin-bottom:0;">If you didn't request a password reset, you can safely ignore this email.</p>
+<img src="https://d3fg04h02j12vm.cloudfront.net/logo%403x.png" alt="Saveful logo" width="110" class="logo logo-light" />
+<img src="https://d3fg04h02j12vm.cloudfront.net/Saveful-logo-white-Rev.webp" alt="Saveful logo" width="110" class="logo logo-dark" />
+</td></tr>
+<tr><td class="footer" bgcolor="#ffffff" style="background-color:#ffffff;">© Saveful</td></tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>`;
+
+    await this.transporter.sendMail({
+      from: this.fromEmail,
+      replyTo: this.replyTo,
+      to: email,
+      subject: 'Reset your Saveful password',
+      html: htmlTemplate,
+    });
+  }
 }
 

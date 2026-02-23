@@ -27,6 +27,9 @@ export class User {
   @Prop({})
   country?:string
 
+  @Prop({})
+  pincode?:string
+
   @Prop({type:UserDietaryProfile})
   dietaryProfile?:UserDietaryProfile
 }

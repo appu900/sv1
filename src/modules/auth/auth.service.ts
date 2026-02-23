@@ -18,6 +18,8 @@ import { EmailService } from 'src/common/services/email.service';
 import { ConfigService } from '@nestjs/config';
 import { RequestOtpDto } from './dto/request-otp.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 
 @Injectable()
 export class AuthService {
@@ -164,6 +166,7 @@ export class AuthService {
     // Generate session and tokens for auto-login
     const sessionId = nanoid();
     await this.redis.setSession(sessionId, user._id.toString(), 60 * 60 * 24 * 7);
+    await this.redis.addUserSession(user._id.toString(), sessionId, 60 * 60 * 24 * 7);
     const accessToken = this.generateAccessToken(
       user._id.toString(),
       user.role,
@@ -238,6 +241,7 @@ export class AuthService {
     // Generate session and token for auto-login after signup
     const sessionId = nanoid();
     await this.redis.setSession(sessionId, user._id.toString(), 60 * 60 * 24 * 7);
+    await this.redis.addUserSession(user._id.toString(), sessionId, 60 * 60 * 24 * 7);
     const accessToken = this.generateAccessToken(
       user._id.toString(),
       user.role,
@@ -283,6 +287,7 @@ export class AuthService {
       throw new UnauthorizedException('Invalid Credentials');
     const sessionId = nanoid();
     await this.redis.setSession(sessionId, user._id.toString(), 60 * 60 * 24 * 7);
+    await this.redis.addUserSession(user._id.toString(), sessionId, 60 * 60 * 24 * 7);
     const accessToken = this.generateAccessToken(
       user._id.toString(),
       user.role,
@@ -337,6 +342,7 @@ export class AuthService {
       // Generate new tokens
       const newSessionId = nanoid();
       await this.redis.setSession(newSessionId, user._id.toString(), 60 * 60 * 24 * 7);
+      await this.redis.addUserSession(user._id.toString(), newSessionId, 60 * 60 * 24 * 7);
       
       const newAccessToken = this.generateAccessToken(
         user._id.toString(),
@@ -378,6 +384,7 @@ export class AuthService {
     
     const sessionId = nanoid();
     await this.redis.setSession(sessionId, user._id.toString(), 60 * 60 * 24 * 7);
+    await this.redis.addUserSession(user._id.toString(), sessionId, 60 * 60 * 24 * 7);
     const accessToken = this.generateAccessToken(
       user._id.toString(),
       user.role,
@@ -397,6 +404,77 @@ export class AuthService {
     };
   }
 
+  // ── Forgot Password ─────────────────────────────────────────────────────
+  async forgotPassword(dto: ForgotPasswordDto) {
+    this.logger.log(`[ForgotPassword] Request for: ${dto.email}`);
+
+    const user = await this.userService.findByEmail(dto.email);
+    // Always return success to prevent email enumeration
+    if (!user) {
+      this.logger.warn(`[ForgotPassword] Email not found: ${dto.email}`);
+      return { success: true, message: 'If this email is registered, a reset code has been sent.' };
+    }
+
+    if (user.role !== UserRole.USER) {
+      this.logger.warn(`[ForgotPassword] Non-user role attempted reset: ${user.role}`);
+      return { success: true, message: 'If this email is registered, a reset code has been sent.' };
+    }
+
+    const otp = this.generateOTP();
+    const expiryMinutes = 15;
+    await this.redis.set(`auth:reset-otp:${dto.email}`, otp, expiryMinutes * 60);
+
+    this.emailService.sendPasswordResetOTPEmail(dto.email, otp, expiryMinutes)
+      .then(() => this.logger.log(`[ForgotPassword] OTP email sent to ${dto.email}`))
+      .catch((err) => this.logger.error(`[ForgotPassword] Email failed: ${err.message}`));
+
+    return { success: true, message: 'If this email is registered, a reset code has been sent.' };
+  }
+
+  // ── Reset Password ────────────────────────────────────────────────────────
+  async resetPassword(dto: ResetPasswordDto) {
+    this.logger.log(`[ResetPassword] Attempting for: ${dto.email}`);
+
+    if (dto.newPassword !== dto.confirmPassword) {
+      throw new BadRequestException('Passwords do not match');
+    }
+
+    // Per-email brute-force protection (max 5 attempts for this OTP)
+    const attempts = await this.redis.incrementResetAttempts(dto.email);
+    if (attempts > 5) {
+      throw new BadRequestException('Too many attempts. Please request a new reset code.');
+    }
+
+    const storedOtp = await this.redis.get<string>(`auth:reset-otp:${dto.email}`);
+    if (!storedOtp) {
+      throw new BadRequestException('OTP expired or invalid. Please request a new one.');
+    }
+
+    if (storedOtp !== dto.otp) {
+      throw new BadRequestException('Invalid OTP. Please check the code and try again.');
+    }
+
+    const user = await this.userService.findByEmail(dto.email);
+    if (!user) {
+      throw new BadRequestException('Invalid request.');
+    }
+
+    const passwordHash = await bcrypt.hash(dto.newPassword, 10);
+    await this.userService.updatePasswordHash(user._id.toString(), passwordHash);
+
+    // Invalidate all active sessions so stolen tokens no longer work
+    await this.redis.deleteAllUserSessions(user._id.toString());
+
+    // Clear the OTP and brute-force counter
+    await Promise.all([
+      this.redis.del(`auth:reset-otp:${dto.email}`),
+      this.redis.deleteResetAttempts(dto.email),
+    ]);
+
+    this.logger.log(`[ResetPassword] Password reset successful for: ${dto.email}`);
+    return { success: true, message: 'Password reset successfully. Please log in with your new password.' };
+  }
+
   async getProfile(userId: string) {
     if (!Types.ObjectId.isValid(userId))
       throw new BadRequestException('invalid userId');
@@ -414,7 +492,8 @@ export class AuthService {
       role: user.role,
       country: user.country,
       stateCode: user.stateCode,
-      
+      pincode: (user as any).pincode || null,
+
       // Add timestamp fields for account creation tracking
       inserted_at: (user as any).createdAt, // MongoDB timestamps field
       app_joined_at: (user as any).createdAt, // Alternative field name

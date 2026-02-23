@@ -190,6 +190,44 @@ export class RedisService implements OnModuleDestroy {
     await this.client.del(`auth:otp:rate:${email}`);
   }
 
+  // ── User session index (used to invalidate all sessions on password reset) ──
+  async addUserSession(userId: string, sessionId: string, ttlSeconds: number): Promise<void> {
+    const key = `auth:user-sessions:${userId}`;
+    await this.client.sadd(key, sessionId);
+    // Keep the set alive at least as long as the longest session
+    await this.client.expire(key, ttlSeconds + 60);
+  }
+
+  async deleteAllUserSessions(userId: string): Promise<void> {
+    const key = `auth:user-sessions:${userId}`;
+    const sessionIds = await this.client.smembers(key);
+    if (sessionIds.length > 0) {
+      const pipeline = this.client.pipeline();
+      for (const sid of sessionIds) {
+        pipeline.del(`auth:session:${sid}`);
+      }
+      pipeline.del(key);
+      await pipeline.exec();
+    } else {
+      await this.client.del(key);
+    }
+  }
+
+  // ── Per-email OTP brute-force protection for password reset ──────────────
+  async incrementResetAttempts(email: string): Promise<number> {
+    const key = `auth:reset-attempts:${email}`;
+    const count = await this.client.incr(key);
+    if (count === 1) {
+      // Expire with the OTP TTL (15 min) so counter auto-clears with the OTP
+      await this.client.expire(key, 900);
+    }
+    return count;
+  }
+
+  async deleteResetAttempts(email: string): Promise<void> {
+    await this.client.del(`auth:reset-attempts:${email}`);
+  }
+
   async onModuleDestroy() {
     await this.client.quit();
   }

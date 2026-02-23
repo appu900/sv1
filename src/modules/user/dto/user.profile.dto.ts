@@ -36,4 +36,8 @@ export class UserProfileDto {
   @IsNumber()
   @IsOptional()
   noOfAdults?: number;
+
+  @IsString()
+  @IsOptional()
+  pincode?: string;
 }
