@@ -457,7 +457,7 @@ Notes:
       stateCode,
     } = options;
 
-    // Build date filter based on period
+    const normalizedCountry = normalizeCountry(country);
     let dateFilter: any = {};
     const now = new Date();
 
@@ -488,15 +488,13 @@ Notes:
       },
     ];
 
-    // Add date filter if needed (for non-ALL_TIME periods)
     if (Object.keys(dateFilter).length > 0) {
       pipeline.push({ $match: dateFilter });
     }
 
-    // Add location filters if provided
     const matchConditions: any = {};
-    if (country) {
-      matchConditions['user.country'] = country;
+    if (normalizedCountry) {
+      matchConditions['user.country'] = normalizedCountry;
     }
     if (stateCode) {
       matchConditions['user.stateCode'] = stateCode;
@@ -505,7 +503,6 @@ Notes:
       pipeline.push({ $match: matchConditions });
     }
 
-    // Add sorting based on metric
     let sortField: any = {};
     if (metric === 'MEALS_COOKED') {
       sortField = { numberOfMealsCooked: -1 };
@@ -514,7 +511,6 @@ Notes:
     } else if (metric === 'MONEY_SAVED') {
       sortField = { totalMoneySaved: -1 };
     } else if (metric === 'BADGES') {
-      // Will sort by badge count after lookup
       sortField = { badgeCount: -1 };
     } else if (metric === 'CO2_SAVED') {
       sortField = { totalCo2SavedInGrams: -1 };
@@ -552,7 +548,6 @@ Notes:
     pipeline.push({ $skip: offset });
     pipeline.push({ $limit: limit });
 
-    // Add badge lookup if not already done
     if (metric !== 'BADGES') {
       pipeline.push({
         $lookup: {
@@ -608,7 +603,7 @@ Notes:
       limit,
       offset,
       filters: {
-        country: country || 'all',
+        country: normalizedCountry || 'all',
         stateCode: stateCode || 'all',
       },
       totalEntries,
