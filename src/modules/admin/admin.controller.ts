@@ -5,6 +5,7 @@ import {
   Delete,
   Body,
   Param,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { AdminService } from './admin.service';
@@ -38,8 +39,13 @@ export class AdminController {
 
   // User management endpoints
   @Get('users')
-  async getAllUsers() {
-    return this.adminService.getAllUsers();
+  async getAllUsers(
+    @Query('name') name?: string,
+    @Query('country') country?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.adminService.getAllUsers({ name, country, page: page ? parseInt(page) : 1, limit: limit ? parseInt(limit) : 20 });
   }
 
   @Get('users/:id')

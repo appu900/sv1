@@ -117,13 +117,34 @@ export class AdminService {
     };
   }
 
-  async getAllUsers() {
-    const users = await this.userModel
-      .find({ role: UserRole.USER })
-      .select('-passwordHash')
-      .lean();
+  async getAllUsers(filters?: { name?: string; country?: string; page?: number; limit?: number }) {
+    const query: any = { role: UserRole.USER };
+    if (filters?.name?.trim()) {
+      query.name = { $regex: filters.name.trim(), $options: 'i' };
+    }
+    if (filters?.country?.trim()) {
+      query.country = { $regex: filters.country.trim(), $options: 'i' };
+    }
+    const page = filters?.page || 1;
+    const limit = filters?.limit || 20;
+    const skip = (page - 1) * limit;
+
+    const [users, total] = await Promise.all([
+      this.userModel
+        .find(query)
+        .select('-passwordHash')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      this.userModel.countDocuments(query),
+    ]);
 
     return {
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
       users: users.map((user) => ({
         id: user._id,
         email: user.email,
