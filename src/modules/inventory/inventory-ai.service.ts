@@ -191,11 +191,22 @@ Return JSON:
   }
 
 
-  async getMealSuggestions(
+  /**
+   * Core ingredient-to-recipe matching logic (pure DB, no AI).
+   * Used by both quick suggestions and full suggestions.
+   * Supports optional ingredientId filter to search recipes by a specific ingredient.
+   */
+  private async matchRecipesToInventory(
     userId: string,
     country?: string,
     limit = 10,
-  ): Promise<MealSuggestion[]> {
+    filterIngredientId?: string,
+  ): Promise<{
+    suggestions: MealSuggestion[];
+    inventoryNames: string[];
+    expiringNames: string[];
+    inventoryIngredientIdSet: Set<string>;
+  }> {
     const inventoryItems = await this.inventoryModel
       .find({
         userId: new Types.ObjectId(userId),
@@ -206,12 +217,21 @@ Return JSON:
       .exec();
 
     if (inventoryItems.length === 0) {
-      return [];
+      return {
+        suggestions: [],
+        inventoryNames: [],
+        expiringNames: [],
+        inventoryIngredientIdSet: new Set(),
+      };
     }
 
     const inventoryIngredientIds = inventoryItems
       .map((i) => i.ingredientId)
       .filter(Boolean);
+
+    const inventoryIngredientIdSet = new Set<string>(
+      inventoryIngredientIds.map((id) => id?.toString()).filter((id): id is string => !!id),
+    );
 
     const inventoryNames = inventoryItems.map((i) => i.name);
 
@@ -228,6 +248,15 @@ Return JSON:
     const recipeFilter: any = { isActive: true };
     if (country) {
       recipeFilter.countries = { $in: [country] };
+    }
+    // If filtering by a specific ingredient, use MongoDB $or to find recipes containing it
+    if (filterIngredientId && Types.ObjectId.isValid(filterIngredientId)) {
+      const oid = new Types.ObjectId(filterIngredientId);
+      recipeFilter.$or = [
+        { 'components.component.requiredIngredients.recommendedIngredient': oid },
+        { 'components.component.requiredIngredients.alternativeIngredients.ingredient': oid },
+        { 'components.component.optionalIngredients.ingredient': oid },
+      ];
     }
 
     const recipes = await this.recipeModel
@@ -265,15 +294,16 @@ Return JSON:
       if (allRequired.length === 0) continue;
 
       const matched = allRequired.filter((id) =>
-        inventoryIngredientIds.some((invId) => invId?.toString() === id),
+        inventoryIngredientIdSet.has(id),
       );
       const missing = allRequired.filter(
-        (id) =>
-          !inventoryIngredientIds.some((invId) => invId?.toString() === id),
+        (id) => !inventoryIngredientIdSet.has(id),
       );
       const matchPercentage = (matched.length / allRequired.length) * 100;
 
-      if (matchPercentage < 40) continue;
+      // When filtering by ingredient, lower threshold to 20% to show more results
+      const minMatch = filterIngredientId ? 20 : 40;
+      if (matchPercentage < minMatch) continue;
 
       const expiringUsed = matched.filter((id) =>
         expiringIngredientIds.has(id),
@@ -312,14 +342,79 @@ Return JSON:
       return b.matchPercentage - a.matchPercentage;
     });
 
-    const topSuggestions = scoredRecipes.slice(0, limit);
+    return {
+      suggestions: scoredRecipes.slice(0, limit),
+      inventoryNames,
+      expiringNames: expiringItems.map((i) => i.name),
+      inventoryIngredientIdSet,
+    };
+  }
 
-    if (topSuggestions.length > 0 && topSuggestions.length <= 5) {
+
+  /**
+   * Quick meal suggestions — pure DB matching with Redis cache, no AI calls.
+   * Supports optional ingredientId filter for searching recipes by ingredient.
+   * Cache is keyed per user + ingredient count hash so new ingredients auto-invalidate.
+   */
+  async getMealSuggestionsQuick(
+    userId: string,
+    country?: string,
+    limit = 10,
+    filterIngredientId?: string,
+  ): Promise<MealSuggestion[]> {
+    // Build a cache key including the ingredient filter
+    const cacheKeySuffix = filterIngredientId
+      ? `:ing:${filterIngredientId}`
+      : '';
+    const cacheKey = `${this.CACHE_PREFIX}:suggestions:quick:${userId}${cacheKeySuffix}`;
+
+    // Check Redis cache (short TTL: 3 minutes)
+    try {
+      const cached = await this.redisService.get(cacheKey);
+      if (cached) {
+        this.logger.log(`Quick suggestions cache hit for user ${userId}`);
+        return JSON.parse(cached);
+      }
+    } catch (e) {
+      this.logger.warn('Quick suggestions cache read failed:', e?.message);
+    }
+
+    const { suggestions } = await this.matchRecipesToInventory(
+      userId,
+      country,
+      limit,
+      filterIngredientId,
+    );
+
+    // Cache for 3 minutes
+    try {
+      await this.redisService.set(cacheKey, JSON.stringify(suggestions), 180);
+    } catch (e) {
+      this.logger.warn('Quick suggestions cache write failed:', e?.message);
+    }
+
+    return suggestions;
+  }
+
+
+  /**
+   * Full meal suggestions with optional AI enrichment.
+   * Calls the shared matching logic, then enriches with AI if ≤5 results.
+   */
+  async getMealSuggestions(
+    userId: string,
+    country?: string,
+    limit = 10,
+  ): Promise<MealSuggestion[]> {
+    const { suggestions, inventoryNames, expiringNames } =
+      await this.matchRecipesToInventory(userId, country, limit);
+
+    if (suggestions.length > 0 && suggestions.length <= 5) {
       try {
         const aiEnriched = await this.enrichSuggestionsWithAI(
-          topSuggestions,
+          suggestions,
           inventoryNames,
-          expiringItems.map((i) => i.name),
+          expiringNames,
         );
         return aiEnriched;
       } catch (e) {
@@ -327,7 +422,72 @@ Return JSON:
       }
     }
 
-    return topSuggestions;
+    return suggestions;
+  }
+
+
+  /**
+   * Compute new recipe matches after an inventory change.
+   * Compares current matches with previously cached matches to find NEW recipes.
+   * Returns the new matches (if any) for notification purposes.
+   */
+  async getNewMatchesAfterInventoryChange(
+    userId: string,
+    country?: string,
+  ): Promise<MealSuggestion[]> {
+    const previousCacheKey = `${this.CACHE_PREFIX}:suggestions:prev-ids:${userId}`;
+
+    // Get previously known recipe IDs
+    let previousRecipeIds: Set<string> = new Set();
+    try {
+      const cached = await this.redisService.get(previousCacheKey);
+      if (cached) {
+        previousRecipeIds = new Set(JSON.parse(cached));
+      }
+    } catch (e) {
+      // No previous data — all current matches will be considered "new"
+    }
+
+    const { suggestions } = await this.matchRecipesToInventory(
+      userId,
+      country,
+      20, // cast wider net
+    );
+
+    const currentRecipeIds = suggestions.map((s) => s.recipe._id.toString());
+
+    // Store current IDs for next comparison (TTL: 24 hours)
+    try {
+      await this.redisService.set(
+        previousCacheKey,
+        JSON.stringify(currentRecipeIds),
+        86400,
+      );
+    } catch (e) {
+      this.logger.warn('Failed to cache previous recipe IDs:', e?.message);
+    }
+
+    // Invalidate the quick suggestions cache so next fetch gets fresh data
+    try {
+      await this.redisService.del(
+        `${this.CACHE_PREFIX}:suggestions:quick:${userId}`,
+      );
+    } catch (e) {
+      // non-critical
+    }
+
+    // If no previous data, don't spam notifications for all matches
+    if (previousRecipeIds.size === 0) {
+      return [];
+    }
+
+    // Find recipes that are NEW (not in the previous set)
+    const newMatches = suggestions.filter(
+      (s) => !previousRecipeIds.has(s.recipe._id.toString()),
+    );
+
+    // Only return high-quality new matches (≥60% match)
+    return newMatches.filter((s) => s.matchPercentage >= 60);
   }
 
   private async enrichSuggestionsWithAI(

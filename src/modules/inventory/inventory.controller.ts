@@ -80,6 +80,48 @@ export class InventoryController {
     );
   }
 
+  @Get('suggestions/quick')
+  async getMealSuggestionsQuick(
+    @Request() req,
+    @Query('country') country?: string,
+    @Query('limit') limit?: number,
+    @Query('ingredientId') ingredientId?: string,
+  ) {
+    const userId = req.user._id || req.user.userId;
+    this.logger.log(
+      `Fetching quick meal suggestions for user ${userId}${
+        ingredientId ? ` (ingredient filter: ${ingredientId})` : ''
+      }`,
+    );
+    return this.inventoryAiService.getMealSuggestionsQuick(
+      userId,
+      country,
+      limit || 10,
+      ingredientId,
+    );
+  }
+
+  @Post('suggestions/notify')
+  @HttpCode(HttpStatus.OK)
+  async checkNewRecipeMatches(
+    @Request() req,
+    @Query('country') country?: string,
+  ) {
+    const userId = req.user._id || req.user.userId;
+    this.logger.log(`Checking new recipe matches for user ${userId}`);
+    const newMatches =
+      await this.inventoryAiService.getNewMatchesAfterInventoryChange(
+        userId,
+        country,
+      );
+    return {
+      hasNewMatches: newMatches.length > 0,
+      newMatchCount: newMatches.length,
+      topNewMatch: newMatches[0] || null,
+      newMatches: newMatches.slice(0, 3),
+    };
+  }
+
   @Get('analytics')
   async getWasteAnalytics(@Request() req) {
     const userId = req.user._id || req.user.userId;
