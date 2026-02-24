@@ -22,6 +22,7 @@ import { ScaleServingsDto } from './dto/scale-servings.dto';
 import { JwtAuthGuard } from './../../common/guards/jwt-auth.guard';
 import { RolesGuard } from './../../common/guards/roles.guard';
 import { Roles } from './../../common/decorators/role.decorators';
+import { GetUser } from './../../common/decorators/Get.user.decorator';
 import { UserRole } from '../../database/schemas/user.auth.schema';
 import { plainToClass } from 'class-transformer';
 import { validate } from 'class-validator';
@@ -205,6 +206,28 @@ export class RecipeController {
     }
 
     return this.servingScaleService.scaleServings(dto);
+  }
+
+  @Get('dietary-recommendations')
+  @UseGuards(JwtAuthGuard)
+  async getDietaryRecommendations(
+    @GetUser() user: any,
+    @Query('vegType') vegType?: string,
+    @Query('dairyFree') dairyFree?: string,
+    @Query('nutFree') nutFree?: string,
+    @Query('glutenFree') glutenFree?: string,
+    @Query('hasDiabetes') hasDiabetes?: string,
+    @Query('country') country?: string,
+  ) {
+    const dp = user?.dietaryProfile;
+    return this.recipeService.getDietaryRecommendations({
+      vegType:    vegType    ?? dp?.vegType,
+      dairyFree:  dairyFree  !== undefined ? dairyFree  === 'true' : dp?.dairyFree,
+      nutFree:    nutFree    !== undefined ? nutFree    === 'true' : dp?.nutFree,
+      glutenFree: glutenFree !== undefined ? glutenFree === 'true' : dp?.glutenFree,
+      hasDiabetes:hasDiabetes!== undefined ? hasDiabetes === 'true': dp?.hasDiabetes,
+      country:    country    ?? user?.country,
+    });
   }
 
   @Get(':id')

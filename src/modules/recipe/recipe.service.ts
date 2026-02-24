@@ -7,6 +7,9 @@ import {
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Recipe, RecipeDocument } from '../../database/schemas/recipe.schema';
+import { FrameworkCategory, FrameworkCategoryDocument } from '../../database/schemas/framework-category.schema';
+import { Ingredient, IngredientDocument } from '../../database/schemas/ingredient.schema';
+import { DietCategory, DietCategoryDocument } from '../../database/schemas/diet.schema';
 import { CreateRecipeDto } from './dto/create-recipe.dto';
 import { UpdateRecipeDto } from './dto/update-recipe.dto';
 import { RedisService } from '../../redis/redis.service';
@@ -22,13 +25,14 @@ export class RecipeService implements OnModuleInit {
 
   constructor(
     @InjectModel(Recipe.name) private recipeModel: Model<RecipeDocument>,
+    @InjectModel(FrameworkCategory.name) private frameworkCategoryModel: Model<FrameworkCategoryDocument>,
+    @InjectModel(Ingredient.name) private ingredientModel: Model<IngredientDocument>,
+    @InjectModel(DietCategory.name) private dietCategoryModel: Model<DietCategoryDocument>,
     private readonly redisService: RedisService,
     private readonly imageUploadService: ImageUploadService,
   ) {}
 
   async onModuleInit() {
-    // Flush all country-filtered caches so stale results from before the
-    // strict-country-filter fix are never served.
     try {
       await this.redisService.delByPattern(`${this.CACHE_KEY_ALL}:country:*`);
       await this.redisService.delByPattern(`${this.CACHE_KEY_CATEGORY}:*:country:*`);
@@ -488,13 +492,10 @@ export class RecipeService implements OnModuleInit {
         { $or: ingredientConditions },
         { countries: country },
       ];
-      delete matchQuery.$or; // moved to $and
+      delete matchQuery.$or; 
     }
 
-    // Find recipes where the ingredient appears in:
-    // 1. Required ingredients (recommendedIngredient)
-    // 2. Alternative ingredients
-    // 3. Optional ingredients
+
     const recipes = await this.recipeModel
       .find(matchQuery)
       .populate('hackOrTipIds')
@@ -626,7 +627,6 @@ export class RecipeService implements OnModuleInit {
       await this.redisService.delByPattern(`${this.CACHE_KEY_ALL}:country:*`);
       await this.redisService.delByPattern(`${this.CACHE_KEY_CATEGORY}:*:country:*`);
 
-      // Clear caches for previous and new category IDs
       try {
         const prevCats = existingRecipe.frameworkCategories || [];
         for (const catId of prevCats) {
@@ -681,5 +681,152 @@ export class RecipeService implements OnModuleInit {
         );
       }
     }
+  }
+
+ 
+  private static readonly DIET_NAME_PATTERNS: Record<string, string[]> = {
+    vegan:       ['vegan'],
+    vegetarian:  ['vegetarian', 'vegetarian (lacto-ovo)'],
+    dairyFree:   ['dairy-free', 'dairy free', 'lactose-free'],
+    nutFree:     ['nut-free', 'nut free', 'peanut-free'],
+    glutenFree:  ['gluten-free', 'gluten free'],
+    diabetes:    ['diabetic-friendly', 'low-sugar', 'diabetes'],
+  };
+
+  async getDietaryRecommendations(params: {
+    vegType?: string;
+    dairyFree?: boolean;
+    nutFree?: boolean;
+    glutenFree?: boolean;
+    hasDiabetes?: boolean;
+    country?: string;
+  }): Promise<any[]> {
+    const { vegType, dairyFree, nutFree, glutenFree, hasDiabetes, country } = params;
+    const patternMap = RecipeService.DIET_NAME_PATTERNS;
+
+    const activeKeys: string[] = [];
+    if (vegType === 'VEGAN')           activeKeys.push('vegan');
+    else if (vegType === 'VEGETARIAN') activeKeys.push('vegetarian');
+    if (dairyFree)   activeKeys.push('dairyFree');
+    if (nutFree)     activeKeys.push('nutFree');
+    if (glutenFree)  activeKeys.push('glutenFree');
+    if (hasDiabetes) activeKeys.push('diabetes');
+
+    if (activeKeys.length === 0) return [];
+
+    const resultCacheKey = `dietary:recommendations:${activeKeys.sort().join('+')}`
+      + (country ? `:country:${country.toLowerCase()}` : '');
+
+    // Return cached result if available
+    try {
+      const cached = await this.redisService.get(resultCacheKey);
+      if (cached) return JSON.parse(cached);
+    } catch (_) { /* ignore redis errors */ }
+
+    // ── 2. Resolve DietCategory ObjectIds ───────────────────────────────────
+    const namePatterns = activeKeys.flatMap(k => patternMap[k] ?? []);
+    const dietCategories = await this.dietCategoryModel
+      .find({ name: { $in: namePatterns.map(p => new RegExp(`^${p}$`, 'i')) } })
+      .select('_id')
+      .lean()
+      .exec();
+
+    if (dietCategories.length === 0) {
+      return [];
+    }
+
+    const dietIds = new Set(dietCategories.map((d: any) => d._id.toString()));
+
+    const ingCacheKey = `dietary:suitable-ingredients:${[...dietIds].sort().join('+')}`;
+    let suitableIngredientIds: Set<string>;
+
+    try {
+      const cached = await this.redisService.get(ingCacheKey);
+      if (cached) {
+        suitableIngredientIds = new Set(JSON.parse(cached));
+      } else {
+        throw new Error('miss');
+      }
+    } catch (_) {
+      const allIngredients = await this.ingredientModel
+        .find({})
+        .select('_id suitableDiets')
+        .lean()
+        .exec();
+
+      suitableIngredientIds = new Set(
+        allIngredients
+          .filter((ing: any) => {
+            const suited: string[] = (ing.suitableDiets ?? []).map((id: any) => id.toString());
+            if (suited.length === 0) return true; 
+            return [...dietIds].every(dId => suited.includes(dId));
+          })
+          .map((ing: any) => ing._id.toString()),
+      );
+
+      await this.redisService.set(
+        ingCacheKey,
+        JSON.stringify([...suitableIngredientIds]),
+        this.CACHE_TTL,
+      ).catch(() => {});
+    }
+
+    const matchQuery: any = { isActive: true };
+    if (country) matchQuery.countries = normalizeCountry(country);
+
+    const recipes = await this.recipeModel
+      .find(matchQuery)
+      .select(
+        '_id title heroImageUrl order countries frameworkCategories stickerId ' +
+        'components.component.requiredIngredients.recommendedIngredient',
+      )
+      .lean()
+      .exec();
+
+    const matching = recipes.filter((recipe: any) => {
+      const requiredIds: string[] = [];
+      for (const wrapper of (recipe.components ?? [])) {
+        for (const comp of (wrapper.component ?? [])) {
+          for (const ri of (comp.requiredIngredients ?? [])) {
+            const id = ri.recommendedIngredient?.toString();
+            if (id) requiredIds.push(id);
+          }
+        }
+      }
+      if (requiredIds.length === 0) return false; // skip skeleton/empty recipes
+      return requiredIds.every(id => suitableIngredientIds.has(id));
+    });
+
+    let result = matching;
+    if (result.length === 0 && country) {
+      const allCountryRecipes = await this.recipeModel
+        .find({ isActive: true })
+        .select(
+          '_id title heroImageUrl order countries frameworkCategories stickerId ' +
+          'components.component.requiredIngredients.recommendedIngredient',
+        )
+        .lean()
+        .exec();
+
+      result = allCountryRecipes.filter((recipe: any) => {
+        const requiredIds: string[] = [];
+        for (const wrapper of (recipe.components ?? [])) {
+          for (const comp of (wrapper.component ?? [])) {
+            for (const ri of (comp.requiredIngredients ?? [])) {
+              const id = ri.recommendedIngredient?.toString();
+              if (id) requiredIds.push(id);
+            }
+          }
+        }
+        if (requiredIds.length === 0) return false;
+        return requiredIds.every(id => suitableIngredientIds.has(id));
+      });
+    }
+
+    const lean = result.map(({ components: _c, ...rest }: any) => rest);
+
+    await this.redisService.set(resultCacheKey, JSON.stringify(lean), this.CACHE_TTL).catch(() => {});
+
+    return lean;
   }
 }
