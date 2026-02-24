@@ -6,7 +6,7 @@ import { Type } from "class-transformer";
 
 
 export class SaveFoodDto{
-    @IsNotEmpty()
+    @IsOptional()
     @IsArray()
     ingredinatsIds:string[]
 

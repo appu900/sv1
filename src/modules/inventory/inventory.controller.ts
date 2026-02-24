@@ -19,6 +19,7 @@ import { AddInventoryItemDto } from './dto/add-inventory-item.dto';
 import { BatchAddInventoryItemsDto } from './dto/batch-add-inventory-items.dto';
 import { UpdateInventoryItemDto } from './dto/update-inventory-item.dto';
 import { DiscardInventoryItemDto } from './dto/discard-inventory-item.dto';
+import { ConsumeInventoryItemsDto } from './dto/consume-inventory-items.dto';
 import { VoiceAddInventoryDto } from './dto/voice-add-inventory.dto';
 import {
   GetInventoryQueryDto,
@@ -202,6 +203,20 @@ export class InventoryController {
     };
 
     return this.inventoryService.addBatch(userId, itemsWithSource as any);
+  }
+
+
+  @Post('consume')
+  @HttpCode(HttpStatus.OK)
+  async consumeItems(
+    @Request() req,
+    @Body() dto: ConsumeInventoryItemsDto,
+  ) {
+    const userId = req.user._id || req.user.userId;
+    this.logger.log(
+      `Consuming ${dto.ingredients.length} ingredients for user ${userId} (recipe: ${dto.recipeId || 'unknown'})`,
+    );
+    return this.inventoryService.consumeItems(userId, dto);
   }
 
 

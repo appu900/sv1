@@ -41,15 +41,11 @@ export class AnalyticsListner {
     @InjectModel(CommunityChallengeParticipant.name)
     private readonly challengeParticipantModel: Model<CommunityChallengeParticipantDocument>,
     private readonly redisService: RedisService,
-  ) {
-    this.logger.log('AnalyticsListener initialized and ready to receive events');
-  }
+  ) {}
 
   @OnEvent('food.saved', { async: true })
   async updateUserProfile(event: FoodSavedEvent) {
     try {
-      this.logger.log(`[AnalyticsListener] Received food.saved event:`, JSON.stringify(event));
-      
       // Prepare update operation
       const updateOperation: any = {
         $inc: {
@@ -65,12 +61,7 @@ export class AnalyticsListner {
         updateOperation.$addToSet = {
           cookedRecipes: event.frameworkId,
         };
-        this.logger.log(`[AnalyticsListener] Adding frameworkId to cookedRecipes: ${event.frameworkId}`);
-      } else {
-        this.logger.warn('[AnalyticsListener] No frameworkId provided in event');
       }
-
-      this.logger.log(`[AnalyticsListener] Updating profile with:`, JSON.stringify(updateOperation));
 
       // Update user analytics profile
       const result = await this.profileModel.findOneAndUpdate(
@@ -78,8 +69,6 @@ export class AnalyticsListner {
         updateOperation,
         { upsert: true, new: true },
       );
-      
-      this.logger.log(`[AnalyticsListener] Profile updated successfully for user ${event.userId}. New values: numberOfMealsCooked=${result.numberOfMealsCooked}, foodSavedInGrams=${result.foodSavedInGrams}`);
 
       // Update all community groups the user is a member of
       await this.updateCommunityGroups(event);
@@ -128,10 +117,6 @@ export class AnalyticsListner {
         const cacheKey = `community:group:${groupId.toString()}`;
         await this.redisService.del(cacheKey);
       }
-
-      this.logger.log(
-        `Updated ${groupIds.length} community groups for user ${event.userId}`,
-      );
     } catch (error) {
       this.logger.error(
         `Failed to update community groups: ${error.message}`,
@@ -224,10 +209,6 @@ export class AnalyticsListner {
           await this.redisService.del(listCacheKey);
         }
       }
-
-      this.logger.log(
-        `Updated ${activeChallengeIds.length} challenges for user ${event.userId}`,
-      );
     } catch (error) {
       this.logger.error(
         `Failed to update challenges: ${error.message}`,

@@ -13,6 +13,7 @@ import {
   FreshnessStatus,
   InventoryItemSource,
   WasteType,
+  DiscardReason,
 } from '../../database/schemas/user-inventory.schema';
 import {
   Ingredient,
@@ -32,6 +33,7 @@ import { AddInventoryItemDto } from './dto/add-inventory-item.dto';
 import { BatchAddInventoryItemsDto } from './dto/batch-add-inventory-items.dto';
 import { UpdateInventoryItemDto } from './dto/update-inventory-item.dto';
 import { DiscardInventoryItemDto } from './dto/discard-inventory-item.dto';
+import { ConsumeInventoryItemsDto } from './dto/consume-inventory-items.dto';
 import { GetInventoryQueryDto } from './dto/get-inventory-query.dto';
 import { RedisService } from '../../redis/redis.service';
 
@@ -359,6 +361,65 @@ export class InventoryService {
       `Fully discarded "${item.name}" (${dto.reason}, ${dto.wasteType}) for user ${userId}`,
     );
     return item;
+  }
+
+
+  /**
+   * Consume inventory items after cooking a recipe.
+   * For each ingredient in the list, finds the matching inventory item
+   * (preferring the one expiring soonest to reduce waste) and marks it
+   * as discarded with reason COOKED.
+   */
+  async consumeItems(
+    userId: string,
+    dto: ConsumeInventoryItemsDto,
+  ): Promise<{ consumed: number; items: UserInventoryItemDocument[] }> {
+    const userOid = new Types.ObjectId(userId);
+    const consumedItems: UserInventoryItemDocument[] = [];
+
+    for (const ingredient of dto.ingredients) {
+      if (!Types.ObjectId.isValid(ingredient.ingredientId)) {
+        this.logger.warn(
+          `Skipping invalid ingredientId: ${ingredient.ingredientId}`,
+        );
+        continue;
+      }
+
+      const ingredientOid = new Types.ObjectId(ingredient.ingredientId);
+
+      // Find the inventory item with this ingredientId, preferring the one expiring soonest
+      const item = await this.inventoryModel
+        .findOne({
+          userId: userOid,
+          ingredientId: ingredientOid,
+          isDiscarded: false,
+        })
+        .sort({ expiresAt: 1 }) // expiring soonest first to reduce waste
+        .exec();
+
+      if (item) {
+        // Fully mark as consumed/cooked
+        item.isDiscarded = true;
+        item.discardReason = DiscardReason.COOKED;
+        item.wasteType = WasteType.WET;
+        item.discardedAt = new Date();
+        item.discardedQuantity = item.quantity;
+        await item.save();
+        consumedItems.push(item);
+      }
+    }
+
+    if (consumedItems.length > 0) {
+      await this.invalidateCache(userId);
+      this.logger.log(
+        `Consumed ${consumedItems.length} inventory items for user ${userId} (recipe: ${dto.recipeId || 'unknown'})`,
+      );
+    }
+
+    return {
+      consumed: consumedItems.length,
+      items: consumedItems,
+    };
   }
 
 

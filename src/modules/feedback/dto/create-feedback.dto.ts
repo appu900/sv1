@@ -1,4 +1,5 @@
 import {
+  IsArray,
   IsBoolean,
   IsInt,
   IsNotEmpty,
@@ -53,4 +54,8 @@ export class CreateFeedbackDto {
   @ValidateNested()
   @Type(() => FeedbackDataDto)
   data?: FeedbackDataDto;
+
+  @IsOptional()
+  @IsArray()
+  ingredient_ids?: string[];
 }

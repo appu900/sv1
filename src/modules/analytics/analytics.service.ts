@@ -61,11 +61,9 @@ export class AnalyticsService {
   ) {}
 async saveFood(userId: string, ingredinatIds: string[], frameworkId?: string, directIngredients?: { name: string; averageWeight: number }[]) {
   try {
-    // Load user first
-    const user = await this.userModel.findOne({ _id: userId, role: "USER" }).lean();
+    const user = await this.userModel.findOne({ _id: userId }).lean();
     if (!user) throw new Error('User not found');
-    if (!user.country) throw new Error('User has no country set — please complete onboarding');
-    const country = user.country;
+    const country = normalizeCountry(user.country || 'India') || 'India';
 
     let ingredinats: Array<{ name: string; averageWeight: number }>; 
     // Prefer DB lookup by IDs if provided
@@ -77,10 +75,8 @@ async saveFood(userId: string, ingredinatIds: string[], frameworkId?: string, di
       ingredinats = (directIngredients || []).map(i => ({ name: i.name, averageWeight: i.averageWeight || 0 }));
     }
 
-    if (!ingredinats.length) throw new Error('No ingredients found');
-
     const foodSavedInGrams = ingredinats.reduce((sum, i) => sum + (i.averageWeight || 0), 0);
-    const ingredientNames = ingredinats.map(i => i.name).join(', ');
+    const ingredientNames = ingredinats.map(i => i.name).join(', ') || 'none';
 
     // Run AI price calculations in parallel with error handling
     let aiResults: PriceCalculationResult[] = [];
@@ -89,17 +85,18 @@ async saveFood(userId: string, ingredinatIds: string[], frameworkId?: string, di
     let totalCo2SavedInGrams: number = 0;
     
     try {
-      aiResults = await Promise.all(
-        ingredinats.map(i => this.calculatePriceWithAI(i.name, i.averageWeight || 0, country))
-      );
-      totalPriceInLocalCurrency = aiResults.reduce((sum, r) => sum + (r.priceInLocalCurrency || 0), 0);
+      if (ingredinats.length > 0) {
+        aiResults = await Promise.all(
+          ingredinats.map(i => this.calculatePriceWithAI(i.name, i.averageWeight || 0, country))
+        );
+        totalPriceInLocalCurrency = aiResults.reduce((sum, r) => sum + (r.priceInLocalCurrency || 0), 0);
 
-      co2Results = await Promise.all(
-        ingredinats.map(i => this.calculateCo2SavedWithAI(i.name, i.averageWeight || 0, country))
-      );
-      totalCo2SavedInGrams = co2Results.reduce((sum, r) => sum + Math.max(0, (r.co2SavedKg || 0) * 1000), 0);
+        co2Results = await Promise.all(
+          ingredinats.map(i => this.calculateCo2SavedWithAI(i.name, i.averageWeight || 0, country))
+        );
+        totalCo2SavedInGrams = co2Results.reduce((sum, r) => sum + Math.max(0, (r.co2SavedKg || 0) * 1000), 0);
+      }
     } catch (aiError) {
-      // If AI fails, continue without price calculation
       aiResults = ingredinats.map(i => ({
         ingredient: i.name,
         weightInGrams: i.averageWeight,

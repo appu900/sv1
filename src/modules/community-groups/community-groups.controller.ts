@@ -79,7 +79,6 @@ export class CommunityGroupsController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   async fetchGroupsForUserId(@GetUser() user: any) {
     const userId = user.userId;
-    console.log('this one');
     return this.communityGroupsService.getUserGroups(userId);
   }
 
@@ -90,7 +89,6 @@ export class CommunityGroupsController {
     return this.communityGroupsService.findOne(communityId);
   }
 
-  // ** update group only group owner can update
   @Patch('')
   @Roles(UserRole.USER)
   @UseGuards(JwtAuthGuard, RolesGuard)

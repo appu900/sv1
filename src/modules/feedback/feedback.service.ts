@@ -9,8 +9,7 @@ import { Model, Types } from 'mongoose';
 import { Feedback, FeedbackDocument } from 'src/database/schemas/feedback.schema';
 import { CreateFeedbackDto } from './dto/create-feedback.dto';
 import { UpdateFeedbackDto } from './dto/update-feedback.dto';
-import { EventEmitter2 } from '@nestjs/event-emitter';
-import { FoodSavedEvent } from '../analytics/analytics.service';
+import { AnalyticsService } from '../analytics/analytics.service';
 import {
   Ingredient,
   IngredientDocument,
@@ -29,15 +28,10 @@ export class FeedbackService {
     private readonly userModel: Model<UserDocument>,
     @InjectModel(Recipe.name)
     private readonly recipeModel: Model<RecipeDocument>,
-    private readonly eventEmitter: EventEmitter2,
+    private readonly analyticsService: AnalyticsService,
   ) {}
 
   async create(userId: string, createFeedbackDto: CreateFeedbackDto) {
-    console.log('[FeedbackService] Create called with:', {
-      userId,
-      createDto: JSON.stringify(createFeedbackDto),
-    });
-
     if (!Types.ObjectId.isValid(userId)) {
       throw new BadRequestException('Invalid user ID');
     }
@@ -50,8 +44,6 @@ export class FeedbackService {
     });
 
     if (existingFeedback) {
-      console.log('[FeedbackService] Found existing feedback, updating instead of creating new');
-      
       // Update existing feedback
       existingFeedback.prompted = createFeedbackDto.prompted || existingFeedback.prompted;
       existingFeedback.data = {
@@ -62,8 +54,6 @@ export class FeedbackService {
       existingFeedback.updatedAt = new Date();
       
       await existingFeedback.save();
-      
-      console.log('[FeedbackService] Feedback updated with data:', JSON.stringify(existingFeedback.data));
       return { feedback: existingFeedback };
     }
 
@@ -75,8 +65,26 @@ export class FeedbackService {
       data: createFeedbackDto.data || {},
     });
 
-    console.log('[FeedbackService] Feedback created with data:', JSON.stringify(feedback.data));
-
+    // Trigger full analytics for cook completions (prompted === false):
+    // runs AI price + CO2 calculations and emits food.saved event which
+    // increments numberOfMealsCooked, totalMoneySaved, totalCo2SavedInGrams, leaderboard, etc.
+    if (createFeedbackDto.prompted === false) {
+      try {
+        const ingredientIds = createFeedbackDto.ingredient_ids || [];
+        // directIngredients fallback: derive weight from food_saved (kg→g) if no IDs
+        const directIngredients = ingredientIds.length === 0 && createFeedbackDto.data?.food_saved
+          ? [{ name: 'meal', averageWeight: (createFeedbackDto.data.food_saved || 0) * 1000 }]
+          : [];
+        await this.analyticsService.saveFood(
+          userId,
+          ingredientIds,
+          createFeedbackDto.framework_id,
+          directIngredients,
+        );
+      } catch (eventErr) {
+        console.error('[FeedbackService] Failed to trigger analytics:', eventErr);
+      }
+    }
 
     return { feedback };
   }
@@ -120,12 +128,6 @@ export class FeedbackService {
     userId: string,
     updateFeedbackDto: UpdateFeedbackDto,
   ) {
-    console.log('[FeedbackService] Update called with:', {
-      feedbackId,
-      userId,
-      updateDto: JSON.stringify(updateFeedbackDto),
-    });
-
     if (!Types.ObjectId.isValid(feedbackId)) {
       throw new BadRequestException('Invalid feedback ID');
     }
@@ -143,8 +145,6 @@ export class FeedbackService {
       throw new ForbiddenException('Access denied');
     }
 
-    console.log('[FeedbackService] Existing feedback data:', JSON.stringify(feedback.data));
-
     // Update fields
     if (updateFeedbackDto.prompted !== undefined) {
       feedback.prompted = updateFeedbackDto.prompted;
@@ -157,17 +157,10 @@ export class FeedbackService {
       };
       
       feedback.markModified('data');
-
-      console.log('[FeedbackService] Updated feedback data:', JSON.stringify(feedback.data));
-
-    
     }
 
     feedback.updatedAt = new Date();
     await feedback.save();
-
-    console.log('[FeedbackService] Feedback saved, final data:', JSON.stringify(feedback.data));
-
     return { feedback };
   }
 

@@ -32,6 +32,6 @@ import { User,UserSchema } from 'src/database/schemas/user.auth.schema';
   ],
   providers: [AnalyticsService,AnalyticsListner, AppSessionListener],
   controllers: [AnalyticsController],
-  exports:[]
+  exports:[AnalyticsService]
 })
 export class AnalyticsModule {}
