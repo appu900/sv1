@@ -648,4 +648,207 @@ Respond in JSON only: { "wasteType": "...", "confidence": 0.95, "disposalTip": "
 
     return null; 
   }
+
+  async estimateShelfLife(
+    dishName: string,
+    storageLocation: string,
+    dishCategory?: string,
+  ): Promise<{
+    shelfLifeDays: number;
+    useByDate: string;
+    confidence: number;
+    storageTip: string;
+    warningSign: string;
+  }> {
+    const cacheKey = `${this.CACHE_PREFIX}:shelf-life:${dishName.toLowerCase().trim()}:${storageLocation}`;
+
+    try {
+      const cached = await this.redisService.get(cacheKey);
+      if (cached) return JSON.parse(cached);
+    } catch {}
+
+    const defaultDays: Record<string, number> = {
+      pantry: 1,
+      fridge: 3,
+      freezer: 90,
+    };
+
+    try {
+      const response = await this.openai.chat.completions.create({
+        model: 'gpt-4.1',
+        messages: [
+          {
+            role: 'system',
+            content: `You are a food safety expert specialising in Indian cuisine and home-cooked meals.
+Given a cooked dish name and its storage location, estimate how long the leftovers will stay safe and good to eat.
+
+GUIDELINES:
+- Be specific to the dish type. Curries with gravy last longer than dry items. Rice spoils faster than dal.
+- Dairy-heavy dishes (paneer, raita, kheer) spoil faster in fridge.
+- Fried items (pakora, vada) lose quality fast but are safe longer.
+- Freezer estimates should reflect quality, not just safety.
+- Storage location: "pantry" = room temperature in Indian climate (25-35°C), "fridge" = 4°C, "freezer" = -18°C.
+
+Respond ONLY with valid JSON, no markdown:
+{
+  "shelfLifeDays": <number>,
+  "confidence": <0-1>,
+  "storageTip": "<1-2 sentence specific tip for THIS dish in THIS storage>",
+  "warningSign": "<what to look/smell for to know it has gone bad>"
+}`,
+          },
+          {
+            role: 'user',
+            content: `Dish: "${dishName}"${dishCategory ? ` (Category: ${dishCategory})` : ''}
+Storage: ${storageLocation}
+How many days will this last?`,
+          },
+        ],
+        temperature: 0.2,
+        max_tokens: 300,
+      });
+
+      let content = response.choices[0]?.message?.content?.trim() || '';
+      if (content.startsWith('```')) {
+        content = content
+          .replace(/^```(?:json)?\n?/, '')
+          .replace(/\n?```$/, '');
+      }
+
+      const parsed = JSON.parse(content);
+      const days = Math.max(1, Math.round(parsed.shelfLifeDays || defaultDays[storageLocation] || 3));
+      const useByDate = new Date(
+        Date.now() + days * 24 * 60 * 60 * 1000,
+      ).toISOString();
+
+      const result = {
+        shelfLifeDays: days,
+        useByDate,
+        confidence: parsed.confidence ?? 0.7,
+        storageTip: parsed.storageTip || 'Store in a sealed airtight container.',
+        warningSign: parsed.warningSign || 'Discard if you notice off smells, sliminess, or mould.',
+      };
+
+      try {
+        await this.redisService.set(cacheKey, JSON.stringify(result), 7 * 24 * 60 * 60);
+      } catch {}
+
+      return result;
+    } catch (error) {
+      this.logger.error(`Shelf-life estimation failed for "${dishName}": ${error.message}`);
+      const days = defaultDays[storageLocation] || 3;
+      return {
+        shelfLifeDays: days,
+        useByDate: new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString(),
+        confidence: 0.3,
+        storageTip: 'Store in a sealed airtight container.',
+        warningSign: 'Discard if you notice off smells, sliminess, or mould.',
+      };
+    }
+  }
+  async getLeftoverMakeoverIdeas(
+    dishName: string,
+    storageLocation?: string,
+    country?: string,
+  ): Promise<{
+    ideas: Array<{
+      title: string;
+      description: string;
+      effort: 'easy' | 'medium';
+      timeMinutes: number;
+    }>;
+  }> {
+    const cacheKey = `${this.CACHE_PREFIX}:makeover:${dishName.toLowerCase().trim()}:${storageLocation || 'any'}`;
+
+    try {
+      const cached = await this.redisService.get(cacheKey);
+      if (cached) return JSON.parse(cached);
+    } catch {}
+
+    try {
+      const response = await this.openai.chat.completions.create({
+        model: 'gpt-4.1',
+        messages: [
+          {
+            role: 'system',
+            content: `You are a creative Indian home cook assistant for the Saveful India app.
+Given leftover cooked food, suggest 4-5 creative and practical ways to transform it into a new meal.
+
+RULES:
+1. Suggestions must be SPECIFIC to the dish — not generic "make a wrap" advice.
+2. Each idea should feel like a real transformation, not just reheating.
+3. Prefer ideas that use minimal extra ingredients (things most Indian kitchens have).
+4. Mix easy (5-10 min) and medium-effort (15-30 min) ideas.
+5. Consider Indian kitchen staples: onion, tomato, basic spices, oil, bread/roti, rice, eggs.
+6. If the storage is "freezer", include a thawing/reheating tip in the description.
+${country === 'IN' ? '7. Focus on Indian cooking styles and flavour profiles.' : '7. Include a mix of Indian and international fusion ideas.'}
+
+Respond ONLY with valid JSON:
+{
+  "ideas": [
+    {
+      "title": "Short catchy name",
+      "description": "1-2 sentences on how to make it",
+      "effort": "easy" or "medium",
+      "timeMinutes": <number>
+    }
+  ]
+}`,
+          },
+          {
+            role: 'user',
+            content: `I have leftover "${dishName}"${storageLocation ? ` stored in the ${storageLocation}` : ''}. What can I transform it into?`,
+          },
+        ],
+        temperature: 0.7,
+        max_tokens: 600,
+      });
+
+      let content = response.choices[0]?.message?.content?.trim() || '';
+      if (content.startsWith('```')) {
+        content = content
+          .replace(/^```(?:json)?\n?/, '')
+          .replace(/\n?```$/, '');
+      }
+
+      const parsed = JSON.parse(content);
+      const result = {
+        ideas: (parsed.ideas || []).slice(0, 5).map((idea: any) => ({
+          title: idea.title || 'Leftover remix',
+          description: idea.description || '',
+          effort: idea.effort === 'medium' ? 'medium' : 'easy',
+          timeMinutes: idea.timeMinutes || 15,
+        })),
+      };
+      try {
+        await this.redisService.set(cacheKey, JSON.stringify(result), 3 * 24 * 60 * 60);
+      } catch {}
+
+      return result;
+    } catch (error) {
+      this.logger.error(`Makeover ideas generation failed for "${dishName}": ${error.message}`);
+      return {
+        ideas: [
+          {
+            title: `${dishName} Stuffed Paratha`,
+            description: `Mix leftover ${dishName} with spices, stuff into roti dough, and pan-fry until golden.`,
+            effort: 'medium',
+            timeMinutes: 20,
+          },
+          {
+            title: `${dishName} Fried Rice`,
+            description: `Stir-fry day-old rice with chopped ${dishName}, soy sauce, and a fried egg on top.`,
+            effort: 'easy',
+            timeMinutes: 10,
+          },
+          {
+            title: `${dishName} Wrap / Roll`,
+            description: `Warm a roti or tortilla, add ${dishName}, fresh onion, chutney, and roll it up.`,
+            effort: 'easy',
+            timeMinutes: 5,
+          },
+        ],
+      };
+    }
+  }
 }

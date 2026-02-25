@@ -38,6 +38,23 @@ class FeedbackDataDto {
   @IsString()
   @MaxLength(500)
   review?: string;
+
+  // ─── Post-make survey fields ───────────────────────────────────
+  @IsOptional()
+  @IsString()
+  improvement_reason?: string;
+
+  @IsOptional()
+  @IsString()
+  portion_size?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  has_leftovers?: boolean;
+
+  @IsOptional()
+  @IsString()
+  leftover_storage?: string;
 }
 
 export class CreateFeedbackDto {

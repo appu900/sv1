@@ -25,6 +25,7 @@ import {
   GetInventoryQueryDto,
   WasteClassifyDto,
 } from './dto/get-inventory-query.dto';
+import { EstimateShelfLifeDto, LeftoverMakeoverDto } from './dto/leftover-ai.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/role.decorators';
@@ -328,6 +329,30 @@ export class InventoryController {
     return this.inventoryAiService.classifyWaste(
       dto.ingredientName,
       dto.packaging,
+    );
+  }
+
+  @Post('leftover/shelf-life')
+  @HttpCode(HttpStatus.OK)
+  async estimateShelfLife(@Body() dto: EstimateShelfLifeDto) {
+    this.logger.log(
+      `Estimating shelf life for "${dto.dishName}" in ${dto.storageLocation}`,
+    );
+    return this.inventoryAiService.estimateShelfLife(
+      dto.dishName,
+      dto.storageLocation,
+      dto.dishCategory,
+    );
+  }
+
+  @Post('leftover/makeover-ideas')
+  @HttpCode(HttpStatus.OK)
+  async getLeftoverMakeoverIdeas(@Body() dto: LeftoverMakeoverDto) {
+    this.logger.log(`Generating makeover ideas for "${dto.dishName}"`);
+    return this.inventoryAiService.getLeftoverMakeoverIdeas(
+      dto.dishName,
+      dto.storageLocation,
+      dto.country,
     );
   }
 }

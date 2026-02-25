@@ -22,6 +22,11 @@ export class Feedback {
     meal_id?: string;
     rating?: number; // 1-5 carrot rating
     review?: string; // Optional text review
+    // Post-make survey fields
+    improvement_reason?: string;
+    portion_size?: string;
+    has_leftovers?: boolean;
+    leftover_storage?: string;
   };
 
   @Prop({ type: Date, default: Date.now })
