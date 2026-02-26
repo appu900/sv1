@@ -2,6 +2,9 @@ import {
   Injectable,
   BadRequestException,
   NotFoundException,
+  Inject,
+  forwardRef,
+  Logger,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
@@ -13,14 +16,19 @@ import {
   TrackSurveyResponseDto,
   WeeklySavingsSummaryDto,
 } from './dto/track-survey-response.dto';
+import { QantasService } from '../qantas/qantas.service';
 
 @Injectable()
 export class TrackSurveyService {
+  private readonly logger = new Logger(TrackSurveyService.name);
+
   constructor(
     @InjectModel(TrackSurvey.name)
     private trackSurveyModel: Model<TrackSurveyDocument>,
     @InjectModel(User.name)
     private userModel: Model<UserDocument>,
+    @Inject(forwardRef(() => QantasService))
+    private readonly qantasService: QantasService,
   ) {}
 
   private getWeekStart(surveyDay: number): Date {
@@ -148,7 +156,6 @@ export class TrackSurveyService {
   ): Promise<TrackSurveyResponseDto> {
     const userIdObj = new Types.ObjectId(userId);
 
-    // Check eligibility
     const eligibility = await this.checkEligibility(userId);
     if (!eligibility.eligible) {
       throw new BadRequestException(
@@ -197,6 +204,12 @@ export class TrackSurveyService {
     });
 
     const saved = await survey.save();
+
+    try {
+      await this.qantasService.onSurveyCompleted(userId, saved._id.toString());
+    } catch (error) {
+      this.logger.error(`Qantas onSurveyCompleted failed for user ${userId}`, error);
+    }
 
     const dto_response = this.toResponseDto(saved);
     dto_response.prev_personal_bests = personalBests;

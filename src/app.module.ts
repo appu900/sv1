@@ -25,6 +25,7 @@ import { FavouriteModule } from './modules/favourite/favourite.module';
 import { BadgesModule } from './modules/badges/badges.module';
 import { ShoppingListModule } from './modules/shopping-list/shopping-list.module';
 import { TrackSurveyModule } from './modules/track-survey/track-survey.module';
+import { QantasModule } from './modules/qantas/qantas.module';
 import { InventoryModule } from './modules/inventory/inventory.module';
 import {EventEmitterModule} from "@nestjs/event-emitter"
 import { WinstonModule, WINSTON_MODULE_PROVIDER } from 'nest-winston';
@@ -59,6 +60,7 @@ import { SqsModule } from './sqs/sqs.module';
     BadgesModule,
     ShoppingListModule,
     TrackSurveyModule,
+    QantasModule,
     InventoryModule,
     SqsModule,
   ],
