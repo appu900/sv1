@@ -404,6 +404,69 @@ export class RecipeService implements OnModuleInit {
   }
 
 
+  async findBySlug(slug: string): Promise<Recipe> {
+    if (!slug || typeof slug !== 'string') {
+      throw new BadRequestException('Slug is required');
+    }
+
+    const cacheKey = `recipes:slug:${slug}`;
+    try {
+      const cached = await this.redisService.get(cacheKey);
+      if (cached) {
+        return JSON.parse(cached);
+      }
+    } catch (error) {
+      console.error('Error parsing cached recipe by slug, clearing cache:', error.message);
+      await this.redisService.del(cacheKey);
+    }
+
+    // Build a regex that matches titles whose slugified form equals the slug.
+    // Convert slug back to a title-like pattern: "chicken-tikka" → "chicken tikka" (case-insensitive)
+    const titlePattern = slug.replace(/-/g, '\\s+');
+
+    const recipe = await this.recipeModel
+      .findOne({ isActive: true, title: { $regex: new RegExp(`^${titlePattern}$`, 'i') } })
+      .populate('hackOrTipIds')
+      .populate('stickerId')
+      .populate('frameworkCategories')
+      .populate('sponsorId')
+      .populate('useLeftoversIn')
+      .populate({
+        path: 'components.component.requiredIngredients.recommendedIngredient',
+        model: 'Ingredient',
+      })
+      .populate({
+        path: 'components.component.requiredIngredients.alternativeIngredients.ingredient',
+        model: 'Ingredient',
+      })
+      .populate({
+        path: 'components.component.optionalIngredients.ingredient',
+        model: 'Ingredient',
+      })
+      .populate({
+        path: 'components.component.componentSteps.hackOrTipIds',
+        model: 'HackOrTip',
+      })
+      .populate({
+        path: 'components.component.componentSteps.relevantIngredients',
+        model: 'Ingredient',
+      })
+      .lean()
+      .exec();
+
+    if (!recipe) {
+      throw new NotFoundException(`Recipe with slug "${slug}" not found`);
+    }
+
+    await this.redisService.set(
+      cacheKey,
+      JSON.stringify(recipe),
+      this.CACHE_TTL,
+    );
+
+    return recipe;
+  }
+
   async findByFrameworkCategory(categoryId: string, country?: string): Promise<Recipe[]> {
     if (!Types.ObjectId.isValid(categoryId)) {
       throw new BadRequestException('Invalid category ID format');

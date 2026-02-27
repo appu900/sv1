@@ -80,6 +80,13 @@ export class IngredientsController {
     return this.ingrediantsService.getAllIngredients(country);
   }
 
+  @Get('batch')
+  async getIngredientsByIds(@Query('ids') ids: string) {
+    if (!ids) return [];
+    const idArray = ids.split(',').map(id => id.trim()).filter(Boolean);
+    return this.ingrediantsService.getIngredientsByIds(idArray);
+  }
+
   @Get(':id')
   async getIngredientById(@Param('id') id: string) {
     return this.ingrediantsService.getIngredientById(id);

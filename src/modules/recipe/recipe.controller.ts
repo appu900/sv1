@@ -208,6 +208,11 @@ export class RecipeController {
     return this.servingScaleService.scaleServings(dto);
   }
 
+  @Get('by-slug/:slug')
+  async findBySlug(@Param('slug') slug: string) {
+    return this.recipeService.findBySlug(slug);
+  }
+
   @Get('dietary-recommendations')
   @UseGuards(JwtAuthGuard)
   async getDietaryRecommendations(

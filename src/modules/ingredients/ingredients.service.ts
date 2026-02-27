@@ -323,6 +323,25 @@ export class IngredientsService implements OnModuleInit {
     return ingredient;
   }
 
+  async getIngredientsByIds(ids: string[]) {
+    const validIds = ids
+      .filter(id => Types.ObjectId.isValid(id))
+      .map(id => new Types.ObjectId(id));
+    if (validIds.length === 0) return [];
+
+    const ingredients = await this.ingredientModel
+      .find({ _id: { $in: validIds } })
+      .populate('categoryId', 'name imageUrl')
+      .populate('suitableDiets', 'name')
+      .populate('parentIngredients', 'name averageWeight')
+      .populate('sponsorId', 'title logo logoBlackAndWhite broughtToYouBy tagline')
+      .populate('relatedHacks', 'title type shortDescription')
+      .populate('stickerId', 'title imageUrl description')
+      .lean();
+
+    return ingredients;
+  }
+
   async updateIngredient(
     id: string,
     dto: UpdateIngredientDto,
