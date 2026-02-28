@@ -100,7 +100,6 @@ export class ExpoGateway {
           status: response.status,
           statusText: response.statusText,
         });
-        // Treat all as retryable on HTTP errors
         result.retryableTokens.push(...tokens);
         return result;
       }
@@ -123,7 +122,6 @@ export class ExpoGateway {
             code: errCode,
           });
 
-          // DeviceNotRegistered = permanent failure; everything else = retryable
           if (errCode === 'DeviceNotRegistered') {
             result.invalidTokens.push(token);
           } else {

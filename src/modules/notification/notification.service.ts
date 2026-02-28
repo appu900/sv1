@@ -24,7 +24,7 @@ import {
   PRIORITY_WEIGHT,
 } from 'src/database/schemas/notification.schema';
 import { RedisService } from 'src/redis/redis.service';
-import { NotificationProcessor } from './notification.processor';
+import { NotificationProducer } from './notification.producer';
 import {
   BROADCAST_COOLDOWN_SECONDS,
   BROADCAST_RATE_KEY,
@@ -53,7 +53,6 @@ export interface SendNotificationInput {
   scheduledAt?: string;
 }
 
-
 @Injectable()
 export class NotificationService {
   constructor(
@@ -62,7 +61,7 @@ export class NotificationService {
     @InjectModel(Notification.name)
     private readonly notifModel: Model<NotificationDocument>,
     private readonly redis: RedisService,
-    private readonly processor: NotificationProcessor,
+    private readonly producer: NotificationProducer,
     @Inject(WINSTON_MODULE_PROVIDER) private readonly logger: Logger,
   ) {}
 
@@ -172,7 +171,11 @@ export class NotificationService {
           );
         }
       }
-      await this.redis.set(BROADCAST_RATE_KEY, Date.now(), BROADCAST_COOLDOWN_SECONDS);
+      await this.redis.set(
+        BROADCAST_RATE_KEY,
+        Date.now(),
+        BROADCAST_COOLDOWN_SECONDS,
+      );
     }
 
     const priority = (input.priority ?? 'normal') as NotificationPriority;
@@ -185,7 +188,8 @@ export class NotificationService {
       imageUrl: input.imageUrl,
       priority,
       priorityWeight: PRIORITY_WEIGHT[priority] ?? 1,
-      targetUserIds: input.targetUserIds?.map((id) => new Types.ObjectId(id)) ?? [],
+      targetUserIds:
+        input.targetUserIds?.map((id) => new Types.ObjectId(id)) ?? [],
       topic: input.topic,
       isBroadcast: input.isBroadcast ?? false,
       scheduledAt: input.scheduledAt ? new Date(input.scheduledAt) : undefined,
@@ -193,11 +197,23 @@ export class NotificationService {
       status: NotificationStatus.QUEUED,
     });
 
-    this.logger.info('Notification queued', {
+
+    const delayMs = input.scheduledAt
+      ? Math.max(0, new Date(input.scheduledAt).getTime() - Date.now())
+      : 0;
+
+    await this.producer.enqueueNotification(
+      String(notif._id),
+      priority,
+      delayMs > 0 ? delayMs : undefined,
+    );
+
+    this.logger.info('Notification queued to BullMQ', {
       service: 'NotificationService',
       notificationId: notif._id,
       isBroadcast: input.isBroadcast,
       targetCount: input.targetUserIds?.length ?? 'broadcast',
+      scheduled: !!input.scheduledAt,
     });
 
     return {
@@ -270,6 +286,13 @@ export class NotificationService {
     androidTokens: number;
     queuedNotifications: number;
     sentToday: number;
+    queue: {
+      waiting: number;
+      active: number;
+      completed: number;
+      failed: number;
+      delayed: number;
+    };
   }> {
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
@@ -281,18 +304,24 @@ export class NotificationService {
       androidTokens,
       queuedNotifications,
       sentToday,
+      queueStats,
     ] = await Promise.all([
       this.tokenModel.countDocuments(),
       this.tokenModel.countDocuments({ isActive: true }),
       this.tokenModel.countDocuments({ isActive: true, platform: 'ios' }),
       this.tokenModel.countDocuments({ isActive: true, platform: 'android' }),
       this.notifModel.countDocuments({
-        status: { $in: [NotificationStatus.QUEUED, NotificationStatus.PROCESSING] },
+        status: {
+          $in: [NotificationStatus.QUEUED, NotificationStatus.PROCESSING],
+        },
       }),
       this.notifModel.countDocuments({
-        status: { $in: [NotificationStatus.SENT, NotificationStatus.PARTIALLY_SENT] },
+        status: {
+          $in: [NotificationStatus.SENT, NotificationStatus.PARTIALLY_SENT],
+        },
         completedAt: { $gte: todayStart },
       }),
+      this.producer.getQueueStats(),
     ]);
 
     return {
@@ -302,6 +331,7 @@ export class NotificationService {
       androidTokens,
       queuedNotifications,
       sentToday,
+      queue: queueStats,
     };
   }
 }
