@@ -3,11 +3,15 @@ import {
   Controller,
   Delete,
   Get,
+  Inject,
   Param,
   Post,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
+import { WINSTON_MODULE_PROVIDER } from 'nest-winston';
+import { Logger } from 'winston';
 import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
 import { RolesGuard } from 'src/common/guards/roles.guard';
 import { GetUser } from 'src/common/decorators/Get.user.decorator';
@@ -19,14 +23,31 @@ import { NotificationStatus } from 'src/database/schemas/notification.schema';
 
 @Controller('notifications')
 export class NotificationController {
-  constructor(private readonly notificationService: NotificationService) {}
+  constructor(
+    private readonly notificationService: NotificationService,
+    @Inject(WINSTON_MODULE_PROVIDER) private readonly logger: Logger,
+  ) {}
+
+  /** Public health-check — no auth needed */
+  @Get('ping')
+  ping() {
+    return { status: 'ok', timestamp: new Date().toISOString() };
+  }
 
   @Post('token')
   @UseGuards(JwtAuthGuard)
   async registerToken(
     @Body() dto: RegisterTokenDto,
     @GetUser() user: any,
+    @Req() req: any,
   ) {
+    this.logger.info('POST /notifications/token received', {
+      service: 'NotificationController',
+      userId: user?.userId,
+      platform: dto?.platform,
+      tokenPrefix: dto?.token?.substring(0, 20),
+      ip: req?.ip,
+    });
     return this.notificationService.registerToken(user.userId, dto);
   }
 
