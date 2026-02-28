@@ -46,6 +46,7 @@ import { NotificationModule } from './modules/notification/notification.module';
         if (redisUrl) {
           const url = new URL(redisUrl.replace(/^redis:\/\//, 'rediss://'));
           return {
+            prefix: '{bull}',
             connection: {
               host: url.hostname,
               port: Number(url.port) || 6379,
@@ -58,6 +59,7 @@ import { NotificationModule } from './modules/notification/notification.module';
           };
         }
         return {
+          prefix: '{bull}',
           connection: {
             host: config.get('REDIS_HOST', '127.0.0.1'),
             port: config.get<number>('REDIS_PORT', 6379),
