@@ -105,7 +105,7 @@ export class InventoryExpiryCronService {
             '⏰ Items Expiring Soon',
             body,
             { type: 'expiry_warning', count: String(count) },
-            '/inventory',
+            'inventory',
           );
         } catch (err) {
           this.logger.warn(
@@ -145,7 +145,7 @@ export class InventoryExpiryCronService {
             '🚨 Expired Items',
             body,
             { type: 'expired_items', count: String(count) },
-            '/inventory',
+            'inventory',
           );
         } catch (err) {
           this.logger.warn(
@@ -203,7 +203,7 @@ export class InventoryExpiryCronService {
             '📊 Your Weekly Waste Summary',
             body,
             { type: 'weekly_waste_summary', count: String(total) },
-            '/track',
+            'track',
           );
         } catch (err) {
           this.logger.warn(

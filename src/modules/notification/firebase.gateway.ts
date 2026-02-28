@@ -3,12 +3,10 @@ import { ConfigService } from '@nestjs/config';
 import * as admin from 'firebase-admin';
 import { WINSTON_MODULE_PROVIDER } from 'nest-winston';
 import { Logger } from 'winston';
-import {
-  BatchSendResult,
-  FirebaseMessagePayload,
-} from './interfaces';
+import { BatchSendResult, FirebaseMessagePayload } from './interfaces';
 import {
   FCM_BATCH_SIZE,
+  FCM_PARALLEL_BATCHES,
   UNREGISTERED_ERROR_CODES,
   TRANSIENT_ERROR_CODES,
 } from './constants';
@@ -35,18 +33,9 @@ export class FirebaseGateway implements OnModuleInit {
       return;
     }
 
-    // Handle both escaped (\n literal) and real newlines in the private key
     const resolvedKey = privateKey.includes('\n')
       ? privateKey.replace(/\\n/g, '\n')
       : privateKey;
-
-    this.logger.info('Firebase init attempt', {
-      service: 'FirebaseGateway',
-      projectId,
-      clientEmail,
-      keyLength: resolvedKey.length,
-      keyStartsWith: resolvedKey.substring(0, 30),
-    });
 
     try {
       this.app = admin.initializeApp({
@@ -72,6 +61,7 @@ export class FirebaseGateway implements OnModuleInit {
     return !!this.app;
   }
 
+
   async sendToTokens(
     tokens: string[],
     payload: FirebaseMessagePayload,
@@ -95,12 +85,26 @@ export class FirebaseGateway implements OnModuleInit {
 
     const chunks = this.chunkArray(tokens, FCM_BATCH_SIZE);
 
-    for (const chunk of chunks) {
-      const result = await this.sendBatch(chunk, payload);
-      aggregated.successTokens.push(...result.successTokens);
-      aggregated.retryableTokens.push(...result.retryableTokens);
-      aggregated.invalidTokens.push(...result.invalidTokens);
+    for (let i = 0; i < chunks.length; i += FCM_PARALLEL_BATCHES) {
+      const window = chunks.slice(i, i + FCM_PARALLEL_BATCHES);
+      const results = await Promise.all(
+        window.map((chunk) => this.sendBatch(chunk, payload)),
+      );
+
+      for (const result of results) {
+        aggregated.successTokens.push(...result.successTokens);
+        aggregated.retryableTokens.push(...result.retryableTokens);
+        aggregated.invalidTokens.push(...result.invalidTokens);
+      }
     }
+
+    this.logger.info('FCM send complete', {
+      service: 'FirebaseGateway',
+      total: tokens.length,
+      success: aggregated.successTokens.length,
+      retryable: aggregated.retryableTokens.length,
+      invalid: aggregated.invalidTokens.length,
+    });
 
     return aggregated;
   }
@@ -148,7 +152,9 @@ export class FirebaseGateway implements OnModuleInit {
     };
 
     try {
-      const response = await admin.messaging(this.app).sendEachForMulticast(message);
+      const response = await admin
+        .messaging(this.app)
+        .sendEachForMulticast(message);
 
       response.responses.forEach((resp, idx) => {
         const token = tokens[idx];
@@ -170,14 +176,6 @@ export class FirebaseGateway implements OnModuleInit {
             result.retryableTokens.push(token);
           }
         }
-      });
-
-      this.logger.info('FCM batch result', {
-        service: 'FirebaseGateway',
-        total: tokens.length,
-        success: result.successTokens.length,
-        retryable: result.retryableTokens.length,
-        invalid: result.invalidTokens.length,
       });
     } catch (error) {
       this.logger.error('FCM batch send threw', {

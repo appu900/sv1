@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
-import { ScheduleModule } from '@nestjs/schedule';
+import { BullModule } from '@nestjs/bullmq';
 import {
   DeviceToken,
   DeviceTokenSchema,
@@ -12,13 +12,18 @@ import {
 import { RedisModule } from 'src/redis/redis.module';
 import { NotificationController } from './notification.controller';
 import { NotificationService } from './notification.service';
-import { NotificationProcessor } from './notification.processor';
+import { NotificationProducer } from './notification.producer';
+import { NotificationWorker } from './notification.worker';
 import { FirebaseGateway } from './firebase.gateway';
 import { ExpoGateway } from './expo.gateway';
+import { NOTIFICATION_QUEUE_NAME } from './constants';
 
 @Module({
   imports: [
-    ScheduleModule.forRoot(),
+
+    BullModule.registerQueue({
+      name: NOTIFICATION_QUEUE_NAME,
+    }),
     MongooseModule.forFeature([
       { name: DeviceToken.name, schema: DeviceTokenSchema },
       { name: Notification.name, schema: NotificationSchema },
@@ -26,7 +31,13 @@ import { ExpoGateway } from './expo.gateway';
     RedisModule,
   ],
   controllers: [NotificationController],
-  providers: [NotificationService, NotificationProcessor, FirebaseGateway, ExpoGateway],
+  providers: [
+    NotificationService,
+    NotificationProducer,
+    NotificationWorker,   
+    FirebaseGateway,
+    ExpoGateway,
+  ],
   exports: [NotificationService],
 })
 export class NotificationModule {}

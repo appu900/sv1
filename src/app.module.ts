@@ -2,7 +2,8 @@ import { Module } from '@nestjs/common';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { DatabaseModule } from './database/database.module';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import { BullModule } from '@nestjs/bullmq';
 import { AuthModule } from './modules/auth/auth.module';
 import { RedisModule } from './redis/redis.module';
 import { UserModule } from './modules/user/user.module';
@@ -37,6 +38,38 @@ import { NotificationModule } from './modules/notification/notification.module';
     ConfigModule.forRoot({ isGlobal: true }),
     WinstonModule.forRoot({
       instance: createWinstonLogger(),
+    }),
+    BullModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => {
+        const redisUrl = config.get<string>('REDIS_URL');
+        if (redisUrl) {
+          const url = new URL(redisUrl.replace(/^redis:\/\//, 'rediss://'));
+          return {
+            connection: {
+              host: url.hostname,
+              port: Number(url.port) || 6379,
+              username: url.username || config.get('REDIS_USERNAME'),
+              password: url.password || config.get('REDIS_PASSWORD'),
+              tls: {},
+              maxRetriesPerRequest: null,
+              enableReadyCheck: false,
+            },
+          };
+        }
+        return {
+          connection: {
+            host: config.get('REDIS_HOST', '127.0.0.1'),
+            port: config.get<number>('REDIS_PORT', 6379),
+            db: config.get<number>('REDIS_DB', 0),
+            username: config.get('REDIS_USERNAME'),
+            password: config.get('REDIS_PASSWORD'),
+            tls: {},
+            maxRetriesPerRequest: null,
+            enableReadyCheck: false,
+          },
+        };
+      },
     }),
     EventEmitterModule.forRoot(),
     DatabaseModule,
