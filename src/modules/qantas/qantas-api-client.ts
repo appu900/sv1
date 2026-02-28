@@ -120,11 +120,12 @@ export class QantasApiClient {
     const url = `${this.baseUrl}/member/${memberId}/program/QFF`;
 
     this.logger.log(`[getMemberDetail] GET ${url}`);
-    const res = await fetch(url, {
+    const res = await this.fetchWithRetry(url, {
       method: 'GET',
       headers: {
         Authorization: `Basic ${this.authHeaderLink}`,
         Accept: 'application/json',
+        'Content-Type': 'application/json',
       },
     });
 
@@ -142,7 +143,7 @@ export class QantasApiClient {
     authHeader: string,
     opts?: { handleConflict?: boolean },
   ): Promise<T> {
-    const res = await fetch(url, {
+    const res = await this.fetchWithRetry(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -159,7 +160,7 @@ export class QantasApiClient {
     body: any,
     authHeader: string,
   ): Promise<T> {
-    const res = await fetch(url, {
+    const res = await this.fetchWithRetry(url, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -169,6 +170,26 @@ export class QantasApiClient {
     });
 
     return this.handleResponse<T>(url, res);
+  }
+
+  /**
+   * Retry wrapper – retries once on network/transport errors
+   * (equivalent to the Erlang/OTP SSL workaround in the Elixir codebase).
+   */
+  private async fetchWithRetry(
+    url: string,
+    init: RequestInit,
+    retries = 1,
+  ): Promise<Response> {
+    try {
+      return await fetch(url, init);
+    } catch (err) {
+      if (retries > 0) {
+        this.logger.warn(`[fetchWithRetry] Transport error, retrying – ${(err as Error).message}`);
+        return this.fetchWithRetry(url, init, retries - 1);
+      }
+      throw err;
+    }
   }
 
   private async handleResponse<T>(
