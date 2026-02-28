@@ -31,6 +31,7 @@ import {EventEmitterModule} from "@nestjs/event-emitter"
 import { WinstonModule, WINSTON_MODULE_PROVIDER } from 'nest-winston';
 import createWinstonLogger from './logger';
 import { SqsModule } from './sqs/sqs.module';
+import { NotificationModule } from './modules/notification/notification.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
@@ -63,6 +64,7 @@ import { SqsModule } from './sqs/sqs.module';
     QantasModule,
     InventoryModule,
     SqsModule,
+    NotificationModule,
   ],
   controllers: [AppController],
   providers: [AppService],

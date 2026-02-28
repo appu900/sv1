@@ -7,6 +7,7 @@ import {
   UserInventoryItemDocument,
   FreshnessStatus,
 } from '../../database/schemas/user-inventory.schema';
+import { NotificationService } from '../notification/notification.service';
 
 @Injectable()
 export class InventoryExpiryCronService {
@@ -15,6 +16,7 @@ export class InventoryExpiryCronService {
   constructor(
     @InjectModel(UserInventoryItem.name)
     private inventoryModel: Model<UserInventoryItemDocument>,
+    private readonly notificationService: NotificationService,
   ) {}
 
   @Cron('0 30 2 * * *', { name: 'inventory-expiry-check', timeZone: 'Asia/Kolkata' })
@@ -91,10 +93,25 @@ export class InventoryExpiryCronService {
         const count = userGroup.count;
         const firstItem = userGroup.expiringItems[0];
 
+        try {
+          const itemName = firstItem?.name ?? 'items';
+          const body =
+            count === 1
+              ? `Your ${itemName} is expiring soon! Use it before it goes to waste.`
+              : `${count} items are expiring soon — ${itemName} and ${count - 1} more. Cook something delicious!`;
 
-        this.logger.log(
-          `User ${userId} has ${count} items expiring soon. [Push notification placeholder]`,
-        );
+          await this.notificationService.sendToUser(
+            userId,
+            '⏰ Items Expiring Soon',
+            body,
+            { type: 'expiry_warning', count: String(count) },
+            '/inventory',
+          );
+        } catch (err) {
+          this.logger.warn(
+            `Failed to send expiry notification to user ${userId}: ${err.message}`,
+          );
+        }
       }
 
       const usersWithExpired = await this.inventoryModel.aggregate([
@@ -117,10 +134,24 @@ export class InventoryExpiryCronService {
         const userId = userGroup._id.toString();
         const count = userGroup.count;
 
+        try {
+          const body =
+            count === 1
+              ? `1 item in your pantry has expired. Discard it or check if it's still usable.`
+              : `${count} items in your pantry have expired. Time to clean up!`;
 
-        this.logger.log(
-          `User ${userId} has ${count} expired items. [Push notification placeholder]`,
-        );
+          await this.notificationService.sendToUser(
+            userId,
+            '🚨 Expired Items',
+            body,
+            { type: 'expired_items', count: String(count) },
+            '/inventory',
+          );
+        } catch (err) {
+          this.logger.warn(
+            `Failed to send expired notification to user ${userId}: ${err.message}`,
+          );
+        }
       }
 
       this.logger.log('Daily inventory expiry check completed successfully.');
@@ -161,10 +192,24 @@ export class InventoryExpiryCronService {
         const userId = userWaste._id.toString();
         const total = userWaste.totalDiscarded;
 
+        try {
+          const body =
+            total === 1
+              ? `You discarded 1 item this week. Keep tracking to reduce waste!`
+              : `You discarded ${total} items this week. Let's try to waste less next week! 💪`;
 
-        this.logger.log(
-          `User ${userId} discarded ${total} items this week. [Weekly summary placeholder]`,
-        );
+          await this.notificationService.sendToUser(
+            userId,
+            '📊 Your Weekly Waste Summary',
+            body,
+            { type: 'weekly_waste_summary', count: String(total) },
+            '/track',
+          );
+        } catch (err) {
+          this.logger.warn(
+            `Failed to send weekly summary to user ${userId}: ${err.message}`,
+          );
+        }
       }
 
       this.logger.log('Weekly waste summary completed.');

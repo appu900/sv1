@@ -9,18 +9,17 @@ export class RedisService implements OnModuleDestroy {
   constructor() {
     const options: RedisOptions = {
       maxRetriesPerRequest: null,
-      enableReadyCheck: false, // Valkey compatibility
+      enableReadyCheck: false, 
       retryStrategy: (attempt) => {
         console.log(`Redis reconnect attempt #${attempt}`);
         return Math.min(attempt * 200, 2000);
       },
-      tls: {}, // REQUIRED for Aiven Valkey
+      tls: {}, 
       username: process.env.REDIS_USERNAME,
       password: process.env.REDIS_PASSWORD,
     };
 
     if (process.env.REDIS_URL) {
-      // Ensure user uses rediss:// for SSL Valkey
       const url = process.env.REDIS_URL.replace(/^redis:\/\//, 'rediss://');
       this.client = new Redis(url, options);
     } else {
@@ -51,7 +50,6 @@ export class RedisService implements OnModuleDestroy {
     }
   }
 
-  // ** version helper
 
   async isJoinCodeUsed(code: string): Promise<boolean> {
     return (await this.client.sismember(this.JOIN_CODE_SET_KEY, code)) === 1;
@@ -121,7 +119,6 @@ export class RedisService implements OnModuleDestroy {
     return data ? JSON.parse(data) : null
   }
 
-  // ** write through update 
   async setVersioned(baseKey:string,value:any,ttlSeconds:number):Promise<{oldVersion:number,newVersion:number}>{
     const oldVersion = await this.getVersion(baseKey)
     const newVersion = await this.incrementVersion(baseKey);
@@ -129,7 +126,6 @@ export class RedisService implements OnModuleDestroy {
     return{oldVersion,newVersion}
   }
 
-  // ** invalidation worker 
   async deleteVersion(baseKey:string,version:number){
     await this.client.del(`${baseKey}:v${version}`)
   }
@@ -144,7 +140,6 @@ export class RedisService implements OnModuleDestroy {
     return this.client.del(`auth:session:${sessionId}`);
   }
 
-  // OTP Management
   async setOTP(email: string, otp: string, ttlSeconds: number = 600): Promise<void> {
     await this.client.set(`auth:otp:${email}`, otp, 'EX', ttlSeconds);
   }
@@ -157,7 +152,6 @@ export class RedisService implements OnModuleDestroy {
     await this.client.del(`auth:otp:${email}`);
   }
 
-  // Store pending signup data temporarily
   async setPendingSignup(email: string, data: any, ttlSeconds: number = 900): Promise<void> {
     await this.client.set(`auth:pending:${email}`, JSON.stringify(data), 'EX', ttlSeconds);
   }
@@ -190,11 +184,9 @@ export class RedisService implements OnModuleDestroy {
     await this.client.del(`auth:otp:rate:${email}`);
   }
 
-  // ── User session index (used to invalidate all sessions on password reset) ──
   async addUserSession(userId: string, sessionId: string, ttlSeconds: number): Promise<void> {
     const key = `auth:user-sessions:${userId}`;
     await this.client.sadd(key, sessionId);
-    // Keep the set alive at least as long as the longest session
     await this.client.expire(key, ttlSeconds + 60);
   }
 
@@ -213,12 +205,10 @@ export class RedisService implements OnModuleDestroy {
     }
   }
 
-  // ── Per-email OTP brute-force protection for password reset ──────────────
   async incrementResetAttempts(email: string): Promise<number> {
     const key = `auth:reset-attempts:${email}`;
     const count = await this.client.incr(key);
     if (count === 1) {
-      // Expire with the OTP TTL (15 min) so counter auto-clears with the OTP
       await this.client.expire(key, 900);
     }
     return count;
@@ -226,6 +216,11 @@ export class RedisService implements OnModuleDestroy {
 
   async deleteResetAttempts(email: string): Promise<void> {
     await this.client.del(`auth:reset-attempts:${email}`);
+  }
+
+  async setNX(key: string, value: string, ttlSeconds: number): Promise<boolean> {
+    const result = await this.client.set(key, value, 'EX', ttlSeconds, 'NX');
+    return result === 'OK';
   }
 
   async onModuleDestroy() {

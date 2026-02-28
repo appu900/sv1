@@ -26,6 +26,7 @@ import {
   UserSchema,
 } from '../../database/schemas/user.auth.schema';
 import { RedisModule } from '../../redis/redis.module';
+import { NotificationModule } from '../notification/notification.module';
 
 @Module({
   imports: [
@@ -38,6 +39,7 @@ import { RedisModule } from '../../redis/redis.module';
       { name: User.name, schema: UserSchema },
     ]),
     RedisModule,
+    NotificationModule,
   ],
   controllers: [InventoryController],
   providers: [InventoryService, InventoryAiService, InventoryExpiryCronService],
