@@ -58,7 +58,9 @@ export class RedisService implements OnModuleDestroy {
   async resetJoinCodes(): Promise<void> {
     await this.client.del(this.JOIN_CODE_SET_KEY);
   }
-
+async expire(key: string, ttlSeconds: number) {
+  await this.client.expire(key, ttlSeconds);
+}
   async releaseJoinCode(code: string): Promise<void> {
     await this.client.srem(this.JOIN_CODE_SET_KEY, code);
   }
@@ -79,6 +81,9 @@ export class RedisService implements OnModuleDestroy {
 
   async del(key: string) {
     await this.client.del(key);
+  }
+  async incr(key: string): Promise<number> {
+    return this.client.incr(key);
   }
 
   async delByPattern(pattern: string): Promise<void> {
