@@ -14,6 +14,7 @@ import { NotificationController } from './notification.controller';
 import { NotificationService } from './notification.service';
 import { NotificationProcessor } from './notification.processor';
 import { FirebaseGateway } from './firebase.gateway';
+import { ExpoGateway } from './expo.gateway';
 
 @Module({
   imports: [
@@ -25,7 +26,7 @@ import { FirebaseGateway } from './firebase.gateway';
     RedisModule,
   ],
   controllers: [NotificationController],
-  providers: [NotificationService, NotificationProcessor, FirebaseGateway],
+  providers: [NotificationService, NotificationProcessor, FirebaseGateway, ExpoGateway],
   exports: [NotificationService],
 })
 export class NotificationModule {}

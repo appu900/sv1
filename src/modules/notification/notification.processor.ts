@@ -15,6 +15,7 @@ import {
 } from 'src/database/schemas/device-token.schema';
 import { RedisService } from 'src/redis/redis.service';
 import { FirebaseGateway } from './firebase.gateway';
+import { ExpoGateway } from './expo.gateway';
 import { FirebaseMessagePayload } from './interfaces';
 import {
   LOCK_PREFIX,
@@ -33,6 +34,7 @@ export class NotificationProcessor {
     @InjectModel(DeviceToken.name)
     private readonly tokenModel: Model<DeviceTokenDocument>,
     private readonly firebase: FirebaseGateway,
+    private readonly expo: ExpoGateway,
     private readonly redis: RedisService,
     @Inject(WINSTON_MODULE_PROVIDER) private readonly logger: Logger,
   ) {}
@@ -41,9 +43,9 @@ export class NotificationProcessor {
   @Cron(PROCESSOR_CRON)
   async processQueue(): Promise<void> {
     if (!this.firebase.isReady()) {
-      // Mark stuck PROCESSING notifications as FAILED when Firebase is down
+      // Firebase is down: fail any stuck notifications that have run out of retries.
+      // We still proceed — Expo-token notifications don't need Firebase.
       await this.failStuckNotifications();
-      return;
     }
 
     const now = new Date();
@@ -123,7 +125,26 @@ export class NotificationProcessor {
         imageUrl: notif.imageUrl,
       };
 
-      const result = await this.firebase.sendToTokens(tokens, payload);
+      // Route tokens to the correct gateway based on token format:
+      //   ExponentPushToken[xxx] → Expo Push Service (used by Expo Go)
+      //   everything else        → Firebase Cloud Messaging
+      const expoTokens = tokens.filter((t) => t.startsWith('ExponentPushToken['));
+      const fcmTokens = tokens.filter((t) => !t.startsWith('ExponentPushToken['));
+
+      const [expoResult, firebaseResult] = await Promise.all([
+        expoTokens.length > 0
+          ? this.expo.sendToTokens(expoTokens, payload)
+          : Promise.resolve({ successTokens: [], retryableTokens: [], invalidTokens: [] }),
+        fcmTokens.length > 0
+          ? this.firebase.sendToTokens(fcmTokens, payload)
+          : Promise.resolve({ successTokens: [], retryableTokens: [], invalidTokens: [] }),
+      ]);
+
+      const result = {
+        successTokens: [...expoResult.successTokens, ...firebaseResult.successTokens],
+        retryableTokens: [...expoResult.retryableTokens, ...firebaseResult.retryableTokens],
+        invalidTokens: [...expoResult.invalidTokens, ...firebaseResult.invalidTokens],
+      };
 
       await this.updateTokenHealth(result.successTokens, result.invalidTokens);
 

@@ -14,8 +14,8 @@ export class RegisterTokenDto {
   @IsEnum(['ios', 'android'])
   platform: 'ios' | 'android';
 
-  @IsEnum(['apns', 'fcm'])
-  tokenType: 'apns' | 'fcm';
+  @IsEnum(['apns', 'fcm', 'expo'])
+  tokenType: 'apns' | 'fcm' | 'expo';
 
   @IsOptional()
   @IsEnum(['prod', 'dev'])
