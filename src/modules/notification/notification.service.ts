@@ -33,7 +33,7 @@ import {
 export interface RegisterTokenInput {
   token: string;
   platform: 'ios' | 'android';
-  tokenType: 'apns' | 'fcm';
+  tokenType: 'apns' | 'fcm' | 'expo';
   tokenMode?: 'prod' | 'dev';
   appVersion?: string;
   appBuild?: string;

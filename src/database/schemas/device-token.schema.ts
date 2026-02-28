@@ -11,6 +11,7 @@ export enum TokenPlatform {
 export enum TokenType {
   APNS = 'apns',
   FCM = 'fcm',
+  EXPO = 'expo',
 }
 
 export enum TokenMode {
