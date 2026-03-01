@@ -71,22 +71,24 @@ SCRAPED CONTEXT PRIORITY:
 The message will contain "--- SCRAPED INSTAGRAM CONTEXT ---" with caption, author, description, or viewer data scraped from the Instagram post. This is your PRIMARY and MOST RELIABLE source to identify the dish.
 
 STEPS:
-1. Read the scraped context carefully. Identify the dish name from the caption, description, or hashtags.
+1. Read the scraped context carefully. Identify the dish name from the caption, description, hashtags, or any food keywords.
 2. web_search "<dish name> recipe full ingredients method steps" to get the complete recipe.
 3. If the scraped context also mentions a specific chef/author, include that in the search: "<author name> <dish name> recipe".
-4. If the dish name is not clear from scraped context, use any food-related keywords or hashtags from it.
+4. If the dish name is not obvious, look for ANY food-related words in the scraped context (ingredients, cooking terms, cuisine names) and search for those.
 
-FALLBACK (if no scraped context or dish still unclear):
-1. web_search the exact Instagram URL to find blog mirrors.
+FALLBACK (if no scraped context):
+1. web_search the exact Instagram URL to find blog mirrors or reposts.
 2. If the user message includes a dish name or keywords, use them directly.
 
-SPEED RULES:
-- You should need at most 2 web searches: one to identify the dish (if not obvious from context), one to get the full recipe.
-- Do NOT try more than 3 web searches total. STOP after 3.
+CRITICAL — NEVER GIVE UP:
+- You MUST ALWAYS produce a complete recipe JSON. NEVER output an error object.
+- If the scraped context has ANY food words at all, use them to search and build the recipe.
+- If the scraped context mentions a username/author, search "<author> recipe" to find their recipes.
+- Even with partial information, make your best effort to produce a full recipe.
+- You should need at most 2-3 web searches total.
 - NEVER repeat a web_search with a similar query.
-- If you still cannot identify the dish after 3 searches, output: {"error": "Could not identify the recipe from this Instagram post. Please paste the link again with the dish name (e.g. 'butter chicken')."}.
 
-Recipe MUST match the Instagram post content. NEVER invent a different dish.
+Recipe should match the Instagram post content as closely as possible.
 `.trim();
 
 
@@ -503,10 +505,10 @@ export class CookbookaiService {
                 model: 'gpt-5.2',
                 systemPrompt: isInstagram ? INSTAGRAM_SYSTEM_PROMPT : YOUTUBE_SYSTEM_PROMPT,
                 tools: buildAiTools(isInstagram ? 'medium' : 'medium'),
-                reasoningEffort: isInstagram ? 'low' : null,  
-                maxOutputTokens: isInstagram ? 5000 : 5000,
-                maxIterations: isInstagram ? 8 : 8,
-                maxTotalMs: isInstagram ? 150000 : 180000,
+                reasoningEffort: isInstagram ? 'medium' : null,  
+                maxOutputTokens: isInstagram ? 6000 : 5000,
+                maxIterations: isInstagram ? 10 : 8,
+                maxTotalMs: isInstagram ? 180000 : 180000,
             });
         } finally {
             releaseSlot();
@@ -518,20 +520,10 @@ export class CookbookaiService {
             return result;
         }
 
-        if (result?.data?.error) {
-            this.logger.error(`[extractRecipe] AI returned error: ${result.data.error}`);
-            return {
-                success: false,
-                message: result.data.error,
-            };
-        }
-
         this.logger.error('[extractRecipe] gpt-5.2 failed or returned placeholder recipe.');
         return {
             success: false,
-            message: isInstagram
-                ? 'Could not extract a recipe from this Instagram post. Try pasting the dish name along with the link.'
-                : 'Could not extract a valid recipe. Please try a different link.',
+            message: 'Could not extract a valid recipe. Please try a different link.',
         };
     }
 
@@ -706,16 +698,6 @@ export class CookbookaiService {
 
                 const parsed = this.extractJsonFromText(finalText);
                 if (parsed) {
-                    // Handle AI signaling it cannot identify the dish
-                    if (parsed.error && typeof parsed.error === 'string') {
-                        this.logger.warn(`${tag} AI signaled error: ${parsed.error}`);
-                        return {
-                            success: false,
-                            message: parsed.error,
-                            data: { error: parsed.error },
-                        };
-                    }
-
                     const recipe = parsed.recipe ?? parsed;
                     if (this.isValidRecipe(recipe)) {
                         return {
