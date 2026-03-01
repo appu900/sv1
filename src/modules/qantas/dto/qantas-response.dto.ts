@@ -33,5 +33,6 @@ export class QantasDashboardDto {
     points: number;
     reason: string;
     awardedAt: string;
+    accrualReferenceNumber: string | null;
   }[];
 }
