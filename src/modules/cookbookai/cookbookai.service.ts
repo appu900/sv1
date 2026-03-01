@@ -169,7 +169,7 @@ DEFAULT FIELD RULES
 `.trim();
 
 const AI_TOOLS: any[] = [
-    {
+      {
         type: 'function',
         name: 'getOrCreateIngredient',
         description:
@@ -272,7 +272,7 @@ export class CookbookaiService {
         const result = await this.runAgenticLoop(message, {
             model: 'gpt-4o',
             tools: AI_TOOLS,
-            reasoningEffort: null,   // gpt-4o doesn't use reasoning param
+            reasoningEffort: null,  
             maxOutputTokens: 16384,
         });
 
@@ -288,16 +288,12 @@ export class CookbookaiService {
         };
     }
 
-    /**
-     * Check that a recipe object has meaningful content.
-     */
     private isValidRecipe(data: any): boolean {
         if (!data || typeof data !== 'object') return false;
         const hasTitle = typeof data.title === 'string' && data.title.trim().length > 0;
         const hasComponents = Array.isArray(data.components) && data.components.length > 0;
         if (!hasTitle || !hasComponents) return false;
 
-        // Check that at least one component has real ingredients (not placeholder)
         let totalIngredients = 0;
         for (const wrapper of data.components) {
             if (!Array.isArray(wrapper?.component)) continue;
@@ -314,9 +310,6 @@ export class CookbookaiService {
         return true;
     }
 
-    /**
-     * Reusable agentic loop that works with any model + tools config.
-     */
     private async runAgenticLoop(
         message: string,
         config: {
@@ -355,7 +348,6 @@ export class CookbookaiService {
                     `${tag} Iteration ${iteration}, input items: ${input.length}`,
                 );
 
-                // Build request params — only include reasoning for models that support it
                 const params: any = {
                     model: config.model,
                     instructions: RECIPE_SYSTEM_PROMPT,
@@ -374,7 +366,6 @@ export class CookbookaiService {
                 const outputTypes = output.map((i: any) => i.type).join(', ');
                 this.logger.log(`${tag} Output types: ${outputTypes}`);
 
-                // Push ALL output items back into input (required by Responses API)
                 for (const item of output) {
                     input.push(item);
                 }
@@ -387,7 +378,6 @@ export class CookbookaiService {
                         item.type === 'web_search_call' || item.type === 'web_search',
                 );
 
-                // ── If there are function calls, execute them ──
                 if (functionCalls.length > 0) {
                     noProgressIterations = 0;
                     this.logger.log(
@@ -409,15 +399,12 @@ export class CookbookaiService {
                                     : JSON.stringify(result),
                         });
                     }
-                    // Continue loop — model will consume tool results on next iteration
                     continue;
                 }
 
-                // ── No function calls — check for final text ──
                 const finalText = this.extractResponseText(response, output);
 
                 if (!finalText.trim()) {
-                    // Web search happened — model needs another iteration to process results
                     if (hasWebSearch) {
                         noProgressIterations = 0;
                         this.logger.log(
@@ -441,11 +428,9 @@ export class CookbookaiService {
                     continue;
                 }
 
-                // ── Try to parse the final JSON ──
                 const parsed = this.extractJsonFromText(finalText);
                 if (parsed) {
                     const recipe = parsed.recipe ?? parsed;
-                    // Validate before declaring success
                     if (this.isValidRecipe(recipe)) {
                         return {
                             success: true,
@@ -453,7 +438,6 @@ export class CookbookaiService {
                             data: recipe,
                         };
                     }
-                    // Parsed but empty — ask model to try harder
                     this.logger.warn(
                         `${tag} Parsed JSON but recipe has no title/components. Asking model to regenerate.`,
                     );
@@ -467,7 +451,6 @@ export class CookbookaiService {
                     continue;
                 }
 
-                // Parse failed — ask the model to fix its output
                 noProgressIterations = 0;
                 parseRetries++;
                 if (parseRetries >= MAX_PARSE_RETRIES) {
@@ -492,7 +475,6 @@ export class CookbookaiService {
                 continue;
             }
 
-            // Exhausted iterations
             this.logger.error(`[${config.model}] Exceeded max iterations without completing.`);
             return {
                 success: false,
@@ -537,7 +519,6 @@ export class CookbookaiService {
         return finalText.trim();
     }
 
-    // ==================== TOOL CALL DISPATCHER ====================
 
     private async handleToolCall(name: string, argsRaw: string): Promise<any> {
         let args: any;
@@ -562,15 +543,13 @@ export class CookbookaiService {
         }
     }
 
-    // ==================== TOOL HANDLERS ====================
 
-    /** Find ingredient by name (case-insensitive). Auto-create if missing. */
     private async toolGetOrCreateIngredient(
         name: string,
         categoryName?: string,
     ): Promise<{ _id: string; name: string }> {
         try {
-            // 1. Try to find existing ingredient
+           
             const existing = await this.ingredientModel
                 .findOne({ name: { $regex: new RegExp(`^${this.escapeRegex(name)}$`, 'i') } })
                 .lean()
@@ -580,7 +559,6 @@ export class CookbookaiService {
                 return { _id: String(existing._id), name: existing.name };
             }
 
-            // 2. Resolve or create category
             let categoryId: Types.ObjectId;
             const categorySearch = categoryName || 'Uncategorized';
             const existingCat = await this.ingredientsCategoryModel
@@ -598,7 +576,7 @@ export class CookbookaiService {
                 this.logger.log(`Created ingredient category: ${categorySearch}`);
             }
 
-            // 3. Create ingredient with minimal required fields
+
             const newIngredient = await this.ingredientModel.create({
                 name,
                 averageWeight: 100,
@@ -613,7 +591,7 @@ export class CookbookaiService {
         }
     }
 
-    /** Search hacks / tips by title (case-insensitive regex). */
+ 
     private async toolGetHacksOrTips(
         query: string,
     ): Promise<{ _id: string; title: string; shortDescription: string }[]> {
@@ -638,7 +616,7 @@ export class CookbookaiService {
         }
     }
 
-    /** Search framework categories by title. */
+
     private async toolGetFrameworkCategories(
         query: string,
     ): Promise<{ _id: string; title: string }[]> {
