@@ -5,6 +5,7 @@ import { RolesGuard } from 'src/common/guards/roles.guard';
 import { Roles } from 'src/common/decorators/role.decorators';
 import { Request } from '@nestjs/common';
 import { RedisService } from 'src/redis/redis.service';
+
 @Controller('cookbookai')
 export class CookbookaiController {
     constructor(private readonly cookbookaiService: CookbookaiService, private readonly redisService: RedisService) { }
