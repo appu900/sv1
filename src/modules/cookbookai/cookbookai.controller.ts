@@ -135,6 +135,12 @@ export class CookbookaiController {
         await this.redisService.delByPattern(`user:${userId}:cookbookai*`);
         return { message: "Cache invalidated successfully." };
     }
+
+    @Get("/dev-reset-limits")
+    async devResetLimits() {
+        await this.redisService.delByPattern(`user:*:cookbookai*`);
+        return { message: "All cookbookai rate limits cleared." };
+    }
 }
 
 

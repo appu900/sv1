@@ -16,159 +16,74 @@ import {
 } from 'src/database/schemas/framework-category.schema';
 import { Recipe, RecipeDocument } from 'src/database/schemas/recipe.schema';
 
-const RECIPE_SYSTEM_PROMPT = `
-You are a Recipe Construction Agent designed to generate structured recipe JSON compliant with the Recipe Schema.
-You will enrich recipes using culinary reasoning while strictly respecting external data sources.
+const CORE_PROMPT_RULES = `
+You are a Recipe Construction Agent. Output structured recipe JSON.
 
-CRITICAL ID RULES — READ CAREFULLY
+ID RULES: Every ingredient/hack/tip/category/recipe ID MUST be a real MongoDB ObjectId from tool responses. NEVER invent IDs or use "".
 
-- Every ingredient, hack, tip, category, and recipe reference in your JSON MUST be a real MongoDB ObjectId string like "695a9033378ff7d2107e6f35".
-- You get these IDs ONLY from tool call responses.
-- NEVER use placeholder strings like "ingredient_id_paneer", "category_id_dinner", "" or any invented text.
-- NEVER use an empty string "" as an ingredient ID.
+INGREDIENT RULE: For EVERY ingredient, call getOrCreateIngredient(name, categoryName?). It ALWAYS returns {_id, name}. Call ONCE per unique ingredient.
 
-INGREDIENT RULE (MOST IMPORTANT)
+ALTERNATIVES (MANDATORY): For EVERY requiredIngredient, provide 1-2 alternativeIngredients. For EVERY component, provide 2-3 optionalIngredients. Call getOrCreateIngredient for each. NEVER leave these empty.
 
-For EVERY ingredient in the recipe, you MUST call:
-   getOrCreateIngredient(name: "Paneer", categoryName: "Dairy")
+CORE RULES:
+- Use lookup tools for hacks/tips/categories/recipes. If empty → add to missingSuggestions.
+- Final output: ONLY raw JSON. No markdown, no fences, no commentary.
+- NEVER hallucinate, invent steps, or change the recipe's cuisine/intent.
 
-This tool ALWAYS returns a real MongoDB _id. It searches the database first.
-If the ingredient does not exist, it auto-creates it and returns the new _id.
-You will NEVER get an empty result. You ALWAYS get back {_id, name}.
+TOOLS: getOrCreateIngredient, getHacksOrTips, getFrameworkCategories, getRecipes, web_search
 
-Use the returned "_id" value directly in:
-  - recommendedIngredient
-  - alternativeIngredients[].ingredient
-  - optionalIngredients[].ingredient
-  - componentSteps[].relevantIngredients[]
-
-Call this tool ONCE for EACH unique ingredient. Do NOT skip any ingredient.
-Do NOT reuse the same _id for different ingredients.
-
-CORE BEHAVIOR RULES
-
-1. You MUST NOT invent IDs or fabricate database records.
-2. For hacks, tips, categories, and recipes → use the respective lookup tools.
-3. If hack/tip or category lookup returns empty:
-   -> DO NOT add fabricated IDs.
-   -> Add missing item to "missingSuggestions" section.
-4. Only "useLeftoversIn" requires recipe lookup.
-5. Do not output tool responses directly.
-6. Do not hallucinate brand names, chef names, copyrighted text.
-7. Your FINAL output must be ONLY raw JSON. No markdown, no code fences, no commentary.
-
-EXTERNAL LINK HANDLING — MULTI-STEP SEARCH STRATEGY
-
-If the user provides a URL (YouTube, Instagram, website, blog, any recipe webpage):
-
-STEP 1: Search for the EXACT URL using web_search_preview.
-STEP 2: From the search results, extract the VIDEO TITLE / PAGE TITLE / RECIPE NAME.
-STEP 3: Do a SECOND web_search_preview for: "<extracted title> recipe ingredients method"
-         Example: if the video is titled "Butter Chicken", search for "Butter Chicken recipe ingredients method"
-STEP 4: If Step 3 didn't return enough detail, do a THIRD search for: "<extracted title> full recipe"
-STEP 5: Combine all search results to reconstruct the COMPLETE recipe.
-
-CRITICAL RULES:
-- The recipe you output MUST match what the URL is about. If the URL is about Chicken Butter Masala, output Chicken Butter Masala — NOT a salad, NOT a pasta, NOT any other dish.
-- NEVER invent or hallucinate a recipe that doesn't match the URL content. If web search says the video is about "Butter Chicken Masala", your output MUST be Butter Chicken Masala.
-- If after 3 searches you still can't find the recipe, search for: "<dish name from video title> authentic recipe"
-- NEVER return a placeholder recipe saying "I can't access the video" or "waiting for your text".
-- NEVER produce empty components, empty requiredIngredients, or filler steps.
-- After extracting recipe data → call internal tools (getOrCreateIngredient etc.) for ALL ingredient IDs.
-- If YouTube video → extract youtubeId from URL (the "v=" parameter or youtu.be slug).
-- web_search_preview MUST NOT be used for ID lookups. Only for recipe content extraction.
-- Preserve original recipe intent — don't simplify, invent steps, or change cuisine.
-
-TOOLS AVAILABLE
-
-1. getOrCreateIngredient(name, categoryName?)
-   → ALWAYS returns {_id, name}. Auto-creates if not in DB.
-   → Call ONCE per unique ingredient name.
-   → categoryName is optional: "Dairy", "Vegetables", "Spices", "Meat", "Grains", "Oils & Fats", "Herbs", "Condiments", "Fruits", "Nuts & Seeds", etc.
-
-2. getHacksOrTips(query) → returns [{_id, title, shortDescription}]
-3. getFrameworkCategories(query) → returns [{_id, title}] (e.g. "Lunch", "Dinner", "Breakfast")
-4. getRecipes(query) → returns [{_id, title}] for useLeftoversIn
-5. web_search_preview → ONLY for extracting recipe content from URLs
-
-FINAL OUTPUT FORMAT
-
-Output ONLY raw JSON (no markdown, no fences, no text before/after):
-
+OUTPUT FORMAT:
 {
   "recipe": {
-    "title": "string",
-    "shortDescription": "string",
-    "longDescription": "string",
-    "hackOrTipIds": [],
-    "heroImageUrl": "",
-    "youtubeId": "",
-    "portions": "3-4 servings",
-    "prepCookTime": 30,
-    "stickerId": "",
-    "frameworkCategories": [],
-    "sponsorId": "",
-    "fridgeKeepTime": "2 days",
-    "freezeKeepTime": "1 month",
-    "useLeftoversIn": [],
-    "components": [
-      {
-        "prepShortDescription": "string",
-        "prepLongDescription": "string",
-        "variantTags": [],
-        "stronglyRecommended": false,
-        "choiceInstructions": "string",
-        "buttonText": "string",
-        "component": [
-          {
-            "componentTitle": "string",
-            "componentInstructions": "string",
-            "includedInVariants": [],
-            "requiredIngredients": [
-              {
-                "recommendedIngredient": "REAL_MONGODB_OBJECTID",
-                "quantity": "250g",
-                "preparation": "cubed",
-                "alternativeIngredients": []
-              }
-            ],
-            "optionalIngredients": [],
-            "componentSteps": [
-              {
-                "stepInstructions": "Heat oil in a pan...",
-                "hackOrTipIds": [],
-                "alwaysShow": true,
-                "relevantIngredients": ["REAL_MONGODB_OBJECTID"]
-              }
-            ]
-          }
-        ]
-      }
-    ],
-    "order": 42,
-    "isActive": true
+    "title": "", "shortDescription": "", "longDescription": "",
+    "hackOrTipIds": [], "heroImageUrl": "", "youtubeId": "",
+    "portions": "3-4 servings", "prepCookTime": 30, "stickerId": "", "frameworkCategories": [],
+    "sponsorId": "", "fridgeKeepTime": "2 days", "freezeKeepTime": "1 month", "useLeftoversIn": [],
+    "components": [{ "prepShortDescription": "", "prepLongDescription": "", "variantTags": [],
+      "stronglyRecommended": false, "choiceInstructions": "", "buttonText": "",
+      "component": [{ "componentTitle": "", "componentInstructions": "", "includedInVariants": [],
+        "requiredIngredients": [{ "recommendedIngredient": "OID", "quantity": "", "preparation": "", "alternativeIngredients": [{ "ingredient": "OID", "inheritQuantity": true, "inheritPreparation": true }] }],
+        "optionalIngredients": [{ "ingredient": "OID", "quantity": "", "preparation": "" }],
+        "componentSteps": [{ "stepInstructions": "", "hackOrTipIds": [], "alwaysShow": true, "relevantIngredients": [] }]
+      }]
+    }],
+    "order": 42, "isActive": true
   },
-  "missingSuggestions": {
-    "ingredients": [],
-    "hacksOrTips": []
-  }
+  "missingSuggestions": { "ingredients": [], "hacksOrTips": [] }
 }
 
-DEFAULT FIELD RULES
-
-- heroImageUrl: ""
-- youtubeId: "" (or video ID from YouTube URL)
-- stickerId: ""
-- sponsorId: ""
-- hackOrTipIds: [] if not found
-- frameworkCategories: [] if not found
-- useLeftoversIn: []
-- order: random 1-100
-- isActive: true
-- Include minimum 3-4 components in the component array
+DEFAULTS: heroImageUrl="", stickerId="", sponsorId="", hackOrTipIds=[], frameworkCategories=[], useLeftoversIn=[], isActive=true. Include 3-4 components minimum.
 `.trim();
 
-const AI_TOOLS: any[] = [
+const YOUTUBE_SYSTEM_PROMPT = `${CORE_PROMPT_RULES}
+
+URL HANDLING:
+1. web_search the exact URL to get the title.
+2. web_search "<title> recipe ingredients method" for full recipe.
+3. If needed, web_search "<title> full recipe" for more detail.
+- If YouTube → extract youtubeId from the "v=" param or youtu.be slug.
+- Recipe MUST match the URL content. NEVER output a different dish.
+`.trim();
+
+const INSTAGRAM_SYSTEM_PROMPT = `${CORE_PROMPT_RULES}
+
+SCRAPED CONTEXT PRIORITY:
+If the message contains "--- SCRAPED INSTAGRAM CONTEXT ---", use that caption/author/description as your PRIMARY source to identify the dish. Then web_search "<dish name> recipe ingredients method steps" for full details.
+
+FALLBACK (if no scraped context):
+1. web_search the exact Instagram URL.
+2. Extract USERNAME from URL → search "<username> instagram recipe".
+3. Use any caption text/hashtags/dish name from results → search "<dish name> recipe ingredients method".
+4. If the user message includes a dish name, use it directly.
+5. Check URL keywords (e.g. "biryani") → search "<keyword> recipe full ingredients steps".
+6. Last resort: "<username> popular recipe".
+
+Try at least 3-4 different queries. Search for blog/YouTube mirrors of the post.
+Recipe MUST match the URL. NEVER invent a different dish.
+`.trim();
+
+
+const FUNCTION_TOOLS: any[] = [
       {
         type: 'function',
         name: 'getOrCreateIngredient',
@@ -232,11 +147,42 @@ const AI_TOOLS: any[] = [
             required: ['query'],
         },
     },
-    {
-        type: 'web_search_preview',
-        search_context_size: 'high',
-    },
 ];
+
+function buildAiTools(searchContextSize: 'medium' | 'high'): any[] {
+    return [
+        ...FUNCTION_TOOLS,
+        {
+            type: 'web_search',
+            search_context_size: searchContextSize,
+        },
+    ];
+}
+
+let activeCalls = 0;
+const MAX_CONCURRENT_AI = 3;
+const waitQueue: (() => void)[] = [];
+
+function acquireSlot(): Promise<void> {
+    if (activeCalls < MAX_CONCURRENT_AI) {
+        activeCalls++;
+        return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+        waitQueue.push(() => {
+            activeCalls++;
+            resolve();
+        });
+    });
+}
+
+function releaseSlot(): void {
+    activeCalls--;
+    if (waitQueue.length > 0) {
+        const next = waitQueue.shift()!;
+        next();
+    }
+}
 
 @Injectable()
 export class CookbookaiService {
@@ -265,23 +211,139 @@ export class CookbookaiService {
         return 'Hello World! from cook book ai';
     }
 
+    private isInstagramMessage(message: string): boolean {
+        const text = String(message || '').toLowerCase();
+        return text.includes('instagram.com/') || text.includes('instagr.am/');
+    }
+
+  
+    private extractInstagramUrl(message: string): string | null {
+        const match = message.match(/https?:\/\/(?:www\.)?(?:instagram\.com|instagr\.am)\/[^\s)"']+/i);
+        return match ? match[0] : null;
+    }
+
+    private async scrapeInstagramContext(url: string): Promise<string | null> {
+        const parts: string[] = [];
+
+  
+        try {
+            const oEmbedUrl = `https://api.instagram.com/oembed/?url=${encodeURIComponent(url)}&omitscript=true`;
+            const oRes = await fetch(oEmbedUrl, {
+                headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Saveful/1.0)' },
+                signal: AbortSignal.timeout(8000),
+            });
+            if (oRes.ok) {
+                const data = await oRes.json();
+                if (data.title) parts.push(`Post caption: ${data.title}`);
+                if (data.author_name) parts.push(`Author: ${data.author_name}`);
+                if (data.thumbnail_url) parts.push(`Thumbnail: ${data.thumbnail_url}`);
+                this.logger.log(`[instagram-scrape] oEmbed OK — author: ${data.author_name}, caption length: ${(data.title || '').length}`);
+            } else {
+                this.logger.warn(`[instagram-scrape] oEmbed HTTP ${oRes.status}`);
+            }
+        } catch (err: any) {
+            this.logger.warn(`[instagram-scrape] oEmbed failed: ${err?.message}`);
+        }
+
+        try {
+            const htmlRes = await fetch(url, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                },
+                redirect: 'follow',
+                signal: AbortSignal.timeout(10000),
+            });
+            if (htmlRes.ok) {
+                const html = await htmlRes.text();
+
+                const ogTitle = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i);
+                if (ogTitle?.[1] && !parts.some(p => p.includes(ogTitle[1]))) {
+                    parts.push(`Page title: ${ogTitle[1]}`);
+                }
+
+                const ogDesc = html.match(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']/i);
+                if (ogDesc?.[1]) {
+                    parts.push(`Description: ${ogDesc[1]}`);
+                }
+
+                if (!ogDesc?.[1]) {
+                    const metaDesc = html.match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i);
+                    if (metaDesc?.[1]) {
+                        parts.push(`Description: ${metaDesc[1]}`);
+                    }
+                }
+
+                const jsonLdMatch = html.match(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/i);
+                if (jsonLdMatch?.[1]) {
+                    try {
+                        const ld = JSON.parse(jsonLdMatch[1]);
+                        if (ld.name) parts.push(`Structured name: ${ld.name}`);
+                        if (ld.description) parts.push(`Structured description: ${ld.description}`);
+                        if (ld.articleBody) parts.push(`Article body: ${ld.articleBody.substring(0, 1000)}`);
+                    } catch { /* ignore parse errors */ }
+                }
+
+                this.logger.log(`[instagram-scrape] HTML meta extracted — ${parts.length} context parts`);
+            }
+        } catch (err: any) {
+            this.logger.warn(`[instagram-scrape] HTML fetch failed: ${err?.message}`);
+        }
+
+        if (parts.length === 0) {
+            this.logger.warn('[instagram-scrape] No context could be scraped.');
+            return null;
+        }
+
+        return parts.join('\n');
+    }
+
 
     async extractRecipeWithAI(message: string) {
-        this.logger.log('[extractRecipe] Using gpt-4o with web_search_preview');
+        const isInstagram = this.isInstagramMessage(message);
+        this.logger.log(
+            `[extractRecipe] Using gpt-5.2 with web_search (${isInstagram ? 'instagram-quality' : 'default-fast'} profile)`,
+        );
 
-        const result = await this.runAgenticLoop(message, {
-            model: 'gpt-4o',
-            tools: AI_TOOLS,
-            reasoningEffort: null,  
-            maxOutputTokens: 16384,
-        });
+        let enrichedMessage = message;
+        if (isInstagram) {
+            const igUrl = this.extractInstagramUrl(message);
+            if (igUrl) {
+                this.logger.log(`[extractRecipe] Scraping Instagram context from: ${igUrl}`);
+                const scraped = await this.scrapeInstagramContext(igUrl);
+                if (scraped) {
+                    enrichedMessage = `${message}\n\n--- SCRAPED INSTAGRAM CONTEXT (use this as primary recipe source) ---\n${scraped}\n--- END SCRAPED CONTEXT ---`;
+                    this.logger.log(`[extractRecipe] Injected ${scraped.length} chars of Instagram context`);
+                }
+            }
+        }
+
+        await acquireSlot();
+        this.logger.log(`[extractRecipe] Slot acquired (active: ${activeCalls}/${MAX_CONCURRENT_AI})`);
+
+        let result: any;
+        try {
+            result = await this.runAgenticLoop(enrichedMessage, {
+                model: 'gpt-5.2',
+                systemPrompt: isInstagram ? INSTAGRAM_SYSTEM_PROMPT : YOUTUBE_SYSTEM_PROMPT,
+                tools: buildAiTools(isInstagram ? 'high' : 'medium'),
+                reasoningEffort: isInstagram ? 'medium' : null,  
+                maxOutputTokens: isInstagram ? 8000 : 5000,
+                maxIterations: isInstagram ? 14 : 8,
+                maxTotalMs: isInstagram ? 420000 : 180000,
+            });
+        } finally {
+            releaseSlot();
+            this.logger.log(`[extractRecipe] Slot released (active: ${activeCalls}/${MAX_CONCURRENT_AI})`);
+        }
 
         if (result.success && this.isValidRecipe(result.data)) {
-            this.logger.log('[extractRecipe] gpt-4o succeeded ✓');
+            this.logger.log('[extractRecipe] gpt-5.2 succeeded ✓');
             return result;
         }
 
-        this.logger.error('[extractRecipe] gpt-4o failed or returned placeholder recipe.');
+        this.logger.error('[extractRecipe] gpt-5.2 failed or returned placeholder recipe.');
         return {
             success: false,
             message: 'Could not extract a valid recipe. Please try a different link.',
@@ -314,25 +376,31 @@ export class CookbookaiService {
         message: string,
         config: {
             model: string;
+            systemPrompt: string;
             tools: any[];
             reasoningEffort: string | null;
             maxOutputTokens: number;
+            maxIterations?: number;
+            maxTotalMs?: number;
         },
     ): Promise<{ success: boolean; message: string; data?: any }> {
         try {
             const tag = `[${config.model}]`;
             this.logger.log(`${tag} Starting agentic loop …`);
 
-            const MAX_ITERATIONS = 25;
-            const MAX_PARSE_RETRIES = 3;
+            const MAX_ITERATIONS = config.maxIterations ?? 10;
+            const MAX_PARSE_RETRIES = 2;
             const MAX_NO_PROGRESS_ITERATIONS = 2;
-            const MAX_TOTAL_MS = 180000;
+            const MAX_TOTAL_MS = config.maxTotalMs ?? 300000;
             let iteration = 0;
             let parseRetries = 0;
             let noProgressIterations = 0;
             const startedAt = Date.now();
 
-            const input: any[] = [{ role: 'user', content: message }];
+            const input: any[] = [
+                { role: 'system', content: config.systemPrompt },
+                { role: 'user', content: message },
+            ];
 
             while (iteration < MAX_ITERATIONS) {
                 if (Date.now() - startedAt > MAX_TOTAL_MS) {
@@ -350,7 +418,6 @@ export class CookbookaiService {
 
                 const params: any = {
                     model: config.model,
-                    instructions: RECIPE_SYSTEM_PROMPT,
                     input,
                     tools: config.tools,
                     tool_choice: 'auto',
@@ -360,7 +427,31 @@ export class CookbookaiService {
                     params.reasoning = { effort: config.reasoningEffort };
                 }
 
-                const response = await this.openai.responses.create(params);
+                // Retry with exponential backoff on 429
+                let response: any;
+                for (let attempt = 0; attempt < 4; attempt++) {
+                    try {
+                        response = await this.openai.responses.create(params);
+                        break;
+                    } catch (err: any) {
+                        if (err?.status === 429 && attempt < 3) {
+                            const delay = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
+                            this.logger.warn(`${tag} 429 rate-limited, retrying in ${delay}ms (attempt ${attempt + 1})`);
+                            await new Promise(r => setTimeout(r, delay));
+                            continue;
+                        }
+                        throw err;
+                    }
+                }
+
+                if ((response as any)?.usage) {
+                    const u = (response as any).usage;
+                    this.logger.log(
+                        `${tag} Iter ${iteration} usage — prompt: ${u.input_tokens ?? u.prompt_tokens ?? '?'}, ` +
+                        `completion: ${u.output_tokens ?? u.completion_tokens ?? '?'}, ` +
+                        `total: ${u.total_tokens ?? '?'}`,
+                    );
+                }
 
                 const output: any[] = (response as any).output ?? [];
                 const outputTypes = output.map((i: any) => i.type).join(', ');
@@ -637,7 +728,6 @@ export class CookbookaiService {
         }
     }
 
-    /** Search recipes by title. */
     private async toolGetRecipes(query: string): Promise<{ _id: string; title: string }[]> {
         try {
             const docs = await this.recipeModel
@@ -792,7 +882,6 @@ export class CookbookaiService {
     private sanitizeRecipeData(data: any): any {
         const isOid = (v: any) => Types.ObjectId.isValid(v) && String(new Types.ObjectId(v)) === String(v);
 
-        // Top-level ObjectId[] fields — keep only valid ObjectIds
         for (const key of ['frameworkCategories', 'hackOrTipIds', 'useLeftoversIn'] as const) {
             if (Array.isArray(data[key])) {
                 data[key] = data[key].filter(isOid);
