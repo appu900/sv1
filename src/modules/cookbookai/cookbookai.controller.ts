@@ -1,4 +1,4 @@
-import { Controller, Get, Post, UseGuards, Body } from '@nestjs/common';
+import { Controller, Get, Post, Delete, UseGuards, Body, Param } from '@nestjs/common';
 import { CookbookaiService } from './cookbookai.service';
 import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
 import { RolesGuard } from 'src/common/guards/roles.guard';
@@ -10,6 +10,17 @@ import { AddRecipeDto } from './dto/add-recipe.dto';
 @Controller('cookbookai')
 export class CookbookaiController {
     constructor(private readonly cookbookaiService: CookbookaiService, private readonly redisService: RedisService) { }
+
+    private resolveUserId(req: any): string {
+        const resolved =
+            req?.user?.userId ??
+            req?.user?.id ??
+            req?.user?._id ??
+            req?.user?.sub ??
+            '';
+        return String(resolved || '');
+    }
+
     @Get()
     @Roles('USER')
     @UseGuards(JwtAuthGuard, RolesGuard)
@@ -20,8 +31,9 @@ export class CookbookaiController {
     @Get('/recipes')
     @Roles('USER')
     @UseGuards(JwtAuthGuard, RolesGuard)
-    async getAllRecipes() {
-        const recipes = await this.cookbookaiService.findAll();
+    async getAllRecipes(@Request() req) {
+        const userId = this.resolveUserId(req);
+        const recipes = await this.cookbookaiService.findAllByUser(userId);
         return {
             success: true,
             count: recipes.length,
@@ -29,13 +41,42 @@ export class CookbookaiController {
         };
     }
 
+    @Get('/recipes/:id')
+    @Roles('USER')
+    @UseGuards(JwtAuthGuard, RolesGuard)
+    async getRecipeById(@Request() req, @Param('id') id: string) {
+        const userId = this.resolveUserId(req);
+        const recipe = await this.cookbookaiService.findById(id, userId);
+        console.log('[getRecipeById] found:', !!recipe);
+        if (!recipe) {
+            return { success: false, message: 'Recipe not found.' };
+        }
+        return { success: true, data: recipe };
+    }
+
+    @Delete('/recipes/:id')
+    @Roles('USER')
+    @UseGuards(JwtAuthGuard, RolesGuard)
+    async deleteRecipe(@Request() req, @Param('id') id: string) {
+        const userId = this.resolveUserId(req);
+        const result = await this.cookbookaiService.deleteRecipe(id, userId);
+        return result;
+    }
+
     @Post("/add-recipe")
     @Roles('USER')
     @UseGuards(JwtAuthGuard, RolesGuard)
     async addRecipe(@Request() req, @Body() body: AddRecipeDto) {
           try {
-            const user = req.user;
-            const key = `user:${user.userId}:cookbookai`;
+            const userId = this.resolveUserId(req);
+            if (!userId) {
+                return {
+                    success: false,
+                    message: 'Unable to resolve current user. Please login again.',
+                };
+            }
+
+            const key = `user:${userId}:cookbookai`;
 
             const currentCount = await this.redisService.incr(key);
 
@@ -51,24 +92,26 @@ export class CookbookaiController {
                 };
             }
 
-            // Call admin AI to process the recipe request
-            const aiResponse = await this.cookbookaiService.callAdminAi(
-                body.message, 
-                user.userId
+            const aiResponse = await this.cookbookaiService.extractRecipeWithAI(
+                body.message,
             );
 
             if (!aiResponse.success) {
+                await this.redisService.decr(key);
                 return aiResponse;
             }
-            const responsetobeadded = {...aiResponse.data, userid: user.userId };
+            const responsetobeadded = {...aiResponse.data, userid: userId };
 
             const createResponse = await this.cookbookaiService.createRecipe(responsetobeadded);
-            console.log("Create Response:", createResponse);
-            if (createResponse.success) {
+            if (createResponse.success && createResponse.data) {
+                const doc: any = createResponse.data;
+                const plainData = doc.toJSON ? doc.toJSON() : doc;
+                plainData._id = String(plainData._id);
+                console.log('[addRecipe] returning _id:', plainData._id, 'type:', typeof plainData._id);
                 return {
                     success: true,
                     message: 'Recipe added successfully.',
-                    data: createResponse.data
+                    data: plainData,
                 };
             }
             return {
@@ -88,7 +131,8 @@ export class CookbookaiController {
     @Roles('USER')
     @UseGuards(JwtAuthGuard, RolesGuard)
     async invalidateCache(@Request() req) {
-        await this.redisService.delByPattern(`user:${req.user.userId}:cookbookai*`);
+        const userId = this.resolveUserId(req);
+        await this.redisService.delByPattern(`user:${userId}:cookbookai*`);
         return { message: "Cache invalidated successfully." };
     }
 }

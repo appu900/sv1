@@ -86,6 +86,10 @@ async expire(key: string, ttlSeconds: number) {
     return this.client.incr(key);
   }
 
+  async decr(key: string): Promise<number> {
+    return this.client.decr(key);
+  }
+
   async delByPattern(pattern: string): Promise<void> {
     let cursor = '0';
     do {

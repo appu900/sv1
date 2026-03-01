@@ -184,7 +184,6 @@ export class userRecipe {
 export type UserRecipeDocument = userRecipe & Document;
 export const UserRecipeSchema = SchemaFactory.createForClass(userRecipe);
 
-// Indexes for optimized queries
 UserRecipeSchema.index({ title: 1 });
 UserRecipeSchema.index({ frameworkCategories: 1 });
 UserRecipeSchema.index({ isActive: 1 });
