@@ -68,18 +68,25 @@ URL HANDLING:
 const INSTAGRAM_SYSTEM_PROMPT = `${CORE_PROMPT_RULES}
 
 SCRAPED CONTEXT PRIORITY:
-If the message contains "--- SCRAPED INSTAGRAM CONTEXT ---", use that caption/author/description as your PRIMARY source to identify the dish. Then web_search "<dish name> recipe ingredients method steps" for full details.
+The message will contain "--- SCRAPED INSTAGRAM CONTEXT ---" with caption, author, description, or viewer data scraped from the Instagram post. This is your PRIMARY and MOST RELIABLE source to identify the dish.
 
-FALLBACK (if no scraped context):
-1. web_search the exact Instagram URL.
-2. Extract USERNAME from URL → search "<username> instagram recipe".
-3. Use any caption text/hashtags/dish name from results → search "<dish name> recipe ingredients method".
-4. If the user message includes a dish name, use it directly.
-5. Check URL keywords (e.g. "biryani") → search "<keyword> recipe full ingredients steps".
-6. Last resort: "<username> popular recipe".
+STEPS:
+1. Read the scraped context carefully. Identify the dish name from the caption, description, or hashtags.
+2. web_search "<dish name> recipe full ingredients method steps" to get the complete recipe.
+3. If the scraped context also mentions a specific chef/author, include that in the search: "<author name> <dish name> recipe".
+4. If the dish name is not clear from scraped context, use any food-related keywords or hashtags from it.
 
-Try at least 3-4 different queries. Search for blog/YouTube mirrors of the post.
-Recipe MUST match the URL. NEVER invent a different dish.
+FALLBACK (if no scraped context or dish still unclear):
+1. web_search the exact Instagram URL to find blog mirrors.
+2. If the user message includes a dish name or keywords, use them directly.
+
+SPEED RULES:
+- You should need at most 2 web searches: one to identify the dish (if not obvious from context), one to get the full recipe.
+- Do NOT try more than 3 web searches total. STOP after 3.
+- NEVER repeat a web_search with a similar query.
+- If you still cannot identify the dish after 3 searches, output: {"error": "Could not identify the recipe from this Instagram post. Please paste the link again with the dish name (e.g. 'butter chicken')."}.
+
+Recipe MUST match the Instagram post content. NEVER invent a different dish.
 `.trim();
 
 
@@ -222,29 +229,56 @@ export class CookbookaiService {
         return match ? match[0] : null;
     }
 
+  
+    private extractShortcode(url: string): string | null {
+        const m = url.match(/instagram\.com\/(?:p|reel|tv)\/([A-Za-z0-9_-]+)/i);
+        return m ? m[1] : null;
+    }
+
+
+    private extractInstagramUsername(url: string): string | null {
+     
+        if (/instagram\.com\/(?:p|reel|tv)\//i.test(url)) return null;
+        const m = url.match(/instagram\.com\/@?([A-Za-z0-9_.]+)/i);
+        return m ? m[1] : null;
+    }
+
     private async scrapeInstagramContext(url: string): Promise<string | null> {
         const parts: string[] = [];
+        const shortcode = this.extractShortcode(url);
+        const username = this.extractInstagramUsername(url);
 
-  
+        // ──────────────────────────────────────────────
+        // Strategy 1: Instagram oEmbed API
+        // ──────────────────────────────────────────────
         try {
             const oEmbedUrl = `https://api.instagram.com/oembed/?url=${encodeURIComponent(url)}&omitscript=true`;
             const oRes = await fetch(oEmbedUrl, {
                 headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Saveful/1.0)' },
-                signal: AbortSignal.timeout(8000),
+                signal: AbortSignal.timeout(4000),
             });
             if (oRes.ok) {
                 const data = await oRes.json();
                 if (data.title) parts.push(`Post caption: ${data.title}`);
                 if (data.author_name) parts.push(`Author: ${data.author_name}`);
                 if (data.thumbnail_url) parts.push(`Thumbnail: ${data.thumbnail_url}`);
-                this.logger.log(`[instagram-scrape] oEmbed OK — author: ${data.author_name}, caption length: ${(data.title || '').length}`);
+                this.logger.log(`[instagram-scrape] Strategy 1 (oEmbed) OK — author: ${data.author_name}, caption length: ${(data.title || '').length}`);
             } else {
-                this.logger.warn(`[instagram-scrape] oEmbed HTTP ${oRes.status}`);
+                this.logger.warn(`[instagram-scrape] Strategy 1 (oEmbed) HTTP ${oRes.status}`);
             }
         } catch (err: any) {
-            this.logger.warn(`[instagram-scrape] oEmbed failed: ${err?.message}`);
+            this.logger.warn(`[instagram-scrape] Strategy 1 (oEmbed) failed: ${err?.message}`);
         }
 
+        // If oEmbed got a caption, that's usually enough
+        if (parts.some(p => p.startsWith('Post caption:') && p.length > 25)) {
+            this.logger.log(`[instagram-scrape] Got good caption from oEmbed, skipping remaining strategies`);
+            return parts.join('\n');
+        }
+
+        // ──────────────────────────────────────────────
+        // Strategy 2: Direct HTML fetch + meta tags
+        // ──────────────────────────────────────────────
         try {
             const htmlRes = await fetch(url, {
                 headers: {
@@ -253,7 +287,7 @@ export class CookbookaiService {
                     'Accept-Language': 'en-US,en;q=0.9',
                 },
                 redirect: 'follow',
-                signal: AbortSignal.timeout(10000),
+                signal: AbortSignal.timeout(5000),
             });
             if (htmlRes.ok) {
                 const html = await htmlRes.text();
@@ -285,17 +319,156 @@ export class CookbookaiService {
                     } catch { /* ignore parse errors */ }
                 }
 
-                this.logger.log(`[instagram-scrape] HTML meta extracted — ${parts.length} context parts`);
+                this.logger.log(`[instagram-scrape] Strategy 2 (HTML meta) — ${parts.length} total context parts`);
             }
         } catch (err: any) {
-            this.logger.warn(`[instagram-scrape] HTML fetch failed: ${err?.message}`);
+            this.logger.warn(`[instagram-scrape] Strategy 2 (HTML meta) failed: ${err?.message}`);
+        }
+
+        // If we have useful description/title from HTML, return early
+        if (parts.some(p => (p.startsWith('Description:') || p.startsWith('Page title:')) && p.length > 30)) {
+            this.logger.log(`[instagram-scrape] Got good meta from HTML, skipping remaining strategies`);
+            return parts.join('\n');
+        }
+
+        // ──────────────────────────────────────────────
+        // Strategy 3: oembed.com third-party proxy
+        // ──────────────────────────────────────────────
+        try {
+            const proxyUrl = `https://noembed.com/embed?url=${encodeURIComponent(url)}`;
+            const proxyRes = await fetch(proxyUrl, {
+                headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Saveful/1.0)' },
+                signal: AbortSignal.timeout(4000),
+            });
+            if (proxyRes.ok) {
+                const data = await proxyRes.json();
+                if (data.title && !parts.some(p => p.includes(data.title))) {
+                    parts.push(`Post caption (proxy): ${data.title}`);
+                }
+                if (data.author_name && !parts.some(p => p.includes(data.author_name))) {
+                    parts.push(`Author (proxy): ${data.author_name}`);
+                }
+                this.logger.log(`[instagram-scrape] Strategy 3 (noembed proxy) OK`);
+            } else {
+                this.logger.warn(`[instagram-scrape] Strategy 3 (noembed proxy) HTTP ${proxyRes.status}`);
+            }
+        } catch (err: any) {
+            this.logger.warn(`[instagram-scrape] Strategy 3 (noembed proxy) failed: ${err?.message}`);
+        }
+
+        if (parts.some(p => p.includes('caption (proxy)') && p.length > 30)) {
+            return parts.join('\n');
+        }
+
+        // ──────────────────────────────────────────────
+        // Strategy 4: Google search for mirrors/blogs
+        // referencing this shortcode or username+post
+        // ──────────────────────────────────────────────
+        try {
+            const queries: string[] = [];
+            if (shortcode) {
+                queries.push(`instagram ${shortcode} recipe`);
+            }
+            if (username) {
+                queries.push(`${username} instagram recipe`);
+            }
+            // Also try Google's cache/web view of the post
+            if (shortcode) {
+                queries.push(`site:imginn.com ${shortcode}`);
+            }
+
+            for (const q of queries) {
+                try {
+                    const googleUrl = `https://www.google.com/search?q=${encodeURIComponent(q)}&num=3&hl=en`;
+                    const gRes = await fetch(googleUrl, {
+                        headers: {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                            'Accept': 'text/html',
+                            'Accept-Language': 'en-US,en;q=0.9',
+                        },
+                        signal: AbortSignal.timeout(5000),
+                    });
+                    if (gRes.ok) {
+                        const html = await gRes.text();
+                        // Extract text snippets from Google results
+                        const snippets = html.match(/<span[^>]*class="[^"]*"[^>]*>([^<]{30,300})<\/span>/gi) || [];
+                        const cleanSnippets = snippets
+                            .map(s => s.replace(/<[^>]+>/g, '').trim())
+                            .filter(s => s.length > 30 && !s.includes('javascript') && !s.includes('cookie'));
+
+                        if (cleanSnippets.length > 0) {
+                            const snippet = cleanSnippets.slice(0, 3).join(' | ');
+                            parts.push(`Google mirror context (${q}): ${snippet.substring(0, 500)}`);
+                            this.logger.log(`[instagram-scrape] Strategy 4 (Google "${q}") — found ${cleanSnippets.length} snippets`);
+                        }
+                    }
+                } catch (err: any) {
+                    this.logger.warn(`[instagram-scrape] Strategy 4 Google query "${q}" failed: ${err?.message}`);
+                }
+            }
+        } catch (err: any) {
+            this.logger.warn(`[instagram-scrape] Strategy 4 (Google) failed: ${err?.message}`);
+        }
+
+    
+        if (shortcode && parts.length < 2) {
+            const viewerSites = [
+                `https://imginn.com/p/${shortcode}/`,
+                `https://www.picuki.com/media/${shortcode}`,
+            ];
+
+            for (const viewerUrl of viewerSites) {
+                try {
+                    const vRes = await fetch(viewerUrl, {
+                        headers: {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                            'Accept': 'text/html',
+                        },
+                        redirect: 'follow',
+                        signal: AbortSignal.timeout(5000),
+                    });
+                    if (vRes.ok) {
+                        const html = await vRes.text();
+
+                        // Try og:description or description meta
+                        const desc = html.match(/<meta[^>]+(?:property=["']og:description["']|name=["']description["'])[^>]+content=["']([^"']+)["']/i);
+                        if (desc?.[1] && desc[1].length > 20) {
+                            const site = new URL(viewerUrl).hostname;
+                            parts.push(`Viewer caption (${site}): ${desc[1].substring(0, 800)}`);
+                            this.logger.log(`[instagram-scrape] Strategy 5 (${site}) — got description (${desc[1].length} chars)`);
+                            break; // got what we need
+                        }
+
+                        // Try extracting caption from page body
+                        const captionMatch = html.match(/class=["'][^"']*caption[^"']*["'][^>]*>([^<]{20,500})/i);
+                        if (captionMatch?.[1]) {
+                            const site = new URL(viewerUrl).hostname;
+                            parts.push(`Viewer caption (${site}): ${captionMatch[1].trim()}`);
+                            this.logger.log(`[instagram-scrape] Strategy 5 (${site}) — got caption from body`);
+                            break;
+                        }
+                    }
+                } catch (err: any) {
+                    this.logger.warn(`[instagram-scrape] Strategy 5 (${viewerUrl}) failed: ${err?.message}`);
+                }
+            }
         }
 
         if (parts.length === 0) {
-            this.logger.warn('[instagram-scrape] No context could be scraped.');
-            return null;
+            // Last resort: inject shortcode and username for the AI to search with
+            if (shortcode || username) {
+                const hints: string[] = [];
+                if (shortcode) hints.push(`Instagram shortcode: ${shortcode}`);
+                if (username) hints.push(`Instagram username: ${username}`);
+                parts.push(hints.join(', '));
+                this.logger.warn(`[instagram-scrape] All strategies failed. Injecting shortcode/username hints for AI.`);
+            } else {
+                this.logger.warn('[instagram-scrape] All strategies failed. No context could be scraped.');
+                return null;
+            }
         }
 
+        this.logger.log(`[instagram-scrape] Final context: ${parts.length} parts, ${parts.join('\n').length} chars`);
         return parts.join('\n');
     }
 
@@ -303,7 +476,7 @@ export class CookbookaiService {
     async extractRecipeWithAI(message: string) {
         const isInstagram = this.isInstagramMessage(message);
         this.logger.log(
-            `[extractRecipe] Using gpt-5.2 with web_search (${isInstagram ? 'instagram-quality' : 'default-fast'} profile)`,
+            `[extractRecipe] Using gpt-5.2 with web_search (${isInstagram ? 'instagram-fast' : 'default-fast'} profile)`,
         );
 
         let enrichedMessage = message;
@@ -315,6 +488,8 @@ export class CookbookaiService {
                 if (scraped) {
                     enrichedMessage = `${message}\n\n--- SCRAPED INSTAGRAM CONTEXT (use this as primary recipe source) ---\n${scraped}\n--- END SCRAPED CONTEXT ---`;
                     this.logger.log(`[extractRecipe] Injected ${scraped.length} chars of Instagram context`);
+                } else {
+                    this.logger.warn('[extractRecipe] No Instagram context scraped — AI will rely on web_search only');
                 }
             }
         }
@@ -327,11 +502,11 @@ export class CookbookaiService {
             result = await this.runAgenticLoop(enrichedMessage, {
                 model: 'gpt-5.2',
                 systemPrompt: isInstagram ? INSTAGRAM_SYSTEM_PROMPT : YOUTUBE_SYSTEM_PROMPT,
-                tools: buildAiTools(isInstagram ? 'high' : 'medium'),
-                reasoningEffort: isInstagram ? 'medium' : null,  
-                maxOutputTokens: isInstagram ? 8000 : 5000,
-                maxIterations: isInstagram ? 14 : 8,
-                maxTotalMs: isInstagram ? 420000 : 180000,
+                tools: buildAiTools(isInstagram ? 'medium' : 'medium'),
+                reasoningEffort: isInstagram ? 'low' : null,  
+                maxOutputTokens: isInstagram ? 5000 : 5000,
+                maxIterations: isInstagram ? 8 : 8,
+                maxTotalMs: isInstagram ? 150000 : 180000,
             });
         } finally {
             releaseSlot();
@@ -343,10 +518,20 @@ export class CookbookaiService {
             return result;
         }
 
+        if (result?.data?.error) {
+            this.logger.error(`[extractRecipe] AI returned error: ${result.data.error}`);
+            return {
+                success: false,
+                message: result.data.error,
+            };
+        }
+
         this.logger.error('[extractRecipe] gpt-5.2 failed or returned placeholder recipe.');
         return {
             success: false,
-            message: 'Could not extract a valid recipe. Please try a different link.',
+            message: isInstagram
+                ? 'Could not extract a recipe from this Instagram post. Try pasting the dish name along with the link.'
+                : 'Could not extract a valid recipe. Please try a different link.',
         };
     }
 
@@ -521,6 +706,16 @@ export class CookbookaiService {
 
                 const parsed = this.extractJsonFromText(finalText);
                 if (parsed) {
+                    // Handle AI signaling it cannot identify the dish
+                    if (parsed.error && typeof parsed.error === 'string') {
+                        this.logger.warn(`${tag} AI signaled error: ${parsed.error}`);
+                        return {
+                            success: false,
+                            message: parsed.error,
+                            data: { error: parsed.error },
+                        };
+                    }
+
                     const recipe = parsed.recipe ?? parsed;
                     if (this.isValidRecipe(recipe)) {
                         return {
