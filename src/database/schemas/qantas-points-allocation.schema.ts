@@ -38,6 +38,10 @@ export class QantasPointsAllocation {
 
   @Prop({ default: 0 })
   retryCount: number;
+
+  /** Qantas accrual reference number returned from the Partner Accrual API (used for cancellation) */
+  @Prop({ type: String, default: null })
+  accrualReferenceNumber: string | null;
 }
 
 export type QantasPointsAllocationDocument = QantasPointsAllocation & Document;
