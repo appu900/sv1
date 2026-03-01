@@ -57,21 +57,27 @@ CORE BEHAVIOR RULES
 6. Do not hallucinate brand names, chef names, copyrighted text.
 7. Your FINAL output must be ONLY raw JSON. No markdown, no code fences, no commentary.
 
-EXTERNAL LINK HANDLING
+EXTERNAL LINK HANDLING — MULTI-STEP SEARCH STRATEGY
 
 If the user provides a URL (YouTube, Instagram, website, blog, any recipe webpage):
 
-1. IMMEDIATELY use web_search_preview to search for that EXACT URL and extract the recipe content.
-   - For YouTube: search for the exact YouTube URL to find the video title, description, and recipe
-   - For Instagram: search for the exact Instagram URL
-   - For websites/blogs: search for the exact URL to extract the recipe
-2. After web_search_preview returns results, reconstruct the FULL recipe into the JSON schema.
-3. Preserve original recipe intent — don't simplify, invent steps, or change cuisine.
-4. web_search_preview MUST NOT be used for ID lookups. Only for recipe content extraction.
-5. After extracting recipe data → call internal tools (getOrCreateIngredient etc.) for all IDs.
-6. If YouTube video → extract youtubeId from URL (the "v=" parameter or youtu.be slug).
-7. If web_search_preview fails to find the recipe → try searching for the recipe title + "recipe" as a fallback.
-8. NEVER skip the web_search_preview step for URLs — always try to get the actual recipe data first.
+STEP 1: Search for the EXACT URL using web_search_preview.
+STEP 2: From the search results, extract the VIDEO TITLE / PAGE TITLE / RECIPE NAME.
+STEP 3: Do a SECOND web_search_preview for: "<extracted title> recipe ingredients method"
+         Example: if the video is titled "Butter Chicken", search for "Butter Chicken recipe ingredients method"
+STEP 4: If Step 3 didn't return enough detail, do a THIRD search for: "<extracted title> full recipe"
+STEP 5: Combine all search results to reconstruct the COMPLETE recipe.
+
+CRITICAL RULES:
+- The recipe you output MUST match what the URL is about. If the URL is about Chicken Butter Masala, output Chicken Butter Masala — NOT a salad, NOT a pasta, NOT any other dish.
+- NEVER invent or hallucinate a recipe that doesn't match the URL content. If web search says the video is about "Butter Chicken Masala", your output MUST be Butter Chicken Masala.
+- If after 3 searches you still can't find the recipe, search for: "<dish name from video title> authentic recipe"
+- NEVER return a placeholder recipe saying "I can't access the video" or "waiting for your text".
+- NEVER produce empty components, empty requiredIngredients, or filler steps.
+- After extracting recipe data → call internal tools (getOrCreateIngredient etc.) for ALL ingredient IDs.
+- If YouTube video → extract youtubeId from URL (the "v=" parameter or youtu.be slug).
+- web_search_preview MUST NOT be used for ID lookups. Only for recipe content extraction.
+- Preserve original recipe intent — don't simplify, invent steps, or change cuisine.
 
 TOOLS AVAILABLE
 
@@ -261,36 +267,114 @@ export class CookbookaiService {
 
 
     async extractRecipeWithAI(message: string) {
-        try {
-            this.logger.log('Calling OpenAI gpt-5.2 (Responses API + agentic loop) …');
+        this.logger.log('[extractRecipe] Using gpt-4o with web_search_preview');
 
-            const MAX_ITERATIONS = 12;
+        const result = await this.runAgenticLoop(message, {
+            model: 'gpt-4o',
+            tools: AI_TOOLS,
+            reasoningEffort: null,   // gpt-4o doesn't use reasoning param
+            maxOutputTokens: 16384,
+        });
+
+        if (result.success && this.isValidRecipe(result.data)) {
+            this.logger.log('[extractRecipe] gpt-4o succeeded ✓');
+            return result;
+        }
+
+        this.logger.error('[extractRecipe] gpt-4o failed or returned placeholder recipe.');
+        return {
+            success: false,
+            message: 'Could not extract a valid recipe. Please try a different link.',
+        };
+    }
+
+    /**
+     * Check that a recipe object has meaningful content.
+     */
+    private isValidRecipe(data: any): boolean {
+        if (!data || typeof data !== 'object') return false;
+        const hasTitle = typeof data.title === 'string' && data.title.trim().length > 0;
+        const hasComponents = Array.isArray(data.components) && data.components.length > 0;
+        if (!hasTitle || !hasComponents) return false;
+
+        // Check that at least one component has real ingredients (not placeholder)
+        let totalIngredients = 0;
+        for (const wrapper of data.components) {
+            if (!Array.isArray(wrapper?.component)) continue;
+            for (const comp of wrapper.component) {
+                if (Array.isArray(comp?.requiredIngredients)) {
+                    totalIngredients += comp.requiredIngredients.length;
+                }
+            }
+        }
+        if (totalIngredients === 0) {
+            this.logger.warn('[isValidRecipe] Recipe has 0 ingredients — treating as invalid placeholder.');
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * Reusable agentic loop that works with any model + tools config.
+     */
+    private async runAgenticLoop(
+        message: string,
+        config: {
+            model: string;
+            tools: any[];
+            reasoningEffort: string | null;
+            maxOutputTokens: number;
+        },
+    ): Promise<{ success: boolean; message: string; data?: any }> {
+        try {
+            const tag = `[${config.model}]`;
+            this.logger.log(`${tag} Starting agentic loop …`);
+
+            const MAX_ITERATIONS = 25;
             const MAX_PARSE_RETRIES = 3;
+            const MAX_NO_PROGRESS_ITERATIONS = 2;
+            const MAX_TOTAL_MS = 180000;
             let iteration = 0;
             let parseRetries = 0;
+            let noProgressIterations = 0;
+            const startedAt = Date.now();
 
             const input: any[] = [{ role: 'user', content: message }];
 
             while (iteration < MAX_ITERATIONS) {
+                if (Date.now() - startedAt > MAX_TOTAL_MS) {
+                    this.logger.error(`${tag} Timed out by total time budget.`);
+                    return {
+                        success: false,
+                        message: 'Recipe extraction timed out. Please try again.',
+                    };
+                }
+
                 iteration++;
                 this.logger.log(
-                    `[extractRecipe] Iteration ${iteration}, input items: ${input.length}`,
+                    `${tag} Iteration ${iteration}, input items: ${input.length}`,
                 );
 
-                const response = await this.openai.responses.create({
-                    model: 'gpt-5.2',
+                // Build request params — only include reasoning for models that support it
+                const params: any = {
+                    model: config.model,
                     instructions: RECIPE_SYSTEM_PROMPT,
                     input,
-                    tools: AI_TOOLS,
+                    tools: config.tools,
                     tool_choice: 'auto',
-                    reasoning: { effort: 'none' },
-                    max_output_tokens: 12000,
-                } as any);
+                    max_output_tokens: config.maxOutputTokens,
+                };
+                if (config.reasoningEffort) {
+                    params.reasoning = { effort: config.reasoningEffort };
+                }
+
+                const response = await this.openai.responses.create(params);
 
                 const output: any[] = (response as any).output ?? [];
                 const outputTypes = output.map((i: any) => i.type).join(', ');
-                this.logger.log(`[extractRecipe] Output types: ${outputTypes}`);
+                this.logger.log(`${tag} Output types: ${outputTypes}`);
 
+                // Push ALL output items back into input (required by Responses API)
                 for (const item of output) {
                     input.push(item);
                 }
@@ -299,20 +383,22 @@ export class CookbookaiService {
                     (item: any) => item.type === 'function_call',
                 );
                 const hasWebSearch = output.some(
-                    (item: any) => item.type === 'web_search_call',
+                    (item: any) =>
+                        item.type === 'web_search_call' || item.type === 'web_search',
                 );
 
                 // ── If there are function calls, execute them ──
                 if (functionCalls.length > 0) {
+                    noProgressIterations = 0;
                     this.logger.log(
-                        `[extractRecipe] ${functionCalls.length} function call(s): ` +
+                        `${tag} ${functionCalls.length} function call(s): ` +
                             functionCalls.map((fc: any) => fc.name).join(', '),
                     );
 
                     for (const fc of functionCalls) {
                         const result = await this.handleToolCall(fc.name, fc.arguments);
                         this.logger.log(
-                            `[extractRecipe] ${fc.name} → ${JSON.stringify(result).substring(0, 200)}`,
+                            `${tag} ${fc.name} → ${JSON.stringify(result).substring(0, 200)}`,
                         );
                         input.push({
                             type: 'function_call_output',
@@ -328,51 +414,65 @@ export class CookbookaiService {
                 }
 
                 // ── No function calls — check for final text ──
-                let finalText = '';
-                for (const item of output) {
-                    if (item.type === 'message' && Array.isArray(item.content)) {
-                        for (const content of item.content) {
-                            if (content.type === 'output_text') {
-                                finalText += content.text;
-                            }
-                        }
-                    }
-                }
+                const finalText = this.extractResponseText(response, output);
 
                 if (!finalText.trim()) {
                     // Web search happened — model needs another iteration to process results
                     if (hasWebSearch) {
+                        noProgressIterations = 0;
                         this.logger.log(
-                            '[extractRecipe] Web search done, continuing for model to process results…',
+                            `${tag} Web search done, continuing for model to process results…`,
                         );
                         continue;
                     }
-                    // Nothing useful — error
-                    this.logger.error(
-                        `[extractRecipe] Empty output. Types: ${outputTypes}`,
-                    );
-                    return {
-                        success: false,
-                        message: 'AI returned an empty response. Please try again.',
-                    };
+
+                    noProgressIterations++;
+                    if (noProgressIterations > MAX_NO_PROGRESS_ITERATIONS) {
+                        this.logger.error(
+                            `${tag} No-progress iterations exceeded (${MAX_NO_PROGRESS_ITERATIONS}).`,
+                        );
+                        return {
+                            success: false,
+                            message: 'AI could not produce recipe output. Please try another link.',
+                        };
+                    }
+
+                    this.logger.error(`${tag} Empty output. Types: ${outputTypes}`);
+                    continue;
                 }
 
                 // ── Try to parse the final JSON ──
                 const parsed = this.extractJsonFromText(finalText);
                 if (parsed) {
                     const recipe = parsed.recipe ?? parsed;
-                    return {
-                        success: true,
-                        message: 'Recipe extracted successfully.',
-                        data: recipe,
-                    };
+                    // Validate before declaring success
+                    if (this.isValidRecipe(recipe)) {
+                        return {
+                            success: true,
+                            message: 'Recipe extracted successfully.',
+                            data: recipe,
+                        };
+                    }
+                    // Parsed but empty — ask model to try harder
+                    this.logger.warn(
+                        `${tag} Parsed JSON but recipe has no title/components. Asking model to regenerate.`,
+                    );
+                    input.push({
+                        role: 'user',
+                        content:
+                            'The JSON you produced has an empty title or empty components array. Please produce the COMPLETE recipe JSON with a real title and at least 3 components. Output ONLY raw JSON.',
+                    });
+                    parseRetries++;
+                    if (parseRetries >= MAX_PARSE_RETRIES) break;
+                    continue;
                 }
 
                 // Parse failed — ask the model to fix its output
+                noProgressIterations = 0;
                 parseRetries++;
                 if (parseRetries >= MAX_PARSE_RETRIES) {
                     this.logger.error(
-                        `[extractRecipe] JSON parse failed after ${MAX_PARSE_RETRIES} retries.`,
+                        `${tag} JSON parse failed after ${MAX_PARSE_RETRIES} retries.`,
                     );
                     return {
                         success: false,
@@ -381,7 +481,7 @@ export class CookbookaiService {
                 }
 
                 this.logger.warn(
-                    '[extractRecipe] JSON parse failed, asking model to fix. Raw (first 500): ' +
+                    `${tag} JSON parse failed, asking model to fix. Raw (first 500): ` +
                         finalText.substring(0, 500),
                 );
                 input.push({
@@ -393,13 +493,13 @@ export class CookbookaiService {
             }
 
             // Exhausted iterations
-            this.logger.error('[extractRecipe] Exceeded max iterations without completing.');
+            this.logger.error(`[${config.model}] Exceeded max iterations without completing.`);
             return {
                 success: false,
                 message: 'Recipe extraction timed out. Please try again.',
             };
         } catch (error: any) {
-            this.logger.error('OpenAI recipe extraction failed:', error?.message ?? error);
+            this.logger.error(`[${config.model}] extraction failed:`, error?.message ?? error);
             if (error?.status) this.logger.error('OpenAI HTTP status:', error.status);
             if (error?.error)
                 this.logger.error('OpenAI error body:', JSON.stringify(error.error));
@@ -414,9 +514,27 @@ export class CookbookaiService {
 
             return {
                 success: false,
-                message: `Failed to extract recipe from the link. ${error?.message || 'Please try again.'}`,
+                message: `Failed to extract recipe. ${error?.message || 'Please try again.'}`,
             };
         }
+    }
+
+    private extractResponseText(response: any, output: any[]): string {
+        const directText = typeof response?.output_text === 'string' ? response.output_text.trim() : '';
+        if (directText) return directText;
+
+        let finalText = '';
+        for (const item of output || []) {
+            if (item?.type !== 'message' || !Array.isArray(item?.content)) continue;
+            for (const content of item.content) {
+                if (content?.type === 'output_text' && typeof content?.text === 'string') {
+                    finalText += content.text;
+                } else if (content?.type === 'text' && typeof content?.text === 'string') {
+                    finalText += content.text;
+                }
+            }
+        }
+        return finalText.trim();
     }
 
     // ==================== TOOL CALL DISPATCHER ====================
@@ -573,7 +691,7 @@ export class CookbookaiService {
         try {
             return JSON.parse(cleaned);
         } catch {
-            // continue
+           
         }
 
         const fenced = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
@@ -581,7 +699,7 @@ export class CookbookaiService {
             try {
                 return JSON.parse(fenced[1].trim());
             } catch {
-                // continue
+               
             }
         }
 
@@ -638,7 +756,6 @@ export class CookbookaiService {
         return null;
     }
 
-    /** Escape special regex characters in a string. */
 
     private buildUserMatch(userId: string) {
         const normalized = String(userId || '').trim();
@@ -658,7 +775,6 @@ export class CookbookaiService {
         return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
 
-    // ==================== CRUD ====================
 
     async findAllByUser(userId: string) {
         const userMatch = this.buildUserMatch(userId);
@@ -694,11 +810,7 @@ export class CookbookaiService {
         return { success: true, message: 'Recipe deleted successfully.' };
     }
 
-    /**
-     * Safety-net sanitization before Mongoose save.
-     * With tool calling the AI should return real ObjectIds, but we guard against
-     * any remaining plain-text strings that would cause CastErrors.
-     */
+
     private sanitizeRecipeData(data: any): any {
         const isOid = (v: any) => Types.ObjectId.isValid(v) && String(new Types.ObjectId(v)) === String(v);
 
@@ -711,7 +823,6 @@ export class CookbookaiService {
             }
         }
 
-        // Strip non-ObjectId stickerId / sponsorId
         if (data.stickerId && !isOid(data.stickerId)) data.stickerId = undefined;
         if (data.sponsorId && !isOid(data.sponsorId)) data.sponsorId = undefined;
 
@@ -719,7 +830,6 @@ export class CookbookaiService {
             for (const wrapper of data.components) {
                 if (!Array.isArray(wrapper.component)) continue;
                 for (const comp of wrapper.component) {
-                    // requiredIngredients
                     if (Array.isArray(comp.requiredIngredients)) {
                         for (const ri of comp.requiredIngredients) {
                             if (ri.recommendedIngredient && !isOid(ri.recommendedIngredient)) {
@@ -731,18 +841,15 @@ export class CookbookaiService {
                                 );
                             }
                         }
-                        // Remove entries with no valid ingredient
                         comp.requiredIngredients = comp.requiredIngredients.filter(
                             (ri: any) => ri.recommendedIngredient,
                         );
                     }
-                    // optionalIngredients
                     if (Array.isArray(comp.optionalIngredients)) {
                         comp.optionalIngredients = comp.optionalIngredients.filter(
                             (oi: any) => oi.ingredient && isOid(oi.ingredient),
                         );
                     }
-                    // componentSteps
                     if (Array.isArray(comp.componentSteps)) {
                         for (const step of comp.componentSteps) {
                             if (Array.isArray(step.relevantIngredients)) {

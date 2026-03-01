@@ -28,7 +28,7 @@ export class CookbookaiController {
      return { message: this.cookbookaiService.getHello(), user: req.user };
     }
 
-    @Get('/recipes')
+    @Get(['/user-recipes', '/recipes'])
     @Roles('USER')
     @UseGuards(JwtAuthGuard, RolesGuard)
     async getAllRecipes(@Request() req) {
