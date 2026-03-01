@@ -17,16 +17,12 @@ export class CookbookaiController {
      return { message: this.cookbookaiService.getHello(), user: req.user };
     }
 
-    @Get('/recipes')
+    @Get('/user-recipes')
     @Roles('USER')
     @UseGuards(JwtAuthGuard, RolesGuard)
-    async getAllRecipes() {
-        const recipes = await this.cookbookaiService.findAll();
-        return {
-            success: true,
-            count: recipes.length,
-            data: recipes
-        };
+    async getAllRecipes(@Request() req) {
+        const user = req.user;
+        return await this.cookbookaiService.findUserRecipes(user.userId);
     }
 
     @Post("/add-recipe")

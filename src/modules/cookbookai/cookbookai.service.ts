@@ -67,8 +67,21 @@ export class CookbookaiService {
         }
     }
 
-    async findAll() {
-        return await this.userRecipeModel.find().exec();
+    async findUserRecipes(userId: string) {
+        try{
+            const recipes = await this.userRecipeModel.find({ userid: userId }).exec();
+            return {
+                success: true,
+                count: recipes.length,
+                data: recipes
+            };
+        }
+        catch(error){
+            return {
+                success: false,
+                message: 'An error occurred while fetching user recipes.',
+            }
+        }
     }
 
     async createRecipe(recipeData: any) {
