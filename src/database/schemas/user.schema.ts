@@ -7,7 +7,7 @@ enum UserStatus {
 }
 @Schema({ _id: false })
 export class AlternativeIngredient {
-  @Prop({ type: Types.ObjectId, ref: 'Ingredient', required: true })
+  @Prop({ type: Types.ObjectId, ref: 'Ingredient'})
   ingredient: Types.ObjectId;
 
   @Prop({ default: false })
@@ -26,13 +26,13 @@ export class AlternativeIngredient {
 
 @Schema({ _id: false })
 export class RequiredIngredient {
-  @Prop({ type: Types.ObjectId, ref: 'Ingredient', required: true })
+  @Prop({ type: Types.ObjectId, ref: 'Ingredient' })
   recommendedIngredient: Types.ObjectId;
 
-  @Prop({ required: true })
+  @Prop()
   quantity: string;
 
-  @Prop({ required: true })
+  @Prop()
   preparation: string;
 
   @Prop({ type: [AlternativeIngredient], default: [] })
@@ -41,19 +41,19 @@ export class RequiredIngredient {
 
 @Schema({ _id: false })
 export class OptionalIngredient {
-  @Prop({ type: Types.ObjectId, ref: 'Ingredient', required: true })
+  @Prop({ type: Types.ObjectId, ref: 'Ingredient' })
   ingredient: Types.ObjectId;
 
-  @Prop({ required: true })
+  @Prop()
   quantity: string;
 
-  @Prop({ required: true })
+  @Prop()
   preparation: string;
 }
 
 @Schema({ _id: false })
 export class ComponentStep {
-  @Prop({ required: true })
+  @Prop()
   stepInstructions: string; 
 
   @Prop({ type: [{ type: Types.ObjectId, ref: 'HackOrTip' }], default: [] })
@@ -68,7 +68,9 @@ export class ComponentStep {
 
 @Schema({ _id: false })
 export class Component {
-  @Prop({ required: true })
+  @Prop(
+    
+  )
   componentTitle: string; 
 
   @Prop()
@@ -109,25 +111,25 @@ export class RecipeComponentWrapper {
   @Prop()
   buttonText?: string; 
 
-  @Prop({ type: [Component], required: true })
+  @Prop({ type: [Component] })
   component: Component[];
 }
 
 @Schema({ timestamps: true })
 export class userRecipe {
-  @Prop({ required: true })
+  @Prop()
   title: string;
 
-  @Prop({ type: Types.ObjectId, ref: 'User', required: true })
+  @Prop({ type: Types.ObjectId, ref: 'User' })
   userid: Types.ObjectId;
 
-  @Prop({ required: true, enum: Object.values(UserStatus), default: UserStatus.PENDING })
+  @Prop({ enum: Object.values(UserStatus), default: UserStatus.PENDING })
   status: UserStatus;
 
-  @Prop({ required: true })
+  @Prop()
   shortDescription: string;
 
-  @Prop({ required: true })
+  @Prop()
   longDescription: string; 
 
   @Prop({ type: [{ type: Types.ObjectId, ref: 'HackOrTip' }], default: [] })
@@ -139,10 +141,10 @@ export class userRecipe {
   @Prop()
   youtubeId?: string;
 
-  @Prop({ required: true })
+  @Prop()
   portions: string; 
 
-  @Prop({ required: true })
+  @Prop()
   prepCookTime: number; 
 
   @Prop({ type: Types.ObjectId, ref: 'Stickers' })
@@ -150,7 +152,6 @@ export class userRecipe {
 
   @Prop({
     type: [{ type: Types.ObjectId, ref: 'FrameworkCategory' }],
-    required: true,
   })
   frameworkCategories: Types.ObjectId[]; 
 
@@ -167,7 +168,7 @@ export class userRecipe {
   useLeftoversIn: Types.ObjectId[];
 
  
-  @Prop({ type: [RecipeComponentWrapper], required: true })
+  @Prop({ type: [RecipeComponentWrapper] })
   components: RecipeComponentWrapper[];
 
   @Prop({ default: 0 })

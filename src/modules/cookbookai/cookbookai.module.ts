@@ -5,6 +5,7 @@ import { CookbookaiService } from './cookbookai.service';
 import { userRecipe, UserRecipeSchema, UserRecipeDocument } from 'src/database/schemas/user.schema';
 import { UserModule } from '../user/user.module';
 import { RecipeModule } from '../recipe/recipe.module';
+import { RedisModule } from 'src/redis/redis.module';
 
 @Module({
   imports: [
@@ -13,6 +14,7 @@ import { RecipeModule } from '../recipe/recipe.module';
     ]),
     UserModule,
     RecipeModule,
+    RedisModule,
   ],
   controllers: [CookbookaiController],
   providers: [CookbookaiService]
