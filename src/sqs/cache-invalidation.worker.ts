@@ -127,7 +127,7 @@ export class CacheInvalidationWorkerService
   private async routeEvent(event: any) {
     switch (event.eventType) {
       case 'CACHE_INVALIDATION':
-        await this.handleCacheInvalidation(event.payload);
+        await this.handleCacheInvalidation(event);
         break;
       default:
         this.logger.warn('Unknown event type recived at SQS worker', {

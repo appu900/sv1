@@ -251,7 +251,7 @@ export class IngredientsService implements OnModuleInit {
       const cachedData = await this.redisService.get(baseKey);
       if (cachedData) {
         this.logger.log(`Cache hit for ${baseKey}`);
-        return JSON.parse(cachedData);
+        return cachedData;
       }
       this.logger.warn(`Cache miss for ${baseKey}`);
 
@@ -271,7 +271,7 @@ export class IngredientsService implements OnModuleInit {
         .sort({ order: 1, name: 1 })
         .lean();
 
-      await this.redisService.set(baseKey, JSON.stringify(ingredients), 60 * 20);
+      await this.redisService.set(baseKey, ingredients, 60 * 20);
       return ingredients;
     }
 

@@ -131,7 +131,9 @@ async expire(key: string, ttlSeconds: number) {
   async setVersioned(baseKey:string,value:any,ttlSeconds:number):Promise<{oldVersion:number,newVersion:number}>{
     const oldVersion = await this.getVersion(baseKey)
     const newVersion = await this.incrementVersion(baseKey);
-    await this.client.set(`${baseKey}:v${newVersion}`,JSON.stringify(value))
+    await this.client.set(`${baseKey}:v${newVersion}`,JSON.stringify(value),'EX',ttlSeconds)
+    // Keep the version pointer alive at least as long as the data
+    await this.client.expire(`${baseKey}:version`, ttlSeconds)
     return{oldVersion,newVersion}
   }
 
