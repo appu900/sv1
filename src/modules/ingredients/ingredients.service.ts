@@ -39,13 +39,13 @@ export class IngredientsService implements OnModuleInit {
   ) {}
 
   async onModuleInit() {
-    // Flush all country-filtered ingredient caches on startup so stale results
-    // from before the strict-country-filter fix are never served.
+    // Flush all ingredient caches on startup so stale/ghost entries
+    // (e.g. deleted ingredients still in versioned cache) are never served.
     try {
-      await this.redisService.delByPattern('Ingredients:all:country:*');
-      console.log('[IngredientsService] Country caches flushed on startup');
+      await this.redisService.delByPattern('Ingredients:all*');
+      console.log('[IngredientsService] All ingredient caches flushed on startup');
     } catch (e) {
-      console.warn('[IngredientsService] Could not flush country caches on startup:', e?.message);
+      console.warn('[IngredientsService] Could not flush ingredient caches on startup:', e?.message);
     }
   }
 
