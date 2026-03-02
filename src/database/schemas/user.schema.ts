@@ -7,8 +7,11 @@ enum UserStatus {
 }
 @Schema({ _id: false })
 export class AlternativeIngredient {
-  @Prop({ type: Types.ObjectId, ref: 'Ingredient'})
-  ingredient: Types.ObjectId;
+  @Prop({ type: Types.ObjectId, ref: 'Ingredient', required: false })
+  ingredient?: Types.ObjectId;
+
+  @Prop()
+  ingredientName?: string;
 
   @Prop({ default: false })
   inheritQuantity: boolean;
@@ -26,8 +29,11 @@ export class AlternativeIngredient {
 
 @Schema({ _id: false })
 export class RequiredIngredient {
-  @Prop({ type: Types.ObjectId, ref: 'Ingredient' })
-  recommendedIngredient: Types.ObjectId;
+  @Prop({ type: Types.ObjectId, ref: 'Ingredient', required: false })
+  recommendedIngredient?: Types.ObjectId;
+
+  @Prop()
+  ingredientName?: string;
 
   @Prop()
   quantity: string;
@@ -41,8 +47,11 @@ export class RequiredIngredient {
 
 @Schema({ _id: false })
 export class OptionalIngredient {
-  @Prop({ type: Types.ObjectId, ref: 'Ingredient' })
-  ingredient: Types.ObjectId;
+  @Prop({ type: Types.ObjectId, ref: 'Ingredient', required: false })
+  ingredient?: Types.ObjectId;
+
+  @Prop()
+  ingredientName?: string;
 
   @Prop()
   quantity: string;
