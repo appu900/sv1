@@ -8,6 +8,7 @@ import {
 } from 'src/database/schemas/track-survey.schema';
 import { User, UserSchema } from 'src/database/schemas/user.auth.schema';
 import { QantasModule } from '../qantas/qantas.module';
+import { SurveyConfigModule } from '../survey-config/survey-config.module';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { QantasModule } from '../qantas/qantas.module';
       { name: User.name, schema: UserSchema },
     ]),
     forwardRef(() => QantasModule),
+    SurveyConfigModule,
   ],
   controllers: [TrackSurveyController],
   providers: [TrackSurveyService],

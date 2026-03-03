@@ -17,6 +17,8 @@ import {
   WeeklySavingsSummaryDto,
 } from './dto/track-survey-response.dto';
 import { QantasService } from '../qantas/qantas.service';
+import { SurveyConfigService } from '../survey-config/survey-config.service';
+import { SurveyConfigDocument } from 'src/database/schemas/survey-config.schema';
 
 @Injectable()
 export class TrackSurveyService {
@@ -29,6 +31,7 @@ export class TrackSurveyService {
     private userModel: Model<UserDocument>,
     @Inject(forwardRef(() => QantasService))
     private readonly qantasService: QantasService,
+    private readonly surveyConfigService: SurveyConfigService,
   ) {}
 
   private getWeekStart(surveyDay: number): Date {
@@ -47,68 +50,65 @@ export class TrackSurveyService {
     return nextWeek;
   }
 
-  private calculateSavings(dto: CreateTrackSurveyDto) {
-    const COUNTRY_RATES: Record<string, { costPerGram: number; symbol: string }> = {
-      IN: { costPerGram: 0.015, symbol: '₹' },  // India – INR per gram (~₹15/kg)
-      AU: { costPerGram: 0.004, symbol: 'A$' }, // Australia – AUD per gram (~A$4/kg)
-      NZ: { costPerGram: 0.005, symbol: 'NZ$' },// New Zealand – NZD per gram (~NZ$5/kg)
-      US: { costPerGram: 0.003, symbol: '$' },  // United States – USD per gram (~$3/kg)
-      GB: { costPerGram: 0.0035, symbol: '£' }, // United Kingdom – GBP per gram (~£3.5/kg)
-      CA: { costPerGram: 0.004, symbol: 'C$' }, // Canada – CAD per gram (~C$4/kg)
-      CN: { costPerGram: 0.02,  symbol: '¥' },  // China – CNY per gram (~¥20/kg)
-      JP: { costPerGram: 0.4,   symbol: '¥' },  // Japan – JPY per gram (~¥400/kg)
-      KR: { costPerGram: 3.0,   symbol: '₩' },  // South Korea – KRW per gram (~₩3000/kg)
-      SG: { costPerGram: 0.004, symbol: 'S$' }, // Singapore – SGD per gram (~S$4/kg)
-      AE: { costPerGram: 0.012, symbol: 'AED' },// UAE – AED per gram (~AED12/kg)
-      DE: { costPerGram: 0.003, symbol: '€' },  // Germany – EUR per gram (~€3/kg)
-      FR: { costPerGram: 0.003, symbol: '€' },  // France – EUR per gram (~€3/kg)
-    };
+  private calculateSavingsWithConfig(
+    dto: CreateTrackSurveyDto,
+    config: SurveyConfigDocument,
+  ) {
+    if (!dto.country) {
+      throw new BadRequestException('User has no country set — please complete onboarding');
+    }
 
-    if (!dto.country) throw new BadRequestException('User has no country set — please complete onboarding');
-    const countryRate = COUNTRY_RATES[dto.country];
-    if (!countryRate) throw new BadRequestException(`Unsupported country code: ${dto.country}`);
-    const COST_PER_GRAM = countryRate.costPerGram;
-    const CO2_PER_GRAM = 2.5;
+    let countryRate = config.countryRates.find(
+      (r) => r.countryCode === dto.country && r.isActive,
+    );
+    if (!countryRate) {
+      // Fallback: try India, then first active rate, then a hardcoded default
+      countryRate = config.countryRates.find(
+        (r) => r.countryCode === 'IN' && r.isActive,
+      );
+      if (!countryRate) {
+        countryRate = config.countryRates.find((r) => r.isActive);
+      }
+      if (!countryRate) {
+        this.logger.warn(`No country rate found for ${dto.country}, using hardcoded fallback`);
+        countryRate = { countryCode: dto.country!, countryName: 'Unknown', costPerGram: 0.015, currencySymbol: '₹', isActive: true };
+      } else {
+        this.logger.warn(`Country code ${dto.country} not configured — falling back to ${countryRate.countryCode}`);
+      }
+    }
 
-    const WEIGHTS = {
-      cupfulScraps: 150, 
-      containerLeftovers: 500,
-      fruitPiece: 150,
-      veggiePiece: 100,
-      dairyKg: 1000,
-      breadLoaf: 400,
-      meatKg: 1000,
-      herbsBunch: 50,
-    };
+    const { co2PerGram, avgWeeklyWasteGrams, scrapsWeightPerUnit, leftoversWeightPerUnit } =
+      config.calculationConstants;
 
-    const scrapsWeight = dto.scraps * WEIGHTS.cupfulScraps;
-    const leftoversWeight = dto.uneatenLeftovers * WEIGHTS.containerLeftovers;
-    const produceWeight =
-      dto.produceWaste.fruit * WEIGHTS.fruitPiece +
-      dto.produceWaste.veggies * WEIGHTS.veggiePiece +
-      dto.produceWaste.dairy * WEIGHTS.dairyKg +
-      dto.produceWaste.bread * WEIGHTS.breadLoaf +
-      dto.produceWaste.meat * WEIGHTS.meatKg +
-      dto.produceWaste.herbs * WEIGHTS.herbsBunch;
+    const scrapsWeight = dto.scraps * scrapsWeightPerUnit;
+    const leftoversWeight = dto.uneatenLeftovers * leftoversWeightPerUnit;
+
+    const activeCategories = config.produceWasteCategories.filter((c) => c.isActive);
+    let produceWeight = 0;
+    for (const cat of activeCategories) {
+      const qty = dto.produceWaste?.[cat.key] ?? 0;
+      produceWeight += qty * cat.weightPerUnit;
+    }
 
     const totalWasteGrams = scrapsWeight + leftoversWeight + produceWeight;
+    const foodSaved = Math.max(0, avgWeeklyWasteGrams - totalWasteGrams);
 
-    const avgWeeklyWaste = 5000;
-    const foodSaved = Math.max(0, avgWeeklyWaste - totalWasteGrams);
-
-    const co2_savings = Math.round(foodSaved * CO2_PER_GRAM);
-    const cost_savings = Math.round(foodSaved * COST_PER_GRAM * 100) / 100;
+    const co2_savings = Math.round(foodSaved * co2PerGram);
+    const cost_savings =
+      Math.round(foodSaved * countryRate.costPerGram * 100) / 100;
 
     return {
       co2_savings,
       cost_savings,
       food_saved: Math.round(foodSaved),
-      currency_symbol: countryRate.symbol,
+      currency_symbol: countryRate.currencySymbol,
     };
   }
 
   async checkEligibility(userId: string): Promise<SurveyEligibilityDto> {
     const userIdObj = new Types.ObjectId(userId);
+    const config = await this.surveyConfigService.getActiveConfig();
+    const uiCfg = config.uiConfig;
 
     const lastSurvey = await this.trackSurveyModel
       .findOne({ userId: userIdObj })
@@ -125,7 +125,7 @@ export class TrackSurveyService {
         next_survey_date: null,
         last_survey_date: null,
         surveys_count: 0,
-        message: 'Ready to take your first survey!',
+        message: uiCfg?.eligibilityMessage || 'Ready to take your first survey!',
       };
     }
 
@@ -145,8 +145,8 @@ export class TrackSurveyService {
       last_survey_date: lastSurvey.completedAt.toISOString(),
       surveys_count: totalSurveys,
       message: eligible
-        ? 'Ready to take this week\'s survey!'
-        : 'You\'ve already completed this week\'s survey',
+        ? (uiCfg?.eligibilityMessage || 'Ready to take this week\'s survey!')
+        : (uiCfg?.notEligibleMessage || 'You\'ve already completed this week\'s survey'),
     };
   }
 
@@ -180,7 +180,8 @@ export class TrackSurveyService {
     if (!user.country) throw new BadRequestException('User has no country set — please complete onboarding');
     dto.country = user.country;
 
-    const calculatedSavings = this.calculateSavings(dto);
+    const config = await this.surveyConfigService.getActiveConfig();
+    const calculatedSavings = this.calculateSavingsWithConfig(dto, config);
 
     const isBaseline = eligibility.surveys_count === 0;
 
@@ -213,6 +214,19 @@ export class TrackSurveyService {
 
     const dto_response = this.toResponseDto(saved);
     dto_response.prev_personal_bests = personalBests;
+
+    const weekNumber = (eligibility.surveys_count % (config.weeklyTips?.length || 1)) + 1;
+    const tip = config.weeklyTips?.find(
+      (t) => t.weekNumber === weekNumber && t.isActive,
+    );
+    if (tip) {
+      dto_response.weeklyTip = {
+        title: tip.title,
+        content: tip.content,
+        imageUrl: tip.imageUrl || '',
+      };
+    }
+
     return dto_response;
   }
 

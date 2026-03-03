@@ -4,14 +4,7 @@ export class TrackSurveyResponseDto {
   cookingFrequency: number;
   scraps: number;
   uneatenLeftovers: number;
-  produceWaste: {
-    fruit: number;
-    veggies: number;
-    dairy: number;
-    bread: number;
-    meat: number;
-    herbs: number;
-  };
+  produceWaste: Record<string, number>;
   preferredIngredients: string[];
   noOfCooks: number;
   calculatedSavings: {
@@ -20,12 +13,16 @@ export class TrackSurveyResponseDto {
     food_saved: number;
     currency_symbol: string;
   };
-  // Previous personal bests BEFORE this survey was saved.
-  // Only populated on createSurvey responses; null/missing on list queries.
+
   prev_personal_bests?: {
     co2_savings: number;
     cost_savings: number;
     food_saved: number;
+  } | null;
+  weeklyTip?: {
+    title: string;
+    content: string;
+    imageUrl: string;
   } | null;
   isBaseline: boolean;
   surveyWeek: Date;

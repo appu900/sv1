@@ -3,38 +3,10 @@ import {
   IsArray,
   IsString,
   IsOptional,
+  IsObject,
   Min,
   IsInt,
-  ValidateNested,
 } from 'class-validator';
-import { Type } from 'class-transformer';
-
-
-export class ProduceWasteDto {
-  @IsNumber()
-  @Min(0)
-  fruit: number;
-
-  @IsNumber()
-  @Min(0)
-  veggies: number;
-
-  @IsNumber()
-  @Min(0)
-  dairy: number;
-
-  @IsNumber()
-  @Min(0)
-  bread: number;
-
-  @IsNumber()
-  @Min(0)
-  meat: number;
-
-  @IsNumber()
-  @Min(0)
-  herbs: number;
-}
 
 export class CreateTrackSurveyDto {
   @IsInt()
@@ -49,9 +21,8 @@ export class CreateTrackSurveyDto {
   @Min(0)
   uneatenLeftovers: number;
 
-  @ValidateNested()
-  @Type(() => ProduceWasteDto)
-  produceWaste: ProduceWasteDto;
+  @IsObject()
+  produceWaste: Record<string, number>;
 
   @IsArray()
   @IsString({ each: true })
@@ -65,9 +36,9 @@ export class CreateTrackSurveyDto {
   @IsInt()
   @Min(0)
   @IsOptional()
-  surveyDay?: number; // 0-6 for Sun-Sat
+  surveyDay?: number; 
 
   @IsString()
   @IsOptional()
-  country?: string; // ISO country code e.g. IN, AU, US
+  country?: string; 
 }
