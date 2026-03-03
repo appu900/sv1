@@ -1,5 +1,6 @@
 import { Controller, Get, Post, Delete, UseGuards, Body, Param } from '@nestjs/common';
 import { CookbookaiService } from './cookbookai.service';
+import { CookbookaiProducer } from './cookbookai.producer';
 import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
 import { RolesGuard } from 'src/common/guards/roles.guard';
 import { Roles } from 'src/common/decorators/role.decorators';
@@ -9,7 +10,11 @@ import { AddRecipeDto } from './dto/add-recipe.dto';
 
 @Controller('cookbookai')
 export class CookbookaiController {
-    constructor(private readonly cookbookaiService: CookbookaiService, private readonly redisService: RedisService) { }
+    constructor(
+        private readonly cookbookaiService: CookbookaiService,
+        private readonly cookbookaiProducer: CookbookaiProducer,
+        private readonly redisService: RedisService,
+    ) { }
 
     private resolveUserId(req: any): string {
         const resolved =
@@ -67,7 +72,7 @@ export class CookbookaiController {
     @Roles('USER')
     @UseGuards(JwtAuthGuard, RolesGuard)
     async addRecipe(@Request() req, @Body() body: AddRecipeDto) {
-          try {
+        try {
             const userId = this.resolveUserId(req);
             if (!userId) {
                 return {
@@ -81,45 +86,30 @@ export class CookbookaiController {
             const currentCount = await this.redisService.incr(key);
 
             if (currentCount === 1) {
-                await this.redisService.expire(key, 60 * 60 * 24); 
+                await this.redisService.expire(key, 60 * 60 * 24);
             }
 
             if (currentCount > 5) {
                 return {
                     success: false,
-                    message: "You have reached the maximum limit of 5 requests per day.",
-                    limit: 5
+                    message: 'You have reached the maximum limit of 5 requests per day.',
+                    limit: 5,
                 };
             }
 
-            const aiResponse = await this.cookbookaiService.extractRecipeWithAI(
+            // Queue the recipe extraction as a background job
+            const jobId = await this.cookbookaiProducer.enqueueRecipeExtraction(
+                userId,
                 body.message,
             );
 
-            if (!aiResponse.success) {
-                await this.redisService.decr(key);
-                return aiResponse;
-            }
-            const responsetobeadded = {...aiResponse.data, userid: userId };
-
-            const createResponse = await this.cookbookaiService.createRecipe(responsetobeadded);
-            if (createResponse.success && createResponse.data) {
-                const doc: any = createResponse.data;
-                const plainData = doc.toJSON ? doc.toJSON() : doc;
-                plainData._id = String(plainData._id);
-                console.log('[addRecipe] returning _id:', plainData._id, 'type:', typeof plainData._id);
-                return {
-                    success: true,
-                    message: 'Recipe added successfully.',
-                    data: plainData,
-                };
-            }
             return {
-                success: false,
-                message: 'Failed to add recipe.',
+                success: true,
+                queued: true,
+                jobId,
+                message: 'Your recipe is being generated! We\'ll send you a notification when it\'s ready.',
             };
-        }
-        catch (error) {
+        } catch (error) {
             console.error('Error in addRecipe:', error);
             return {
                 success: false,

@@ -1,4 +1,4 @@
-import { Controller, Post, Get, Put, Body, UseGuards, Logger } from '@nestjs/common';
+import { Controller, Post, Get, Put, Delete, Body, UseGuards, Logger } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { RegisterUserDto } from './dto/user.register.dto';
 import { UserLoginDto } from './dto/user.login.dto';
@@ -15,6 +15,8 @@ import { RequestOtpDto } from './dto/request-otp.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
+import { UpdateProfileDto } from './dto/update-profile.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 
 @Controller('auth')
@@ -97,6 +99,24 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   async updateDietaryProfile(@Body() dto: UserProfileDto, @GetUser() user: any) {
     return this.userService.updateProfile(dto, user.userId);
+  }
+
+  @Put('profile')
+  @UseGuards(JwtAuthGuard)
+  async updateProfile(@Body() dto: UpdateProfileDto, @GetUser() user: any) {
+    return this.authservice.updateProfile(user.userId, dto);
+  }
+
+  @Post('change-password')
+  @UseGuards(JwtAuthGuard)
+  async changePassword(@Body() dto: ChangePasswordDto, @GetUser() user: any) {
+    return this.authservice.changePassword(user.userId, dto);
+  }
+
+  @Delete('account')
+  @UseGuards(JwtAuthGuard)
+  async deleteAccount(@GetUser() user: any) {
+    return this.authservice.deleteAccount(user.userId);
   }
 
   @Post('forgot-password')

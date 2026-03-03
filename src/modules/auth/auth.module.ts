@@ -8,7 +8,7 @@ import { JwtStrategy } from './strategy/jwt.strategy';
 import { RedisModule } from 'src/redis/redis.module';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { AdminModule } from '../admin/admin.module';
-import { EmailService } from 'src/common/services/email.service';
+import { EmailModule } from 'src/common/email';
 import { ThrottlerModule } from '@nestjs/throttler';
 
 @Module({
@@ -38,8 +38,9 @@ import { ThrottlerModule } from '@nestjs/throttler';
     UserModule,
     RedisModule,
     AdminModule,
+    EmailModule,
   ],
-  providers: [AuthService, JwtStrategy, EmailService],
+  providers: [AuthService, JwtStrategy],
   controllers: [AuthController],
 })
 export class AuthModule {}

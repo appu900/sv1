@@ -109,5 +109,34 @@ export class UserService {
     }
   }
 
+  async updateName(userId: string, name: string) {
+    if (!Types.ObjectId.isValid(userId)) {
+      throw new BadRequestException('Invalid userId');
+    }
+    const result = await this.userModel
+      .findByIdAndUpdate(
+        new Types.ObjectId(userId),
+        { $set: { name } },
+        { new: true },
+      )
+      .lean();
+    if (!result) {
+      throw new NotFoundException('User not found');
+    }
+    return result;
+  }
+
+  async deleteUser(userId: string): Promise<void> {
+    if (!Types.ObjectId.isValid(userId)) {
+      throw new BadRequestException('Invalid userId');
+    }
+    const result = await this.userModel.findByIdAndDelete(
+      new Types.ObjectId(userId),
+    );
+    if (!result) {
+      throw new NotFoundException('User not found');
+    }
+  }
+
  
 }

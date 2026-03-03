@@ -14,12 +14,14 @@ import { UserRole } from 'src/database/schemas/user.auth.schema';
 import { UserLoginDto } from './dto/user.login.dto';
 import { nanoid } from 'nanoid';
 import { Types } from 'mongoose';
-import { EmailService } from 'src/common/services/email.service';
+import { EmailQueueService } from 'src/common/email';
 import { ConfigService } from '@nestjs/config';
 import { RequestOtpDto } from './dto/request-otp.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
+import { UpdateProfileDto } from './dto/update-profile.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
 
 @Injectable()
 export class AuthService {
@@ -28,7 +30,7 @@ export class AuthService {
     private readonly jwt: JwtService,
     private readonly redis: RedisService,
     private readonly userService: UserService,
-    private readonly emailService: EmailService,
+    private readonly emailQueue: EmailQueueService,
     private readonly config: ConfigService,
   ) {}
 
@@ -98,14 +100,7 @@ export class AuthService {
     await this.redis.setPendingSignup(dto.email, pendingData, 15 * 60); 
 
     this.logger.log('Queuing OTP email...');
-    this.emailService.sendOTPEmail(dto.email, otp, otpExpiry)
-      .then(() => {
-        this.logger.log(`Email sent successfully to ${dto.email}`);
-      })
-      .catch((error) => {
-        this.logger.error(`Failed to send email to ${dto.email}: ${error.message}`);
-        
-      });
+    await this.emailQueue.queueOTPEmail(dto.email, otp, otpExpiry);
 
     this.logger.log('=== REQUEST OTP END ===');
     return {
@@ -182,15 +177,8 @@ export class AuthService {
     await this.redis.deleteOTP(dto.email);
     await this.redis.deletePendingSignup(dto.email);
 
-    // Send welcome email asynchronously (non-blocking)
-    this.emailService.sendWelcomeEmail(dto.email, user.name)
-      .then(() => {
-        this.logger.log(`✅ Welcome email sent to ${dto.email}`);
-      })
-      .catch((error) => {
-        this.logger.error(`❌ Failed to send welcome email to ${dto.email}: ${error.message}`);
-        // Don't fail the signup - account is already created
-      });
+    // Queue welcome email (non-blocking — processed by BullMQ worker)
+    await this.emailQueue.queueWelcomeEmail(dto.email, user.name);
 
     return {
       success: true,
@@ -424,9 +412,7 @@ export class AuthService {
     const expiryMinutes = 15;
     await this.redis.set(`auth:reset-otp:${dto.email}`, otp, expiryMinutes * 60);
 
-    this.emailService.sendPasswordResetOTPEmail(dto.email, otp, expiryMinutes)
-      .then(() => this.logger.log(`[ForgotPassword] OTP email sent to ${dto.email}`))
-      .catch((err) => this.logger.error(`[ForgotPassword] Email failed: ${err.message}`));
+    await this.emailQueue.queuePasswordResetEmail(dto.email, otp, expiryMinutes);
 
     return { success: true, message: 'If this email is registered, a reset code has been sent.' };
   }
@@ -510,6 +496,66 @@ export class AuthService {
       // Keep nested structure for backward compatibility
       dietaryProfile: user.dietaryProfile,
     };
+  }
+
+  // ── Update Profile (name) ────────────────────────────────────────────────
+  async updateProfile(userId: string, dto: UpdateProfileDto) {
+    if (!Types.ObjectId.isValid(userId))
+      throw new BadRequestException('Invalid userId');
+
+    if (dto.name) {
+      await this.userService.updateName(userId, dto.name);
+    }
+
+    // Return the updated profile in the same shape as getProfile
+    return this.getProfile(userId);
+  }
+
+  // ── Change Password (authenticated) ──────────────────────────────────────
+  async changePassword(userId: string, dto: ChangePasswordDto) {
+    this.logger.log(`[ChangePassword] userId: ${userId}`);
+
+    if (dto.newPassword !== dto.confirmNewPassword) {
+      throw new BadRequestException('Passwords do not match');
+    }
+
+    const user = await this.userService.findById(userId);
+    if (!user) throw new UnauthorizedException('User not found');
+
+    const isCurrentValid = await bcrypt.compare(dto.currentPassword, user.passwordHash);
+    if (!isCurrentValid) {
+      throw new BadRequestException('Current password is incorrect');
+    }
+
+    const newHash = await bcrypt.hash(dto.newPassword, 10);
+    await this.userService.updatePasswordHash(userId, newHash);
+
+    this.logger.log(`[ChangePassword] Password updated for userId: ${userId}`);
+    return { success: true, message: 'Password updated successfully' };
+  }
+
+  // ── Delete Account ────────────────────────────────────────────────────────
+  async deleteAccount(userId: string): Promise<{ success: boolean; message: string }> {
+    this.logger.log(`[DeleteAccount] Deleting account for userId: ${userId}`);
+
+    // 1. Fetch user first (need email + name for the farewell email)
+    const user = await this.userService.findById(userId);
+    if (!user) throw new UnauthorizedException('User not found');
+
+    const { email, name } = user;
+
+    // 2. Invalidate all active sessions so JWTs stop working immediately
+    await this.redis.deleteAllUserSessions(userId);
+
+    // 3. Hard-delete from the database
+    await this.userService.deleteUser(userId);
+
+    this.logger.log(`[DeleteAccount] Account deleted for ${email}`);
+
+    // 4. Queue farewell email (non-blocking – processed by BullMQ worker)
+    await this.emailQueue.queueAccountDeletionEmail(email, name);
+
+    return { success: true, message: 'Account deleted successfully' };
   }
 
   /**

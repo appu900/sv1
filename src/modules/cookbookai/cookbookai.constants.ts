@@ -1,0 +1,8 @@
+export const COOKBOOKAI_QUEUE_NAME = 'cookbookai';
+
+export const COOKBOOKAI_JOB_ATTEMPTS = 2;
+export const COOKBOOKAI_JOB_BACKOFF_TYPE = 'exponential' as const;
+export const COOKBOOKAI_JOB_BACKOFF_DELAY = 30_000;
+export const COOKBOOKAI_JOB_REMOVE_ON_COMPLETE = 500;
+export const COOKBOOKAI_JOB_REMOVE_ON_FAIL = 2000;
+export const COOKBOOKAI_WORKER_CONCURRENCY = 5;

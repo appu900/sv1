@@ -599,5 +599,92 @@ If you didn’t request this, you can safely ignore this email.
       html: htmlTemplate,
     });
   }
+
+  async sendAccountDeletionEmail(email: string, userName: string): Promise<void> {
+    this.logger.log(`[EmailService] Sending account deletion email to ${email}`);
+    const htmlTemplate = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light">
+<meta name="supported-color-schemes" content="light">
+<title>Your Saveful Account Has Been Deleted</title>
+<style>
+  :root { color-scheme: light; supported-color-schemes: light; }
+  body { margin: 0; padding: 0; background-color: #f6f3fb !important; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; color: #2b1e44 !important; }
+  table, td { border-collapse: collapse; background-color: #f6f3fb !important; }
+  img { display: block; border: 0; }
+  .container { max-width: 600px; background-color: #ffffff !important; border-radius: 16px; overflow: hidden; }
+  .content { padding: 36px 32px 32px; background-color: #ffffff !important; }
+  h1 { font-size: 22px; margin: 0 0 14px; font-weight: 700; color: #2b1e44 !important; }
+  p { font-size: 15px; line-height: 1.6; margin: 0 0 16px; color: #3d3558 !important; }
+  .notice-box { background-color: #fff4ec !important; border-left: 4px solid #F7931E; border-radius: 8px; padding: 16px 18px; margin: 22px 0; }
+  .notice-box p { margin: 0; font-size: 14px; color: #3d3558 !important; }
+  .divider { height: 1px; background-color: #eeeaf7 !important; margin: 28px 0; }
+  .logo { margin: 24px auto 0; width: 110px; }
+  .logo-light { display: block; }
+  .logo-dark { display: none; }
+  .footer { padding: 22px; font-size: 13px; color: #7a7391 !important; background-color: #ffffff !important; text-align: center; }
+  @media (prefers-color-scheme: dark) { .logo-light { display: none !important; } .logo-dark { display: block !important; } }
+  @media (max-width: 480px) { .content { padding: 26px 18px; } h1 { font-size: 20px; } }
+</style>
+</head>
+<body bgcolor="#f6f3fb" style="background-color:#f6f3fb;">
+<table width="100%" bgcolor="#f6f3fb" style="background-color:#f6f3fb;" role="presentation">
+<tr><td align="center" bgcolor="#f6f3fb" style="background-color:#f6f3fb; padding:16px;">
+<table class="container" width="100%" bgcolor="#ffffff" style="background-color:#ffffff;" role="presentation">
+<tr><td class="content" bgcolor="#ffffff" style="background-color:#ffffff;">
+
+<h1>Your account has been deleted</h1>
+
+<p>Hi ${userName},</p>
+
+<p>
+  Your Saveful account and all associated data have been permanently deleted
+  as requested. We're sorry to see you go.
+</p>
+
+<div class="notice-box">
+  <p>Your email address, profile, and all app data have been removed from our systems.</p>
+</div>
+
+<p>
+  If you believe this was a mistake or didn't make this request, please contact our support
+  team immediately at <a href="https://www.saveful.com/contact" style="color:#7b5cff;">saveful.com/contact</a>.
+</p>
+
+<p>
+  We hope to see you again someday. You're always welcome to create a new account.
+</p>
+
+<p style="margin-bottom:0;">- The Saveful Team</p>
+
+<div class="divider"></div>
+
+<img src="https://d3fg04h02j12vm.cloudfront.net/logo%403x.png" alt="Saveful logo" width="110" class="logo logo-light" />
+<img src="https://d3fg04h02j12vm.cloudfront.net/Saveful-logo-white-Rev.webp" alt="Saveful logo" width="110" class="logo logo-dark" />
+
+</td></tr>
+<tr><td class="footer" bgcolor="#ffffff" style="background-color:#ffffff;">© Saveful</td></tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>`;
+
+    try {
+      await this.transporter.sendMail({
+        from: this.fromEmail,
+        replyTo: this.replyTo,
+        to: email,
+        subject: 'Your Saveful account has been deleted',
+        html: htmlTemplate,
+      });
+      this.logger.log(`[EmailService] Account deletion email sent to ${email}`);
+    } catch (error: any) {
+      this.logger.error(`[EmailService] Failed to send account deletion email: ${error.message}`);
+    }
+  }
 }
 
