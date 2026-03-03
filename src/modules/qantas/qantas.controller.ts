@@ -4,7 +4,6 @@ import {
   Post,
   Delete,
   Body,
-  Param,
   UseGuards,
   HttpCode,
   HttpStatus,
@@ -25,83 +24,80 @@ export class QantasController {
     private readonly qantasApiClient: QantasApiClient,
   ) {}
 
-  /* ─────── Public diagnostic endpoint (no auth needed) ─────── */
 
-  /**
-   * GET /api/qantas/test-connection
-   *
-   * Tests connectivity from THIS server to the Qantas SIT/PRD API.
-   * Returns detailed status so we can tell if Akamai is blocking us.
-   */
   @Get('test-connection')
   async testConnection() {
     const runtime = this.qantasApiClient.getRuntimeConfig();
-    const baseUrl = runtime.baseUrl;
-    const validationAuth = runtime.validationAuthHeader;
-    const accrualAuth = runtime.accrualAuthHeader;
-    const partnerId = runtime.partnerId;
 
     const results: Record<string, any> = {
       timestamp: new Date().toISOString(),
-      environment: runtime.environment,
-      baseUrl,
-      partnerId,
-      validationAuthPresent: !!validationAuth,
-      accrualAuthPresent: !!accrualAuth,
+      baseUrl: runtime.baseUrl,
+      partnerCode: runtime.partnerCode,
+      linkAuthPresent: runtime.linkAuthPresent,
+      redeemAuthPresent: runtime.redeemAuthPresent,
+      endpoints: {},
     };
 
-    // Test 1: validation endpoint with a dummy payload
     try {
-      const valUrl = `${baseUrl}/validation/members`;
-      const valRes = await fetch(valUrl, {
+      const url = `${runtime.baseUrl}/member/program/partner/link`;
+      const res = await fetch(url, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Basic ${validationAuth}`,
-        },
-        body: JSON.stringify({
-          memberId: '0000000000',
-          criteria: { surname: 'CONNECTIVITYTEST' },
-        }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ partnerCode: 'CONNECTIVITYTEST' }),
       });
-      const valBody = await valRes.text();
-      const isAkamai = valBody.includes('Access Denied') || valBody.includes('akamai');
-      results.validation = {
-        status: valRes.status,
+      const body = await res.text();
+      const isAkamai = body.includes('Access Denied') || body.includes('akamai');
+      results.endpoints.partnerLinking = {
+        status: res.status,
         isAkamaiBlock: isAkamai,
-        body: valBody.substring(0, 500),
+        reachable: !isAkamai,
+        body: body.substring(0, 300),
       };
     } catch (err) {
-      results.validation = { error: String(err) };
+      results.endpoints.partnerLinking = { error: String(err) };
     }
 
-    // Test 2: accrual endpoint (OPTIONS-like probe)
     try {
-      const accUrl = `${baseUrl}/member/transactions/accrual/partner`;
-      const accRes = await fetch(accUrl, {
+      const url = `${runtime.baseUrl}/pos/api/member/v2/members/0000000000/earntransactions`;
+      const res = await fetch(url, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Basic ${accrualAuth}`,
-        },
-        body: JSON.stringify({ partnerID: partnerId }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
       });
-      const accBody = await accRes.text();
-      const isAkamai = accBody.includes('Access Denied') || accBody.includes('akamai');
-      results.accrual = {
-        status: accRes.status,
+      const body = await res.text();
+      const isAkamai = body.includes('Access Denied') || body.includes('akamai');
+      results.endpoints.qlposEarn = {
+        status: res.status,
         isAkamaiBlock: isAkamai,
-        body: accBody.substring(0, 500),
+        reachable: !isAkamai,
+        body: body.substring(0, 300),
       };
     } catch (err) {
-      results.accrual = { error: String(err) };
+      results.endpoints.qlposEarn = { error: String(err) };
     }
 
-    this.logger.log(`[test-connection] results: ${JSON.stringify(results)}`);
+    try {
+      const url = `${runtime.baseUrl}/member/0000000000/program/QFF`;
+      const res = await fetch(url, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const body = await res.text();
+      const isAkamai = body.includes('Access Denied') || body.includes('akamai');
+      results.endpoints.memberDetail = {
+        status: res.status,
+        isAkamaiBlock: isAkamai,
+        reachable: !isAkamai,
+        body: body.substring(0, 300),
+      };
+    } catch (err) {
+      results.endpoints.memberDetail = { error: String(err) };
+    }
+
+    this.logger.log(`[test-connection] ${JSON.stringify(results)}`);
     return results;
   }
 
-  /* ─────── Protected endpoints ─────── */
 
   @UseGuards(JwtAuthGuard)
   @Get()
@@ -127,12 +123,5 @@ export class QantasController {
   @HttpCode(HttpStatus.OK)
   async unlinkFFN(@GetUser() user: any) {
     return this.qantasService.unlinkFFN(user.userId);
-  }
-
-  @UseGuards(JwtAuthGuard)
-  @Post('cancel-accrual/:allocationId')
-  @HttpCode(HttpStatus.OK)
-  async cancelAccrual(@Param('allocationId') allocationId: string) {
-    return this.qantasService.cancelAccrual(allocationId);
   }
 }

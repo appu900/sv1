@@ -24,10 +24,11 @@ import { LinkFFNDto } from './dto/link-ffn.dto';
 import { QantasFFNResponseDto, QantasDashboardDto } from './dto/qantas-response.dto';
 import {
   QantasApiClient,
-  QantasConflictError,
+  QantasAlreadyLinkedError,
+  QantasDuplicateAccrualError,
   QantasRetryableError,
   QantasApiError,
-  QantasMemberInactiveError,
+  QantasAkamaiBlockError,
 } from './qantas-api-client';
 
 @Injectable()
@@ -62,9 +63,12 @@ export class QantasService {
       this.configService.get<string>('QANTAS_FREQ_FLYER_ENABLED', 'false') === 'true';
   }
 
+ 
   async linkFFN(userId: string, dto: LinkFFNDto): Promise<QantasFFNResponseDto> {
     if (!this.isEnabled) {
-      throw new BadRequestException('Qantas Frequent Flyer integration is currently disabled.');
+      throw new BadRequestException(
+        'Qantas Frequent Flyer integration is currently disabled.',
+      );
     }
 
     const userIdObj = new Types.ObjectId(userId);
@@ -95,13 +99,6 @@ export class QantasService {
       );
     }
 
-    let existingProfile = await this.qantasFFNModel.findOne({
-      userId: userIdObj,
-      memberId: dto.memberId,
-      isDeleted: { $in: [true, false] },
-      linkStatus: QantasLinkStatus.UNLINKED,
-    });
-
     const ffnInUse = await this.qantasFFNModel
       .findOne({
         memberId: dto.memberId,
@@ -117,37 +114,37 @@ export class QantasService {
       );
     }
 
-    let validationResponse: any;
+    let existingProfile = await this.qantasFFNModel.findOne({
+      userId: userIdObj,
+      memberId: dto.memberId,
+      linkStatus: QantasLinkStatus.UNLINKED,
+    });
+
+    let linkResponse: any;
     try {
-      validationResponse = await this.qantasApiClient.validateMember(
-        dto.memberId,
-        dto.surname,
-      );
+      linkResponse = await this.qantasApiClient.linkMember({
+        memberId: dto.memberId,
+        surname: dto.surname,
+        partnerReferenceId: userId, 
+      });
     } catch (error) {
-      if (error instanceof QantasMemberInactiveError) {
-        this.logger.warn(`FFN ${dto.memberId} not found or inactive on Qantas side`);
+     
+      if (error instanceof QantasAlreadyLinkedError) {
+        this.logger.warn(
+          `FFN ${dto.memberId} already linked on Qantas side (409)`,
+        );
+
+        linkResponse = { alreadyLinked: true };
+      } else if (error instanceof QantasAkamaiBlockError) {
+        this.logger.error('Qantas API blocked by Akamai — IP not whitelisted');
         throw new BadRequestException(
-          'The Qantas Frequent Flyer number could not be verified. Please check your details.',
+          'Qantas API is not reachable from this server (blocked by CDN). ' +
+            'The server IP may need to be whitelisted with Qantas.',
         );
-      }
-
-      // Surface more specific failure reason
-      if (error instanceof QantasApiError) {
-        const isAkamaiBlock =
-          error.responseBody.includes('Access Denied') ||
-          error.responseBody.includes('akamai');
-
+      } else if (error instanceof QantasApiError) {
         this.logger.error(
-          `Qantas validation API failed [${error.statusCode}] ` +
-            `akamai=${isAkamaiBlock} body=${error.responseBody.substring(0, 500)}`,
+          `Qantas linking API failed [${error.statusCode}]: ${error.responseBody.substring(0, 500)}`,
         );
-
-        if (isAkamaiBlock) {
-          throw new BadRequestException(
-            'Qantas API is not reachable from this server (blocked by CDN). ' +
-              'The server IP may need to be whitelisted with Qantas.',
-          );
-        }
 
         if (error.statusCode === 401) {
           throw new BadRequestException(
@@ -155,34 +152,23 @@ export class QantasService {
           );
         }
 
+        if (error.statusCode === 404) {
+          throw new BadRequestException(
+            'The Qantas Frequent Flyer number could not be verified. ' +
+              'Please check your FFN and surname.',
+          );
+        }
+
         throw new BadRequestException(
           `Qantas API returned an error (${error.statusCode}). Please try again later.`,
         );
+      } else {
+        this.logger.error('Qantas Partner Linking API call failed', error);
+        throw new BadRequestException(
+          'Unable to verify your Qantas Frequent Flyer details. Please try again later.',
+        );
       }
-
-      this.logger.error('Qantas member validation API call failed', error);
-      throw new BadRequestException(
-        'Unable to verify your Qantas Frequent Flyer details. Please try again later.',
-      );
     }
-
-    if (validationResponse.status === 'INACTIVE') {
-      throw new BadRequestException(
-        'Your Qantas Frequent Flyer membership is inactive. Please contact Qantas support.',
-      );
-    }
-
-    if (validationResponse.status === 'NO_ONLINE_ACCESS') {
-      throw new BadRequestException(
-        'Your Qantas Frequent Flyer account does not have online access enabled. Please enable it via Qantas.',
-      );
-    }
-
-    const linkResponse = {
-      status: validationResponse.status,
-      message: validationResponse.message,
-      validatedAt: new Date().toISOString(),
-    };
 
     if (existingProfile) {
       existingProfile.isLinked = true;
@@ -215,7 +201,10 @@ export class QantasService {
     return this.toResponseDto(saved);
   }
 
-  async unlinkFFN(userId: string): Promise<{ success: boolean; message: string }> {
+
+  async unlinkFFN(
+    userId: string,
+  ): Promise<{ success: boolean; message: string }> {
     const userIdObj = new Types.ObjectId(userId);
 
     const profile = await this.qantasFFNModel.findOne({
@@ -228,6 +217,18 @@ export class QantasService {
       throw new NotFoundException('No linked Qantas account found.');
     }
 
+    try {
+      await this.qantasApiClient.unlinkMember({
+        memberId: profile.memberId,
+        surname: profile.surname,
+        partnerReferenceId: userId,
+      });
+    } catch (error) {
+      this.logger.error(
+        `Qantas unlink API failed for member ${profile.memberId}: ${error}`,
+      );
+    }
+
     profile.isLinked = false;
     profile.linkStatus = QantasLinkStatus.UNLINKED;
     profile.isDeleted = true;
@@ -238,6 +239,7 @@ export class QantasService {
       message: 'Qantas Frequent Flyer account unlinked successfully.',
     };
   }
+
 
   async getFFN(userId: string): Promise<QantasFFNResponseDto | null> {
     const userIdObj = new Types.ObjectId(userId);
@@ -254,7 +256,10 @@ export class QantasService {
 
     const profileId = new Types.ObjectId(ffn._id);
 
-    const surveysCount = await this.getSurveyCountSinceLinking(userId, ffn.linkedAt);
+    const surveysCount = await this.getSurveyCountSinceLinking(
+      userId,
+      ffn.linkedAt,
+    );
 
     const allocations = await this.allocationModel
       .find({ userQantasProfileId: profileId, isDeleted: false })
@@ -266,7 +271,8 @@ export class QantasService {
       .map((a) => ({
         points: this.pointsPerChallenge,
         reason: a.reason,
-        awardedAt: a.processedAt?.toISOString() ?? (a as any).createdAt?.toISOString(),
+        awardedAt:
+          a.processedAt?.toISOString() ?? (a as any).createdAt?.toISOString(),
         accrualReferenceNumber: a.accrualReferenceNumber ?? null,
       }));
 
@@ -288,7 +294,8 @@ export class QantasService {
     };
   }
 
-  async onSurveyCompleted(userId: string, surveyId: string): Promise<void> {
+
+  async onSurveyCompleted(userId: string, _surveyId: string): Promise<void> {
     if (!this.isEnabled) return;
 
     const userIdObj = new Types.ObjectId(userId);
@@ -315,7 +322,9 @@ export class QantasService {
     const existingAllocation = await this.allocationModel.findOne({
       userQantasProfileId: profile._id,
       isDeleted: false,
-      status: { $in: [QantasAllocationStatus.PENDING, QantasAllocationStatus.ACCEPTED] },
+      status: {
+        $in: [QantasAllocationStatus.PENDING, QantasAllocationStatus.ACCEPTED],
+      },
     });
 
     if (existingAllocation) {
@@ -356,12 +365,15 @@ export class QantasService {
       isDeleted: false,
     });
 
-    this.logger.log(`Found ${pendingAllocations.length} pending Qantas allocations to process`);
+    this.logger.log(
+      `Found ${pendingAllocations.length} pending Qantas allocations to process`,
+    );
 
     for (const allocation of pendingAllocations) {
       await this.claimAllocation(allocation);
     }
   }
+
 
   private async claimAllocation(
     allocation: QantasPointsAllocationDocument,
@@ -379,23 +391,17 @@ export class QantasService {
       return;
     }
 
-    // Look up user to get firstName (optional for accrual API)
-    const user = await this.userModel.findById(profile.userId).lean();
-    const firstName = user?.name?.split(' ')[0] ?? undefined;
-
     try {
-      const accrualResult = await this.qantasApiClient.accruePoints({
+      const earnResult = await this.qantasApiClient.earnPoints({
         memberId: profile.memberId,
-        firstName,
-        lastName: profile.surname,
-        basePoints: this.pointsPerChallenge,
-        referenceNumber: allocation._id.toString(),
+        points: this.pointsPerChallenge,
+        clientRef: allocation._id.toString(), 
       });
 
       allocation.status = QantasAllocationStatus.ACCEPTED;
       allocation.processedAt = new Date();
-      allocation.accrualReferenceNumber = accrualResult.accrualReferenceNumber;
-      allocation.qantasResponse = accrualResult;
+      allocation.accrualReferenceNumber = earnResult.transactionNumber;
+      allocation.qantasResponse = earnResult;
       await allocation.save();
 
       profile.isRewarded = true;
@@ -404,17 +410,30 @@ export class QantasService {
       await profile.save();
 
       this.logger.log(
-        `Awarded ${this.pointsPerChallenge} Qantas points to member ${profile.memberId} ` +
-          `(allocation ${allocation._id}, accrualRef ${accrualResult.accrualReferenceNumber})`,
+        `Awarded ${earnResult.pointsEarned} Qantas points to member ${profile.memberId} ` +
+          `(allocation ${allocation._id}, txn ${earnResult.transactionNumber})`,
       );
+
+      await this.fetchAndStoreExpiration(profile);
     } catch (error) {
-      if (error instanceof QantasConflictError) {
+      if (error instanceof QantasDuplicateAccrualError) {
         allocation.status = QantasAllocationStatus.ACCEPTED;
         allocation.processedAt = new Date();
-        allocation.qantasResponse = { note: 'Duplicate accrual (409)', error: error.responseBody };
+        allocation.qantasResponse = {
+          note: 'Duplicate accrual (ACCRUAL_ALREADY_EXISTS)',
+          error: error.responseBody,
+        };
         await allocation.save();
+
+        if (!profile.isRewarded) {
+          profile.isRewarded = true;
+          profile.greenTierUnlocked = true;
+          profile.totalPointsAwarded += this.pointsPerChallenge;
+          await profile.save();
+        }
+
         this.logger.warn(
-          `Qantas allocation ${allocation._id} was already processed (409 conflict)`,
+          `Qantas allocation ${allocation._id} was already processed (duplicate)`,
         );
         return;
       }
@@ -435,7 +454,7 @@ export class QantasService {
         }
         await allocation.save();
         this.logger.warn(
-          `Retryable error claiming allocation ${allocation._id} (attempt ${allocation.retryCount}/3): ${error.message}`,
+          `Retryable error on allocation ${allocation._id} (attempt ${allocation.retryCount}/3): ${error.message}`,
         );
         return;
       }
@@ -443,7 +462,8 @@ export class QantasService {
       allocation.status = QantasAllocationStatus.REJECTED;
       allocation.processedAt = new Date();
       allocation.qantasResponse = {
-        error: error instanceof QantasApiError ? error.responseBody : String(error),
+        error:
+          error instanceof QantasApiError ? error.responseBody : String(error),
       };
       await allocation.save();
 
@@ -454,37 +474,40 @@ export class QantasService {
     }
   }
 
-  async cancelAccrual(allocationId: string): Promise<any> {
-    const allocation = await this.allocationModel.findById(allocationId);
-    if (!allocation) throw new NotFoundException('Allocation not found');
-    if (!allocation.accrualReferenceNumber) {
-      throw new BadRequestException('No accrual reference number to cancel');
+
+  private async fetchAndStoreExpiration(
+    profile: QantasFFNDocument,
+  ): Promise<void> {
+    if (
+      profile.expirationDate &&
+      new Date(profile.expirationDate) > new Date()
+    ) {
+      this.logger.log(
+        `Skipping expiration fetch for ${profile.memberId} — expires ${profile.expirationDate}`,
+      );
+      return;
     }
 
-    const profile = await this.qantasFFNModel.findById(allocation.userQantasProfileId);
-    if (!profile) throw new NotFoundException('FFN profile not found');
+    try {
+      const detail = await this.qantasApiClient.getMemberDetail(
+        profile.memberId,
+      );
 
-    const result = await this.qantasApiClient.cancelAccrual({
-      accrualReferenceNumber: allocation.accrualReferenceNumber,
-      memberId: profile.memberId,
-      lastName: profile.surname,
-    });
+      profile.expirationDate = detail.ffExpireDate
+        ? new Date(detail.ffExpireDate)
+        : null;
+      profile.loyaltyApiContactedAt = new Date();
+      await profile.save();
 
-    allocation.status = QantasAllocationStatus.REJECTED;
-    allocation.processedAt = new Date();
-    allocation.qantasResponse = { ...allocation.qantasResponse, cancelResult: result };
-    await allocation.save();
-
-    // Roll back profile rewards
-    profile.isRewarded = false;
-    profile.totalPointsAwarded = Math.max(0, profile.totalPointsAwarded - this.pointsPerChallenge);
-    await profile.save();
-
-    this.logger.log(
-      `Cancelled accrual ${allocation.accrualReferenceNumber} for member ${profile.memberId}`,
-    );
-
-    return result;
+      this.logger.log(
+        `Updated expiration for ${profile.memberId}: ${detail.ffExpireDate}`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Failed to fetch expiration for member ${profile.memberId}`,
+        error,
+      );
+    }
   }
 
   async resetRewardsForExpiredMemberships(): Promise<void> {
@@ -501,10 +524,17 @@ export class QantasService {
       profile.isRewarded = false;
       profile.surveysCompletedSinceLink = 0;
       await profile.save();
-      this.logger.log(`Reset rewards for member ${profile.memberId} — new membership year`);
+
+      await this.fetchAndStoreExpiration(profile);
+
+      this.logger.log(
+        `Reset rewards for member ${profile.memberId} — new membership year`,
+      );
     }
 
-    this.logger.log(`Reset rewards for ${expiredProfiles.length} expired memberships`);
+    this.logger.log(
+      `Reset rewards for ${expiredProfiles.length} expired memberships`,
+    );
   }
 
 

@@ -543,7 +543,7 @@ export class CookbookaiService {
         if (!Types.ObjectId.isValid(id)) return null;
         return await this.userRecipeModel.findOne({ _id: new Types.ObjectId(id), ...this.buildUserMatch(userId) }).lean().exec();
     }
-
+  
     async deleteRecipe(id: string, userId: string) {
         if (!Types.ObjectId.isValid(id)) return { success: false, message: 'Invalid recipe ID.' };
         const recipe = await this.userRecipeModel.findOne({ _id: new Types.ObjectId(id), ...this.buildUserMatch(userId) });
