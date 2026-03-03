@@ -1,10 +1,11 @@
-import { Body, Controller, Get, Post, Query, UnauthorizedException, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Patch, Post, Query, UnauthorizedException, UseGuards } from '@nestjs/common';
 import { AnalyticsService } from './analytics.service';
 import { RolesGuard } from 'src/common/guards/roles.guard';
 import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
 import { GetUser } from 'src/common/decorators/Get.user.decorator';
 import { SaveFoodDto } from './dto/savefood.dto';
 import { GetLeaderboardDto } from './dto/leaderboard.dto';
+import { JoinLeaderboardDto, UpdateLeaderboardProfileDto } from './dto/leaderboard-profile.dto';
 
 @Controller('analytics')
 export class AnalyticsController {
@@ -80,6 +81,38 @@ export class AnalyticsController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   async getLeaderboardStats() {
     return this.analyticsService.getLeaderboardStats();
+  }
+
+  @Get('leaderboard/my-profile')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  async getMyLeaderboardProfile(@GetUser() user: any) {
+    const userId = user.userId;
+    if (!userId) throw new UnauthorizedException();
+    return this.analyticsService.getLeaderboardProfile(userId);
+  }
+
+  @Post('leaderboard/join')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  async joinLeaderboard(@Body() dto: JoinLeaderboardDto, @GetUser() user: any) {
+    const userId = user.userId;
+    if (!userId) throw new UnauthorizedException();
+    return this.analyticsService.joinLeaderboard(userId, dto.displayName);
+  }
+
+  @Patch('leaderboard/update-profile')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  async updateLeaderboardProfile(@Body() dto: UpdateLeaderboardProfileDto, @GetUser() user: any) {
+    const userId = user.userId;
+    if (!userId) throw new UnauthorizedException();
+    return this.analyticsService.updateLeaderboardProfile(userId, dto);
+  }
+
+  @Delete('leaderboard/leave')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  async leaveLeaderboard(@GetUser() user: any) {
+    const userId = user.userId;
+    if (!userId) throw new UnauthorizedException();
+    return this.analyticsService.leaveLeaderboard(userId);
   }
 
   @Get('recipe-rating-stats')

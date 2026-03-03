@@ -14,6 +14,7 @@ import {
   UserFoodAnalyticsProfile,
 } from 'src/database/schemas/user.food.analyticsProfile.schema';
 import { User } from 'src/database/schemas/user.auth.schema';
+import { LeaderboardProfile, LeaderboardProfileDocument } from 'src/database/schemas/leaderboard-profile.schema';
 import { normalizeCountry } from '../../utils/countries.util';
 
 export interface FoodSavedEvent {
@@ -57,6 +58,8 @@ export class AnalyticsService {
     private readonly userModel: Model<User>,
        @InjectModel(Feedback.name)
     private readonly feedbackModel: Model<FeedbackDocument>,
+    @InjectModel(LeaderboardProfile.name)
+    private readonly leaderboardProfileModel: Model<LeaderboardProfileDocument>,
     private readonly eventEmmiter: EventEmitter2,
   ) {}
 async saveFood(userId: string, ingredinatIds: string[], frameworkId?: string, directIngredients?: { name: string; averageWeight: number }[]) {
@@ -471,6 +474,22 @@ Notes:
 
     // Build aggregation pipeline
     const pipeline: any[] = [
+      // Only include users who opted into the leaderboard
+      {
+        $lookup: {
+          from: 'leaderboardprofiles',
+          localField: 'userId',
+          foreignField: 'userId',
+          as: 'lbProfile',
+        },
+      },
+      {
+        $match: {
+          'lbProfile.0': { $exists: true },
+          'lbProfile.isActive': true,
+        },
+      },
+      { $unwind: '$lbProfile' },
       // Join with users collection
       {
         $lookup: {
@@ -560,7 +579,7 @@ Notes:
       $project: {
         rank: 1,
         userId: '$user._id',
-        userName: '$user.name',
+        userName: '$lbProfile.displayName',
         country: '$user.country',
         stateCode: '$user.stateCode',
           numberOfMealsCooked: 1,
@@ -760,5 +779,59 @@ Notes:
       averageRating,
       ratingDistribution,
     };
+  }
+
+  // ─── Leaderboard Profile Management ─────────────────────────────────────────
+
+  async getLeaderboardProfile(userId: string) {
+    const profile = await this.leaderboardProfileModel
+      .findOne({ userId: new Types.ObjectId(userId) })
+      .lean();
+    return { joined: !!profile, profile: profile || null };
+  }
+
+  async joinLeaderboard(userId: string, displayName: string) {
+    const existing = await this.leaderboardProfileModel
+      .findOne({ userId: new Types.ObjectId(userId) })
+      .lean();
+    if (existing) {
+      // Re-activate if previously left
+      if (!existing.isActive) {
+        await this.leaderboardProfileModel.updateOne(
+          { userId: new Types.ObjectId(userId) },
+          { $set: { isActive: true, displayName } },
+        );
+      }
+      const updated = await this.leaderboardProfileModel
+        .findOne({ userId: new Types.ObjectId(userId) })
+        .lean();
+      return { joined: true, profile: updated };
+    }
+    const profile = await this.leaderboardProfileModel.create({
+      userId: new Types.ObjectId(userId),
+      displayName,
+      isActive: true,
+    });
+    return { joined: true, profile };
+  }
+
+  async updateLeaderboardProfile(userId: string, updates: { displayName?: string; isActive?: boolean }) {
+    const profile = await this.leaderboardProfileModel.findOneAndUpdate(
+      { userId: new Types.ObjectId(userId) },
+      { $set: updates },
+      { new: true },
+    ).lean();
+    if (!profile) {
+      return { joined: false, message: 'Not on leaderboard yet' };
+    }
+    return { joined: true, profile };
+  }
+
+  async leaveLeaderboard(userId: string) {
+    await this.leaderboardProfileModel.updateOne(
+      { userId: new Types.ObjectId(userId) },
+      { $set: { isActive: false } },
+    );
+    return { joined: false, message: 'Left leaderboard successfully' };
   }
 }
