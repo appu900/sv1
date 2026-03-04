@@ -30,6 +30,9 @@ export class Ingredient {
   @Prop({ required: true })
   name: string;
 
+  @Prop({ type: [String], default: [] })
+  aliases: string[];
+
   @Prop({ required: true })
   averageWeight: number; 
 
@@ -83,6 +86,7 @@ export type IngredientDocument = Ingredient & Document;
 export const IngredientSchema = SchemaFactory.createForClass(Ingredient);
 
 IngredientSchema.index({ name: 1 });
+IngredientSchema.index({ aliases: 1 });
 IngredientSchema.index({ categoryId: 1 });
 IngredientSchema.index({ hasPage: 1 });
 IngredientSchema.index({ suitableDiets: 1 });

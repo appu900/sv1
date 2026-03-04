@@ -72,7 +72,7 @@ export class InventoryAiService {
     }
     const ingredients = await this.ingredientModel
       .find(ingredientFilter)
-      .select('name isPantryItem categoryId')
+      .select('name aliases isPantryItem categoryId')
       .lean()
       .exec();
 
@@ -143,10 +143,21 @@ Return JSON:
 
       const results: ParsedVoiceItem[] = [];
       for (const item of parsed.items || []) {
-        const matchedIngredient = ingredients.find(
+        const matchedNameLower = item.matchedName?.toLowerCase();
+
+        let matchedIngredient = ingredients.find(
           (i) =>
-            i.name.toLowerCase() === item.matchedName?.toLowerCase(),
+            i.name.toLowerCase() === matchedNameLower,
         );
+
+        if (!matchedIngredient && matchedNameLower) {
+          matchedIngredient = ingredients.find(
+            (i) =>
+              (i as any).aliases?.some(
+                (alias: string) => alias.toLowerCase() === matchedNameLower,
+              ),
+          );
+        }
 
         let ingredientId: string | undefined;
         let finalName = item.matchedName || item.originalMention;
@@ -156,9 +167,20 @@ Return JSON:
           finalName = matchedIngredient.name;
         } else {
           const fuzzy = ingredients.find(
-            (i) =>
-              i.name.toLowerCase().includes(item.matchedName?.toLowerCase()) ||
-              item.matchedName?.toLowerCase().includes(i.name.toLowerCase()),
+            (i) => {
+              const nameLower = i.name.toLowerCase();
+              if (
+                nameLower.includes(matchedNameLower) ||
+                matchedNameLower.includes(nameLower)
+              ) return true;
+              return (i as any).aliases?.some(
+                (alias: string) => {
+                  const aliasLower = alias.toLowerCase();
+                  return aliasLower.includes(matchedNameLower) ||
+                    matchedNameLower.includes(aliasLower);
+                },
+              );
+            },
           );
           if (fuzzy) {
             ingredientId = (fuzzy as any)._id.toString();
@@ -302,7 +324,7 @@ Return JSON:
       const matchPercentage = (matched.length / allRequired.length) * 100;
 
       // When filtering by ingredient, lower threshold to 20% to show more results
-      const minMatch = filterIngredientId ? 20 : 40;
+      const minMatch = filterIngredientId ? 20 : 25;
       if (matchPercentage < minMatch) continue;
 
       const expiringUsed = matched.filter((id) =>
@@ -549,11 +571,16 @@ Return JSON array of reasons:
         messages: [
           {
             role: 'system',
-            content: `You are a waste segregation assistant for Indian households.
+            content: `You are a waste segregation assistant for households.
 Classify kitchen waste into:
-- "wet_waste": Biodegradable (vegetable peels, fruit scraps, leftover food, eggshells, tea leaves, coffee grounds)
-- "dry_waste": Recyclable (plastic containers, foil, cardboard, glass jars, paper)
-- "hazardous": Special disposal (cooking oil in bulk, batteries, medicines, chemical cleaners)
+- "wet_waste": Wet/Organic waste — biodegradable (vegetable peels, fruit scraps, leftover food, eggshells, tea leaves, coffee grounds)
+- "dry_waste": Dry waste — recyclable (plastic containers, foil, cardboard, glass jars, paper)
+- "hazardous": Hazardous — special disposal (cooking oil in bulk, batteries, medicines, chemical cleaners)
+
+IMPORTANT:
+- For meat/fish scraps, always mention wrapping in paper before binning to reduce odours and keep critters out. Never recommend plastic wrapping.
+- For fruit and vegetables, remind users that slightly soft, spotted, wilted or overripe produce may still be perfectly good for soups, smoothies or stir-fries.
+- Use Australian English spelling (e.g. "odour" not "odor", "colour" not "color", "organise" not "organize", "centre" not "center").
 
 Respond in JSON only: { "wasteType": "...", "confidence": 0.95, "disposalTip": "short tip" }`,
           },
@@ -579,7 +606,7 @@ Respond in JSON only: { "wasteType": "...", "confidence": 0.95, "disposalTip": "
         wasteType: WasteType.WET,
         confidence: 0.3,
         disposalTip:
-          'When unsure, food items generally go in wet waste (green bin).',
+          'When unsure, food items generally go in wet/organic waste (green bin). Compost if possible!',
       };
     }
   }
@@ -599,20 +626,57 @@ Respond in JSON only: { "wasteType": "...", "confidence": 0.95, "disposalTip": "
       'cauliflower', 'banana', 'apple', 'mango', 'orange', 'lemon',
       'ginger', 'garlic', 'coriander', 'mint', 'chilli', 'pepper',
       'cucumber', 'brinjal', 'okra', 'beans', 'peas',
+      'lamb', 'beef', 'pork', 'mince', 'prawn', 'shrimp', 'salmon',
+      'tuna', 'turkey', 'duck', 'sausage', 'bacon',
+    ];
+
+    const meatKeywords = [
+      'meat', 'fish', 'chicken', 'lamb', 'beef', 'pork', 'mince',
+      'prawn', 'shrimp', 'salmon', 'tuna', 'turkey', 'duck',
+      'sausage', 'bacon',
+    ];
+
+    const fruitVegKeywords = [
+      'vegetable', 'fruit', 'tomato', 'onion', 'potato', 'carrot',
+      'spinach', 'cabbage', 'cauliflower', 'banana', 'apple', 'mango',
+      'orange', 'lemon', 'cucumber', 'brinjal', 'okra', 'beans', 'peas',
+      'capsicum', 'zucchini', 'avocado', 'pear', 'peach', 'berry',
+      'berries', 'grape', 'kiwi', 'pineapple', 'melon', 'lettuce',
+      'celery', 'broccoli', 'mushroom', 'corn', 'beetroot', 'pumpkin',
     ];
 
     if (wetKeywords.some((kw) => lower.includes(kw))) {
+      const isMeat = meatKeywords.some((kw) => lower.includes(kw));
+      const isFruitVeg = fruitVegKeywords.some((kw) => lower.includes(kw));
+
       if (packaging && ['plastic', 'foil', 'cardboard'].includes(packaging.toLowerCase())) {
         return {
           wasteType: WasteType.WET,
           confidence: 0.9,
-          disposalTip: `The ${name} goes in wet waste (green bin). Separate the ${packaging} packaging into dry waste (blue bin).`,
+          disposalTip: `The ${name} goes in wet/organic waste (green bin). Separate the ${packaging} packaging into dry waste (blue bin).`,
         };
       }
+
+      if (isMeat) {
+        return {
+          wasteType: WasteType.WET,
+          confidence: 0.95,
+          disposalTip: `Got ${lower} scraps? Wrap them in paper before binning to keep odours down and critters out. Paper good. Plastic no thanks.`,
+        };
+      }
+
+      if (isFruitVeg) {
+        return {
+          wasteType: WasteType.WET,
+          confidence: 0.95,
+          disposalTip: `${name} is organic waste — pop it in the green bin or compost it!`,
+        };
+      }
+
       return {
         wasteType: WasteType.WET,
         confidence: 0.95,
-        disposalTip: `${name} is biodegradable — put in wet waste (green bin). Can be composted!`,
+        disposalTip: `${name} is organic waste — put in wet/organic waste (green bin). Can be composted or added to your garden!`,
       };
     }
 

@@ -1,4 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
 import OpenAI from 'openai';
 import { RedisService } from '../../redis/redis.service';
 import {
@@ -6,6 +8,10 @@ import {
   ScaleServingsResponseDto,
   ScaledIngredientResult,
 } from './dto/scale-servings.dto';
+import {
+  ScaledPortionsCache,
+  ScaledPortionsCacheDocument,
+} from '../../database/schemas/scaled-portions-cache.schema';
 
 @Injectable()
 export class ServingScaleService {
@@ -16,7 +22,11 @@ export class ServingScaleService {
   private readonly CACHE_TTL = 86400;
   private readonly CACHE_PREFIX = 'serving-scale';
 
-  constructor(private readonly redisService: RedisService) {}
+  constructor(
+    private readonly redisService: RedisService,
+    @InjectModel(ScaledPortionsCache.name)
+    private readonly scaledCacheModel: Model<ScaledPortionsCacheDocument>,
+  ) {}
 
  
   async scaleServings(
@@ -39,28 +49,49 @@ export class ServingScaleService {
     }
 
     const cacheKey = this.buildCacheKey(dto);
+
+    // 1. Check Redis (fast, short-lived)
     try {
       const cached = await this.redisService.get(cacheKey);
       if (cached) {
-        this.logger.debug('Serving scale cache hit');
+        this.logger.debug('Serving scale Redis cache hit');
         return JSON.parse(cached);
       }
     } catch (e) {
-      this.logger.warn('Cache read failed for serving scale:', e?.message);
+      this.logger.warn('Redis read failed for serving scale:', e?.message);
     }
 
+    // 2. Check MongoDB (permanent — AI is never called twice for the same combo)
+    try {
+      const mongoDoc = await this.scaledCacheModel.findOne({ cacheKey }).lean().exec();
+      if (mongoDoc) {
+        this.logger.debug('Serving scale MongoDB cache hit');
+        const result = mongoDoc.result as unknown as ScaleServingsResponseDto;
+        // Backfill Redis so subsequent hits within the TTL window are even faster
+        this.redisService.set(cacheKey, JSON.stringify(result), this.CACHE_TTL).catch(() => null);
+        return result;
+      }
+    } catch (e) {
+      this.logger.warn('MongoDB read failed for serving scale:', e?.message);
+    }
+
+    // 3. Call AI and persist to both stores
     try {
       const result = await this.scaleWithAI(dto);
-      // Cache successful result
-      try {
-        await this.redisService.set(
+      // Persist to MongoDB (permanent)
+      this.scaledCacheModel
+        .create({
           cacheKey,
-          JSON.stringify(result),
-          this.CACHE_TTL,
-        );
-      } catch (e) {
-        this.logger.warn('Cache write failed for serving scale:', e?.message);
-      }
+          recipeId: dto.recipeId,
+          originalServings: dto.originalServings,
+          desiredServings: dto.desiredServings,
+          result: result as unknown as Record<string, unknown>,
+        })
+        .catch((e) => this.logger.warn('MongoDB write failed for serving scale:', e?.message));
+      // Persist to Redis (fast layer)
+      this.redisService
+        .set(cacheKey, JSON.stringify(result), this.CACHE_TTL)
+        .catch((e) => this.logger.warn('Redis write failed for serving scale:', e?.message));
       return result;
     } catch (error) {
       this.logger.error('AI scaling failed, falling back to simple math:', error?.message);

@@ -8,6 +8,7 @@ import { Recipe, RecipeSchema } from '../../database/schemas/recipe.schema';
 import { FrameworkCategory, FrameworkCategorySchema } from '../../database/schemas/framework-category.schema';
 import { Ingredient, IngredientSchema } from '../../database/schemas/ingredient.schema';
 import { DietCategory, DietCategorySchema } from '../../database/schemas/diet.schema';
+import { ScaledPortionsCache, ScaledPortionsCacheSchema } from '../../database/schemas/scaled-portions-cache.schema';
 import { RedisModule } from '../../redis/redis.module';
 import { ImageUploadModule } from '../image-upload/image-upload.module';
 
@@ -18,6 +19,7 @@ import { ImageUploadModule } from '../image-upload/image-upload.module';
       { name: FrameworkCategory.name, schema: FrameworkCategorySchema },
       { name: Ingredient.name, schema: IngredientSchema },
       { name: DietCategory.name, schema: DietCategorySchema },
+      { name: ScaledPortionsCache.name, schema: ScaledPortionsCacheSchema },
     ]),
     MulterModule.register({
       limits: {

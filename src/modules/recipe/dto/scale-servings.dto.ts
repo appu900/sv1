@@ -26,6 +26,9 @@ export class ScaleServingsDto {
   originalServings: number;
 
   @IsOptional()
+  recipeId?: string;
+
+  @IsOptional()
   recipeTitle?: string;
 
   @IsArray()

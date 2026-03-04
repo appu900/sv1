@@ -18,7 +18,7 @@ const LOGO_BLOCK = `
   class="logo logo-dark"
 />`;
 
-const FOOTER = `<tr><td class="footer" bgcolor="#ffffff" style="background-color:#ffffff;">© Saveful</td></tr>`;
+const FOOTER = `<tr><td class="footer" bgcolor="#ffffff" style="background-color:#ffffff;">© Saveful Worldwide Pty Ltd, <a href="https://www.saveful.com" style="color:inherit; text-decoration:underline;">Saveful.com</a></td></tr>`;
 
 const DARK_LOGO_MEDIA = `
   @media (prefers-color-scheme: dark) {
@@ -126,7 +126,7 @@ export function welcomeTemplate(userName: string): string {
           <p class="signoff">With Saveful, you've got this.<br>- The Saveful Team</p>
           ${LOGO_BLOCK}
         </td></tr>
-        <tr><td class="footer">You're receiving this email because you signed up for Saveful.<br>© Saveful</td></tr>
+        <tr><td class="footer">You're receiving this email because you signed up for Saveful.<br>© Saveful Worldwide Pty Ltd, <a href="https://www.saveful.com" style="color:inherit; text-decoration:underline;">Saveful.com</a></td></tr>
       </table>
     </td></tr>
   </table>

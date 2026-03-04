@@ -236,7 +236,7 @@ If you didn’t request this, you can safely ignore this email.
 
 <tr>
 <td class="footer" bgcolor="#ffffff" style="background-color:#ffffff;">
-© Saveful
+© Saveful Worldwide Pty Ltd, <a href="https://www.saveful.com" style="color:inherit; text-decoration:underline;">Saveful.com</a>
 </td>
 </tr>
 
@@ -490,7 +490,7 @@ If you didn’t request this, you can safely ignore this email.
           <tr>
             <td class="footer">
               You're receiving this email because you signed up for Saveful.<br>
-              © Saveful
+              © Saveful Worldwide Pty Ltd, <a href="https://www.saveful.com" style="color:inherit; text-decoration:underline;">Saveful.com</a>
             </td>
           </tr>
 
@@ -584,7 +584,7 @@ If you didn’t request this, you can safely ignore this email.
 <img src="https://d3fg04h02j12vm.cloudfront.net/logo%403x.png" alt="Saveful logo" width="110" class="logo logo-light" />
 <img src="https://d3fg04h02j12vm.cloudfront.net/Saveful-logo-white-Rev.webp" alt="Saveful logo" width="110" class="logo logo-dark" />
 </td></tr>
-<tr><td class="footer" bgcolor="#ffffff" style="background-color:#ffffff;">© Saveful</td></tr>
+<tr><td class="footer" bgcolor="#ffffff" style="background-color:#ffffff;">© Saveful Worldwide Pty Ltd, <a href="https://www.saveful.com" style="color:inherit; text-decoration:underline;">Saveful.com</a></td></tr>
 </table>
 </td></tr>
 </table>
@@ -666,7 +666,7 @@ If you didn’t request this, you can safely ignore this email.
 <img src="https://d3fg04h02j12vm.cloudfront.net/Saveful-logo-white-Rev.webp" alt="Saveful logo" width="110" class="logo logo-dark" />
 
 </td></tr>
-<tr><td class="footer" bgcolor="#ffffff" style="background-color:#ffffff;">© Saveful</td></tr>
+<tr><td class="footer" bgcolor="#ffffff" style="background-color:#ffffff;">© Saveful Worldwide Pty Ltd, <a href="https://www.saveful.com" style="color:inherit; text-decoration:underline;">Saveful.com</a></td></tr>
 </table>
 </td></tr>
 </table>
