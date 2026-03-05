@@ -82,7 +82,7 @@ export class CreateIngredientDto {
 
   @IsOptional()
   @IsString()
-  sponsorId?: string;
+  foodFactId?: string;
 
   @IsOptional()
   @IsArray()

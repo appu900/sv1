@@ -80,7 +80,7 @@ export class UpdateIngredientDto {
 
   @IsOptional()
   @IsString()
-  sponsorId?: string;
+  foodFactId?: string;
 
   @IsOptional()
   @IsArray()

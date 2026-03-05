@@ -15,6 +15,14 @@ import {
   DietCategory,
   DietCategorySchema,
 } from 'src/database/schemas/diet.schema';
+import {
+  FoodFact,
+  FoodFactSchema,
+} from 'src/database/schemas/food-fact.schema';
+import {
+  Sponsers,
+  SponsersSchema,
+} from 'src/database/schemas/sponsers.schema';
 import { ImageUploadModule } from '../image-upload/image-upload.module';
 import { SqsModule } from 'src/sqs/sqs.module';
 
@@ -24,6 +32,8 @@ import { SqsModule } from 'src/sqs/sqs.module';
       { name: IngredientsCategory.name, schema: ingredinatsCategorySchema },
       { name: Ingredient.name, schema: IngredientSchema },
       { name: DietCategory.name, schema: DietCategorySchema },
+      { name: FoodFact.name, schema: FoodFactSchema },
+      { name: Sponsers.name, schema: SponsersSchema },
     ]),
     ImageUploadModule,
     SqsModule

@@ -57,8 +57,8 @@ export class Ingredient {
   @Prop()
   description?: string; 
 
-  @Prop({ type: Types.ObjectId, ref: 'Sponsers' })
-  sponsorId?: Types.ObjectId;
+  @Prop({ type: Types.ObjectId, ref: 'FoodFact' })
+  foodFactId?: Types.ObjectId;
 
   @Prop({ type: [{ type: Types.ObjectId, ref: 'HackOrTip' }], default: [] })
   relatedHacks: Types.ObjectId[];

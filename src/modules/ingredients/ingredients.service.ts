@@ -172,8 +172,8 @@ export class IngredientsService implements OnModuleInit {
           .map((id) => new Types.ObjectId(id));
       }
 
-      if (dto.sponsorId && Types.ObjectId.isValid(dto.sponsorId)) {
-        ingredientData.sponsorId = new Types.ObjectId(dto.sponsorId);
+      if (dto.foodFactId && Types.ObjectId.isValid(dto.foodFactId)) {
+        ingredientData.foodFactId = new Types.ObjectId(dto.foodFactId);
       }
 
       if (dto.relatedHacks && dto.relatedHacks.length > 0) {
@@ -205,13 +205,12 @@ export class IngredientsService implements OnModuleInit {
 
     const ingredient = await this.ingredientModel.create(ingredientData);
     
-    // Invalidate cache with versioned strategy
     const ingredients = await this.ingredientModel
       .find()
       .populate('categoryId', 'name imageUrl')
       .populate('suitableDiets', 'name')
       .populate('parentIngredients', 'name')
-      .populate('sponsorId', 'title logo')
+      .populate({ path: 'foodFactId', populate: { path: 'sponsor', select: 'title logo' } })
       .populate('relatedHacks', 'title type')
       .populate('stickerId', 'title imageUrl')
       .sort({ order: 1, name: 1 })
@@ -265,7 +264,7 @@ export class IngredientsService implements OnModuleInit {
         .populate('categoryId', 'name imageUrl')
         .populate('suitableDiets', 'name')
         .populate('parentIngredients', 'name')
-        .populate('sponsorId', 'title logo')
+        .populate({ path: 'foodFactId', populate: { path: 'sponsor', select: 'title logo' } })
         .populate('relatedHacks', 'title type')
         .populate('stickerId', 'title imageUrl')
         .sort({ order: 1, name: 1 })
@@ -291,7 +290,7 @@ export class IngredientsService implements OnModuleInit {
       .populate('categoryId', 'name imageUrl')
       .populate('suitableDiets', 'name')
       .populate('parentIngredients', 'name')
-      .populate('sponsorId', 'title logo')
+      .populate({ path: 'foodFactId', populate: { path: 'sponsor', select: 'title logo' } })
       .populate('relatedHacks', 'title type')
       .populate('stickerId', 'title imageUrl')
       .sort({ order: 1, name: 1 })
@@ -311,7 +310,7 @@ export class IngredientsService implements OnModuleInit {
       .populate('categoryId', 'name imageUrl')
       .populate('suitableDiets', 'name')
       .populate('parentIngredients', 'name averageWeight')
-      .populate('sponsorId', 'title logo logoBlackAndWhite broughtToYouBy tagline')
+      .populate({ path: 'foodFactId', populate: { path: 'sponsor', select: 'title logo logoBlackAndWhite broughtToYouBy tagline' } })
       .populate('relatedHacks', 'title type shortDescription')
       .populate('stickerId', 'title imageUrl description')
       .lean();
@@ -334,7 +333,7 @@ export class IngredientsService implements OnModuleInit {
       .populate('categoryId', 'name imageUrl')
       .populate('suitableDiets', 'name')
       .populate('parentIngredients', 'name averageWeight')
-      .populate('sponsorId', 'title logo logoBlackAndWhite broughtToYouBy tagline')
+      .populate({ path: 'foodFactId', populate: { path: 'sponsor', select: 'title logo logoBlackAndWhite broughtToYouBy tagline' } })
       .populate('relatedHacks', 'title type shortDescription')
       .populate('stickerId', 'title imageUrl description')
       .lean();
@@ -393,11 +392,11 @@ export class IngredientsService implements OnModuleInit {
         .map((id) => new Types.ObjectId(id));
     }
 
-    if (dto.sponsorId !== undefined) {
-      if (dto.sponsorId && Types.ObjectId.isValid(dto.sponsorId)) {
-        updateData.sponsorId = new Types.ObjectId(dto.sponsorId);
-      } else if (!dto.sponsorId) {
-        updateData.sponsorId = null;
+    if (dto.foodFactId !== undefined) {
+      if (dto.foodFactId && Types.ObjectId.isValid(dto.foodFactId)) {
+        updateData.foodFactId = new Types.ObjectId(dto.foodFactId);
+      } else if (!dto.foodFactId) {
+        updateData.foodFactId = null;
       }
     }
 
@@ -436,7 +435,7 @@ export class IngredientsService implements OnModuleInit {
       .populate('categoryId', 'name imageUrl')
       .populate('suitableDiets', 'name')
       .populate('parentIngredients', 'name')
-      .populate('sponsorId', 'title logo')
+      .populate({ path: 'foodFactId', populate: { path: 'sponsor', select: 'title logo' } })
       .populate('relatedHacks', 'title type')
       .populate('stickerId', 'title imageUrl');
 
@@ -446,7 +445,7 @@ export class IngredientsService implements OnModuleInit {
       .populate('categoryId', 'name imageUrl')
       .populate('suitableDiets', 'name')
       .populate('parentIngredients', 'name')
-      .populate('sponsorId', 'title logo')
+      .populate({ path: 'foodFactId', populate: { path: 'sponsor', select: 'title logo' } })
       .populate('relatedHacks', 'title type')
       .populate('stickerId', 'title imageUrl')
       .sort({ order: 1, name: 1 })
@@ -500,7 +499,7 @@ export class IngredientsService implements OnModuleInit {
       .populate('categoryId', 'name imageUrl')
       .populate('suitableDiets', 'name')
       .populate('parentIngredients', 'name')
-      .populate('sponsorId', 'title logo')
+      .populate({ path: 'foodFactId', populate: { path: 'sponsor', select: 'title logo' } })
       .populate('relatedHacks', 'title type')
       .populate('stickerId', 'title imageUrl')
       .sort({ order: 1, name: 1 })
@@ -524,7 +523,6 @@ export class IngredientsService implements OnModuleInit {
       );
     }
 
-    // Bust per-country caches
     await this.redisService.delByPattern('Ingredients:all:country:*');
 
     return { message: 'Ingredient deleted successfully' };
