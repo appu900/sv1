@@ -1,187 +1,141 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { ConfigService } from '@nestjs/config';
 import { Model, Types } from 'mongoose';
 import OpenAI from 'openai';
+import { YoutubeTranscript } from 'youtube-transcript';
 import { userRecipe, UserRecipeDocument } from 'src/database/schemas/user.schema';
-import { Ingredient, IngredientDocument } from 'src/database/schemas/ingredient.schema';
-import { HackOrTip } from 'src/database/schemas/hack-or-tip.schema';
-import {
-    FrameworkCategory,
-    FrameworkCategoryDocument,
-} from 'src/database/schemas/framework-category.schema';
-import { Recipe, RecipeDocument } from 'src/database/schemas/recipe.schema';
 
-const SYSTEM_PROMPT = `
-You are a Recipe Construction Agent designed to generate structured recipe JSON.
+const EXTRACT_PROMPT = `You are a recipe extraction assistant. The user will provide a URL or recipe description.
+You MUST use web search to look up the URL and extract the ACTUAL recipe from it.
+Do NOT invent or generate a recipe from your training data. Extract ONLY what is on the page/video.
+Describe the FULL recipe in plain text: title, description, ALL ingredients with exact quantities, ALL steps in detail, prep/cook time, portions, storage info.
+For YouTube, also note the video ID from the URL.
+Be thorough — do not skip any ingredient or step. Output plain text, not JSON.`.trim();
 
-====================
-CRITICAL ID RULES
-====================
-- Every ingredient, hack, tip, category, and recipe reference MUST be a real MongoDB ObjectId from tool responses.
-- NEVER use placeholder strings like "ingredient_id_paneer", "" or invented text.
-- NEVER use an empty string "" as an ID.
+const JSON_PROMPT = `Convert the recipe content below into a JSON object. Output ONLY valid JSON.
 
-====================
-INGREDIENT RULE (MOST IMPORTANT)
-====================
-For EVERY ingredient in the recipe, call: searchIngredient(name: "Paneer")
-- It returns {_id, name} if found, or {_id: null, name} if not found.
-- If _id is returned (not null), use it as the ingredient reference AND include the name in "ingredientName".
-- If _id is null, OMIT the id field and ONLY include name in "ingredientName".
-- Call ONCE per unique ingredient. Do NOT reuse the same _id for different ingredients.
-
-====================
-CORE BEHAVIOR RULES
-====================
-1. NEVER invent IDs or fabricate database records.
-2. For hacks, tips, categories, recipes → use the respective lookup tools.
-3. If lookup returns empty → add to "missingSuggestions" section.
-4. Final output: ONLY raw JSON. No markdown, no code fences, no commentary.
-5. NEVER hallucinate brand names, chef names, copyrighted text.
-
-====================
-URL HANDLING (YouTube and any URL)
-====================
-If the user provides a URL:
-1. IMMEDIATELY use web_search to search for that EXACT URL and extract the recipe content.
-2. For YouTube: search the exact URL to find title, description, recipe. Extract youtubeId from "v=" param or youtu.be slug.
-3. After web_search, reconstruct the FULL recipe into the JSON schema.
-4. Preserve original recipe intent — don't simplify, invent steps, or change cuisine.
-5. After extracting recipe data → call internal tools (searchIngredient etc.) for all IDs.
-6. If first web_search fails → try searching "<recipe title> recipe" as fallback.
-7. NEVER skip web_search for URLs.
-
-====================
-TOOLS AVAILABLE
-====================
-1. searchIngredient(name) → returns {_id, name} if found, {_id: null, name} if not. Search-only, does NOT create.
-2. getHacksOrTips(query) → returns [{_id, title, shortDescription}]
-3. getFrameworkCategories(query) → returns [{_id, title}] (e.g. "Lunch", "Dinner")
-4. getRecipes(query) → returns [{_id, title}] for useLeftoversIn
-5. web_search → ONLY for extracting recipe content from URLs
-
-====================
-OUTPUT FORMAT
-====================
-Output ONLY raw JSON (no markdown, no fences, no text before/after):
+Required shape:
 {
   "recipe": {
-    "title": "", "shortDescription": "", "longDescription": "",
-    "hackOrTipIds": [], "heroImageUrl": "", "youtubeId": "",
-    "portions": "3-4 servings", "prepCookTime": 30, "stickerId": "", "frameworkCategories": [],
-    "sponsorId": "", "fridgeKeepTime": "2 days", "freezeKeepTime": "1 month", "useLeftoversIn": [],
-    "components": [{
-      "prepShortDescription": "", "prepLongDescription": "", "variantTags": [],
-      "stronglyRecommended": false, "choiceInstructions": "", "buttonText": "",
-      "component": [{
-        "componentTitle": "", "componentInstructions": "", "includedInVariants": [],
-        "requiredIngredients": [{ "recommendedIngredient": "REAL_OID_OR_OMIT", "ingredientName": "Name", "quantity": "", "preparation": "", "alternativeIngredients": [] }],
-        "optionalIngredients": [],
-        "componentSteps": [{ "stepInstructions": "", "hackOrTipIds": [], "alwaysShow": true, "relevantIngredients": [] }]
-      }]
-    }],
-    "order": 42, "isActive": true
-  },
-  "missingSuggestions": { "ingredients": [], "hacksOrTips": [] }
+    "title": "",
+    "shortDescription": "",
+    "longDescription": "",
+    "heroImageUrl": "",
+    "youtubeId": "",
+    "portions": "3-4 servings",
+    "prepCookTime": 30,
+    "fridgeKeepTime": "2 days",
+    "freezeKeepTime": "1 month",
+    "components": [
+      {
+        "prepShortDescription": "",
+        "prepLongDescription": "",
+        "variantTags": [],
+        "stronglyRecommended": false,
+        "choiceInstructions": "",
+        "buttonText": "",
+        "component": [
+          {
+            "componentTitle": "",
+            "componentInstructions": "",
+            "includedInVariants": [],
+            "requiredIngredients": [
+              {
+                "ingredientName": "Main Ingredient",
+                "quantity": "250g",
+                "preparation": "diced",
+                "alternativeIngredients": [
+                  { "ingredientName": "Alt 1", "quantity": "", "preparation": "", "inheritQuantity": true, "inheritPreparation": true },
+                  { "ingredientName": "Alt 2", "quantity": "", "preparation": "", "inheritQuantity": true, "inheritPreparation": true }
+                ]
+              }
+            ],
+            "optionalIngredients": [
+              { "ingredientName": "Optional Add-in", "quantity": "1 tbsp", "preparation": "chopped" }
+            ],
+            "componentSteps": [
+              { "stepInstructions": "", "alwaysShow": true }
+            ]
+          }
+        ]
+      }
+    ],
+    "isActive": true
+  }
 }
 
-DEFAULTS: heroImageUrl="", stickerId="", sponsorId="", hackOrTipIds=[], frameworkCategories=[], useLeftoversIn=[], isActive=true. Include 3-4 components minimum.
-`.trim();
+Rules:
+- Use plain ingredient names as strings in ingredientName (e.g. "Paneer", "Olive Oil"). No IDs.
+- Include 3-6 components minimum. Group logically: e.g. "Protein", "Liquid", "Cheese", "Extra Flavours", "Coating", "Oil/Cooking".
+- For YouTube URLs, extract youtubeId from "v=" param or youtu.be slug.
+- heroImageUrl defaults to empty string.
+- prepCookTime in minutes.
 
+CRITICAL — ALTERNATIVE INGREDIENTS (VERY IMPORTANT):
 
-const TOOLS: any[] = [
-    {
-        type: 'function',
-        name: 'searchIngredient',
-        description:
-            'Search for an ingredient by name in the database. Returns {_id, name} if found, or {_id: null, name} if not found. Does NOT create ingredients. Call ONCE per unique ingredient.',
-        parameters: {
-            type: 'object',
-            properties: {
-                name: {
-                    type: 'string',
-                    description: "Exact ingredient name, e.g. 'Paneer', 'Tomato', 'Olive Oil'",
-                },
-            },
-            required: ['name'],
-        },
-    },
-    {
-        type: 'function',
-        name: 'getHacksOrTips',
-        description:
-            'Lookup hacks and tips by semantic query. Returns array of {_id, title, shortDescription}.',
-        parameters: {
-            type: 'object',
-            properties: {
-                query: { type: 'string', description: 'Search term for hacks or tips' },
-            },
-            required: ['query'],
-        },
-    },
-    {
-        type: 'function',
-        name: 'getFrameworkCategories',
-        description:
-            'Lookup recipe framework categories (e.g. Lunch, Dinner, Breakfast). Returns array of {_id, title}.',
-        parameters: {
-            type: 'object',
-            properties: {
-                query: { type: 'string', description: "Category search term like 'lunch', 'dinner'" },
-            },
-            required: ['query'],
-        },
-    },
-    {
-        type: 'function',
-        name: 'getRecipes',
-        description:
-            'Lookup existing recipes for the useLeftoversIn field. Returns array of {_id, title}.',
-        parameters: {
-            type: 'object',
-            properties: {
-                query: { type: 'string', description: 'Recipe search term' },
-            },
-            required: ['query'],
-        },
-    },
-    {
-        type: 'web_search_preview',
-        search_context_size: 'high',
-    },
-];
+Alternative ingredients MUST be logically compatible with the ingredient and the recipe context.
 
+Rules:
+- Alternatives must belong to the SAME ingredient category or serve the SAME culinary role.
+- Never suggest substitutes that fundamentally change the recipe type.
+- Avoid incompatible substitutions (e.g. Paneer for Egg in an omelette recipe, Beef for Chicken in vegetarian recipes, etc).
+- Respect dietary context when obvious:
+  - If recipe is vegetarian → alternatives must remain vegetarian
+  - If recipe is vegan → alternatives must remain vegan
+  - If recipe is gluten-free → avoid wheat alternatives
+- Substitutes should be realistic kitchen swaps used by cooks.
 
-const INGREDIENT_ALIASES: Record<string, string[]> = {
-    capsicum: ['bell pepper', 'sweet pepper'],
-    'bell pepper': ['capsicum'],
-    cilantro: ['coriander', 'coriander leaves', 'dhania'],
-    coriander: ['cilantro', 'coriander leaves'],
-    eggplant: ['aubergine', 'brinjal', 'baingan'],
-    aubergine: ['eggplant', 'brinjal'],
-    zucchini: ['courgette'],
-    courgette: ['zucchini'],
-    scallion: ['spring onion', 'green onion'],
-    'spring onion': ['scallion', 'green onion'],
-    chickpea: ['garbanzo', 'chana'],
-    garbanzo: ['chickpea', 'chana'],
-    cornstarch: ['corn flour', 'cornflour', 'corn starch'],
-    'corn flour': ['cornstarch', 'cornflour'],
-    'heavy cream': ['double cream', 'whipping cream'],
-    prawn: ['shrimp'],
-    shrimp: ['prawn'],
-    'baking soda': ['bicarbonate of soda', 'bicarb'],
-    'plain flour': ['all purpose flour', 'all-purpose flour', 'maida'],
-    'all purpose flour': ['plain flour', 'maida'],
-    paneer: ['cottage cheese', 'indian cottage cheese'],
-    'cottage cheese': ['paneer'],
-    yogurt: ['yoghurt', 'curd', 'dahi'],
-    yoghurt: ['yogurt', 'curd'],
-    curd: ['yogurt', 'yoghurt', 'dahi'],
-    chili: ['chilli', 'chile'],
-    chilli: ['chili', 'chile'],
-};
+Ingredient category guidelines:
+
+Eggs:
+- Good alternatives: liquid egg substitute, egg whites, tofu (ONLY when eggs are used as binding), chickpea flour batter
+- Bad alternatives: paneer, chicken, beef
+
+Milk / Dairy Liquids:
+- Good alternatives: oat milk, almond milk, soy milk, coconut milk, stock
+- Bad alternatives: yogurt, cheese, paneer
+
+Cheese:
+- Good alternatives: mozzarella, gouda, parmesan, gruyere, provolone
+- Bad alternatives: paneer in western cheese recipes unless culturally relevant
+
+Bread:
+- Good alternatives: sourdough, wholegrain bread, brioche, ciabatta, gluten-free bread
+- Bad alternatives: tortillas unless recipe allows wraps
+
+Meat:
+- Good alternatives: same category meats (chicken breast ↔ chicken thigh ↔ turkey)
+- Plant alternatives only if logical (tofu, tempeh) but not random dairy or grains.
+
+Vegetables:
+- Alternatives should be similar texture and cooking behaviour.
+
+Spices / Herbs:
+- Use flavour-compatible swaps only (parsley ↔ cilantro ↔ basil).
+
+EXTREMELY IMPORTANT:
+Before suggesting alternatives, think about:
+1. The role of the ingredient (protein, binder, fat, flavour, texture)
+2. The cuisine type
+3. The cooking technique
+
+Only generate alternatives that a **real cook would reasonably use in that recipe**.
+Avoid absurd substitutions.
+
+CRITICAL — OPTIONAL INGREDIENTS:
+- Each component can have optionalIngredients for extra flavour, garnish, or customization.
+- Use a dedicated component for "Extra Flavours" or "Extras" with stronglyRecommended: true, choiceInstructions: "Mix and match, choose as many as you like", buttonText: "add your flavours".
+- Include 10-30 optional ingredients for flavour customization (herbs, spices, vegetables, condiments, proteins etc.).
+- Think broadly about what a cook might add: herbs (basil, cilantro, parsley, mint, rosemary, thyme), spices (cumin, paprika, chilli flakes, curry powder, garam masala), aromatics (garlic, ginger, onion, spring onion), add-ins (olives, sundried tomatoes, capers, anchovies, bacon, salami), vegetables (zucchini, spinach, bell pepper, mushrooms, corn), and condiments (lemon zest, soy sauce, worcestershire sauce).
+
+COMPONENT STRUCTURE GUIDE:
+- Component 1: Main base ingredient (e.g. "Bread", "Rice", "Pasta") with alternatives
+- Component 2: Liquid/binding ingredient (e.g. "Liquid", "Sauce") with alternatives
+- Component 3: "Extra Flavours" — stronglyRecommended: true, mostly optionalIngredients (10-30 items), choiceInstructions + buttonText set
+- Component 4: Cooking medium (e.g. "Oil") with alternatives
+- Add more components as needed for the recipe.
+
+Each component's variantTags should include the recipe title. Each component[].includedInVariants should also include the recipe title.`.trim();
 
 
 @Injectable()
@@ -194,15 +148,6 @@ export class CookbookaiService {
     constructor(
         @InjectModel(userRecipe.name)
         private readonly userRecipeModel: Model<UserRecipeDocument>,
-        @InjectModel(Ingredient.name)
-        private readonly ingredientModel: Model<IngredientDocument>,
-        @InjectModel(HackOrTip.name)
-        private readonly hackOrTipModel: Model<any>,
-        @InjectModel(FrameworkCategory.name)
-        private readonly frameworkCategoryModel: Model<FrameworkCategoryDocument>,
-        @InjectModel(Recipe.name)
-        private readonly recipeModel: Model<RecipeDocument>,
-        private readonly configService: ConfigService,
     ) {}
 
     getHello(): string {
@@ -214,7 +159,7 @@ export class CookbookaiService {
         this.logger.log(`[extractRecipe] Starting for: ${message.substring(0, 120)}…`);
 
         try {
-            const result = await this.runAgentLoop(message);
+            const result = await this.callAI(message);
             if (result.success) {
                 this.logger.log(`[extractRecipe] ✓ "${result.data?.title}"`);
             } else {
@@ -230,298 +175,246 @@ export class CookbookaiService {
         }
     }
 
+    private hasUrl(message: string): boolean {
+        return /(https?:\/\/|www\.)/i.test(String(message || ''));
+    }
 
-    private async runAgentLoop(
+    private extractPrimaryUrl(message: string): string {
+        const match = String(message || '').trim().match(/https?:\/\/[^\s]+/i);
+        return match ? match[0].trim() : '';
+    }
+
+    private extractYoutubeVideoId(url: string): string | null {
+        const patterns = [
+            /(?:v=)([a-zA-Z0-9_-]{11})/,
+            /(?:youtu\.be\/)([a-zA-Z0-9_-]{11})/,
+            /(?:embed\/)([a-zA-Z0-9_-]{11})/,
+            /(?:shorts\/)([a-zA-Z0-9_-]{11})/,
+        ];
+        for (const p of patterns) {
+            const m = url.match(p);
+            if (m) return m[1];
+        }
+        return null;
+    }
+
+    private isYoutubeUrl(url: string): boolean {
+        return /(?:youtube\.com|youtu\.be)/i.test(url);
+    }
+
+  
+    private async fetchYoutubeTranscript(videoId: string): Promise<string> {
+        try {
+            this.logger.log(`[transcript] Fetching transcript for video: ${videoId}`);
+            const transcriptItems = await YoutubeTranscript.fetchTranscript(videoId);
+            if (!transcriptItems || transcriptItems.length === 0) {
+                this.logger.warn(`[transcript] No transcript found for ${videoId}`);
+                return '';
+            }
+            const text = transcriptItems.map((item: any) => item.text).join(' ');
+            this.logger.log(`[transcript] Got ${text.length} chars transcript for ${videoId}`);
+            return text;
+        } catch (err: any) {
+            this.logger.warn(`[transcript] Failed for ${videoId}: ${err?.message}`);
+            return '';
+        }
+    }
+
+
+    private async fetchRecipeContent(url: string, model: 'gpt-4o-mini' | 'gpt-4o'): Promise<string> {
+        this.logger.log(`[stage1] Fetching recipe content with ${model} for ${url.substring(0, 80)}`);
+        const response: any = await this.openai.responses.create({
+            model,
+            instructions: EXTRACT_PROMPT,
+            input: [{ role: 'user', content: `Use web search to find and extract the EXACT recipe from this URL: ${url}\nDo NOT make up a recipe. Only return what you find from searching this URL.` }],
+            tools: [{ type: 'web_search' }],
+            tool_choice: 'required',
+            max_output_tokens: 4096,
+        });
+        // Read text from Responses API output
+        const text = typeof response?.output_text === 'string'
+            ? response.output_text
+            : (response?.output ?? [])
+                .filter((i: any) => i.type === 'message')
+                .flatMap((i: any) => i.content || [])
+                .filter((c: any) => c.type === 'output_text')
+                .map((c: any) => c.text)
+                .join('');
+        this.logger.log(`[stage1] Got ${text.length} chars from ${model}`);
+        return text;
+    }
+
+    // ── Stage 2: JSON structuring via Chat Completions API (guaranteed JSON) ──
+
+    private async structureAsJson(recipeText: string, model: 'gpt-4o-mini' | 'gpt-4o'): Promise<any> {
+        this.logger.log(`[stage2] Structuring JSON with ${model} (${recipeText.length} chars input)`);
+        const completion = await this.openai.chat.completions.create({
+            model,
+            messages: [
+                { role: 'system', content: JSON_PROMPT },
+                { role: 'user', content: recipeText.substring(0, 32000) },
+            ],
+            response_format: { type: 'json_object' },
+            max_tokens: 16384,
+            temperature: 0.3,
+        });
+        const raw = completion.choices?.[0]?.message?.content ?? '';
+        this.logger.log(`[stage2] Got ${raw.length} chars JSON from ${model}`);
+        const parsed = JSON.parse(raw); 
+        return parsed.recipe || parsed;
+    }
+
+
+    private normalizeRecipeShape(recipe: any): any {
+        const safe = recipe && typeof recipe === 'object' ? recipe : {};
+        safe.title = String(safe.title || 'Generated Recipe');
+        safe.shortDescription = String(safe.shortDescription || 'Recipe generated from your link');
+        safe.longDescription = String(safe.longDescription || safe.shortDescription || '');
+        safe.heroImageUrl = String(safe.heroImageUrl || '');
+        safe.youtubeId = String(safe.youtubeId || '');
+        safe.portions = String(safe.portions || '3-4 servings');
+        safe.prepCookTime = Number.isFinite(Number(safe.prepCookTime)) ? Number(safe.prepCookTime) : 30;
+        safe.fridgeKeepTime = String(safe.fridgeKeepTime || '2 days');
+        safe.freezeKeepTime = String(safe.freezeKeepTime || '1 month');
+        safe.isActive = safe.isActive !== false;
+
+        const wrappers = Array.isArray(safe.components) ? safe.components : [];
+        safe.components = wrappers.map((wrapper: any, wi: number) => {
+            const w = wrapper && typeof wrapper === 'object' ? wrapper : {};
+            const components = Array.isArray(w.component) ? w.component : [];
+            return {
+                prepShortDescription: String(w.prepShortDescription || ''),
+                prepLongDescription: String(w.prepLongDescription || ''),
+                variantTags: Array.isArray(w.variantTags) ? w.variantTags.filter(Boolean).map(String) : [],
+                stronglyRecommended: Boolean(w.stronglyRecommended),
+                choiceInstructions: String(w.choiceInstructions || ''),
+                buttonText: String(w.buttonText || ''),
+                component: components.map((comp: any, ci: number) => {
+                    const c = comp && typeof comp === 'object' ? comp : {};
+                    return {
+                        componentTitle: String(c.componentTitle || `Component ${wi + 1}.${ci + 1}`),
+                        componentInstructions: String(c.componentInstructions || ''),
+                        includedInVariants: Array.isArray(c.includedInVariants) ? c.includedInVariants.filter(Boolean).map(String) : [],
+                        requiredIngredients: (Array.isArray(c.requiredIngredients) ? c.requiredIngredients : [])
+                            .map((ri: any) => ({
+                                ingredientName: String(ri?.ingredientName || ''),
+                                quantity: String(ri?.quantity || ''),
+                                preparation: String(ri?.preparation || ''),
+                                alternativeIngredients: Array.isArray(ri?.alternativeIngredients)
+                                    ? ri.alternativeIngredients
+                                        .map((ai: any) => ({
+                                            ingredientName: String(ai?.ingredientName || ''),
+                                            quantity: String(ai?.quantity || ''),
+                                            preparation: String(ai?.preparation || ''),
+                                            inheritQuantity: Boolean(ai?.inheritQuantity),
+                                            inheritPreparation: Boolean(ai?.inheritPreparation),
+                                        }))
+                                        .filter((ai: any) => ai.ingredientName)
+                                    : [],
+                            }))
+                            .filter((ri: any) => ri.ingredientName),
+                        optionalIngredients: (Array.isArray(c.optionalIngredients) ? c.optionalIngredients : [])
+                            .map((oi: any) => ({
+                                ingredientName: String(oi?.ingredientName || ''),
+                                quantity: String(oi?.quantity || ''),
+                                preparation: String(oi?.preparation || ''),
+                            }))
+                            .filter((oi: any) => oi.ingredientName),
+                        componentSteps: (Array.isArray(c.componentSteps) ? c.componentSteps : [])
+                            .map((s: any) => ({ stepInstructions: String(s?.stepInstructions || ''), alwaysShow: s?.alwaysShow !== false }))
+                            .filter((s: any) => s.stepInstructions),
+                    };
+                }),
+            };
+        }).filter((w: any) => w.component?.length > 0);
+
+        if (safe.components.length === 0) {
+            safe.components = [{
+                prepShortDescription: '', prepLongDescription: '', variantTags: [],
+                stronglyRecommended: false, choiceInstructions: '', buttonText: '',
+                component: [{ componentTitle: 'Main Dish', componentInstructions: '', includedInVariants: [],
+                    requiredIngredients: [], optionalIngredients: [], componentSteps: [] }],
+            }];
+        }
+        return safe;
+    }
+
+    private async callAI(
         message: string,
     ): Promise<{ success: boolean; message: string; data?: any }> {
-        const MAX_ITERATIONS = 25;
-        let iteration = 0;
+        try {
+            const primaryUrl = this.extractPrimaryUrl(message);
+            const isUrl = Boolean(primaryUrl);
+            const isYoutube = isUrl && this.isYoutubeUrl(primaryUrl);
+            const youtubeVideoId = isYoutube ? this.extractYoutubeVideoId(primaryUrl) : null;
 
-        const input: any[] = [
-            { role: 'user', content: message },
-        ];
+            let recipeContent = '';
 
-        while (iteration < MAX_ITERATIONS) {
-            iteration++;
-            this.logger.log(`[agent] Iteration ${iteration}, input items: ${input.length}`);
+            if (isYoutube && youtubeVideoId) {
+                const [transcript, webContent] = await Promise.allSettled([
+                    this.fetchYoutubeTranscript(youtubeVideoId),
+                    this.fetchRecipeContent(primaryUrl, 'gpt-4o-mini'),
+                ]);
 
-            let response: any;
-            try {
-                response = await this.openai.responses.create({
-                    model: 'gpt-4o',
-                    instructions: SYSTEM_PROMPT,
-                    input,
-                    tools: TOOLS,
-                    tool_choice: 'auto',
-                    max_output_tokens: 16384,
-                });
-            } catch (err: any) {
-                if (err?.status === 429) {
-                    this.logger.warn('[agent] 429 rate-limited, waiting 3s…');
-                    await new Promise(r => setTimeout(r, 3000));
-                    try {
-                        response = await this.openai.responses.create({
-                            model: 'gpt-4o',
-                            instructions: SYSTEM_PROMPT,
-                            input,
-                            tools: TOOLS,
-                            tool_choice: 'auto',
-                            max_output_tokens: 16384,
-                        });
-                    } catch {
-                        return { success: false, message: 'OpenAI rate limit. Please wait a minute and try again.' };
-                    }
+                const transcriptText = transcript.status === 'fulfilled' ? transcript.value : '';
+                const webText = webContent.status === 'fulfilled' ? webContent.value : '';
+
+                if (webText && transcriptText) {
+                    recipeContent = `=== RECIPE FROM WEB SEARCH (source: ${primaryUrl}) ===\n${webText}\n\n=== YOUTUBE TRANSCRIPT (extra detail) ===\n${transcriptText.substring(0, 8000)}\n`;
+                    this.logger.log(`[callAI] Web: ${webText.length} chars + transcript: ${transcriptText.length} chars`);
+                } else if (webText) {
+                    recipeContent = webText;
+                    this.logger.log(`[callAI] Web search only: ${webText.length} chars`);
+                } else if (transcriptText) {
+                    recipeContent = `=== YOUTUBE TRANSCRIPT (video ID: ${youtubeVideoId}) ===\n${transcriptText}\n`;
+                    this.logger.log(`[callAI] Transcript only: ${transcriptText.length} chars`);
                 } else {
-                    throw err;
+                    this.logger.warn(`[callAI] Both failed, trying gpt-4o web search`);
+                    recipeContent = await this.fetchRecipeContent(primaryUrl, 'gpt-4o');
+                }
+            } else if (isUrl) {
+                try {
+                    recipeContent = await this.fetchRecipeContent(primaryUrl, 'gpt-4o-mini');
+                } catch (miniErr: any) {
+                    this.logger.warn(`[callAI] gpt-4o-mini web search failed: ${miniErr?.message}`);
+                    recipeContent = await this.fetchRecipeContent(primaryUrl, 'gpt-4o');
+                }
+            } else {
+                try {
+                    recipeContent = await this.fetchRecipeContent(message, 'gpt-4o-mini');
+                } catch {
+                    recipeContent = String(message || '').trim();
                 }
             }
 
-            const output: any[] = (response as any).output ?? [];
-            const outputTypes = output.map((i: any) => i.type).join(', ');
-            this.logger.log(`[agent] Output types: ${outputTypes}`);
-
-            for (const item of output) {
-                input.push(item);
+            if (!recipeContent.trim()) {
+                return { success: false, message: 'Could not extract recipe content. Please try a different link.' };
             }
 
-            const functionCalls = output.filter((item: any) => item.type === 'function_call');
-            const hasWebSearch = output.some(
-                (item: any) => item.type === 'web_search_call' || item.type === 'web_search_preview_call',
-            );
-
-            if (functionCalls.length > 0) {
-                for (const fc of functionCalls) {
-                    let args: any = {};
-                    try { args = JSON.parse(fc.arguments); } catch { args = {}; }
-
-                    this.logger.log(`[agent] Tool: ${fc.name}(${JSON.stringify(args).substring(0, 150)})`);
-
-                    let result: any;
-                    try {
-                        result = await this.handleToolCall(fc.name, args);
-                    } catch (err: any) {
-                        this.logger.error(`[agent] Tool ${fc.name} error:`, err?.message);
-                        result = { error: `Failed: ${err?.message}` };
-                    }
-
-                    this.logger.log(`[agent] → ${JSON.stringify(result).substring(0, 200)}`);
-
-                    input.push({
-                        type: 'function_call_output',
-                        call_id: fc.call_id,
-                        output: JSON.stringify(result),
-                    });
-                }
-                continue;
-            }
-
-            // ── No function calls — check for final text ──
-            let finalText = '';
-            for (const item of output) {
-                if (item.type === 'message') {
-                    for (const content of item.content || []) {
-                        if (content.type === 'output_text') {
-                            finalText += content.text;
-                        }
-                    }
-                }
-            }
-
-            if (!finalText.trim()) {
-                if (hasWebSearch) {
-                    this.logger.log('[agent] Web search done, continuing…');
-                    continue;
-                }
-                this.logger.warn(`[agent] Empty output. Types: ${outputTypes}`);
-                continue;
-            }
-
+            let recipe: any;
             try {
-                const { recipe } = this.extractRecipePayload(finalText);
-                return { success: true, message: 'Recipe extracted successfully.', data: recipe };
-            } catch {
-                this.logger.warn(`[agent] JSON parse failed, asking model to fix. Raw: ${finalText.substring(0, 500)}`);
-                input.push({
-                    role: 'user',
-                    content: 'Your previous output was not valid JSON. Please output ONLY the raw JSON object with no markdown code fences, no commentary, and no text before or after the JSON. Start with { and end with }.',
-                });
-                continue;
-            }
-        }
-
-        return { success: false, message: 'Recipe extraction exceeded max iterations. Please try again.' };
-    }
-
-    private async handleToolCall(name: string, args: any): Promise<any> {
-        switch (name) {
-            case 'searchIngredient':
-                return this.toolSearchIngredient(args.name);
-            case 'getHacksOrTips':
-                return this.toolGetHacksOrTips(args.query);
-            case 'getFrameworkCategories':
-                return this.toolGetFrameworkCategories(args.query);
-            case 'getRecipes':
-                return this.toolGetRecipes(args.query);
-            default:
-                return { error: `Unknown tool: ${name}` };
-        }
-    }
-
-    private async toolSearchIngredient(name: string): Promise<{ _id: string | null; name: string }> {
-        try {
-            const trimmed = String(name || '').trim();
-            if (!trimmed || trimmed.length < 2) return { _id: null, name: trimmed };
-
-            const queryLower = trimmed.toLowerCase();
-
-            const exact = await this.ingredientModel
-                .findOne({ name: { $regex: new RegExp(`^${this.escapeRegex(trimmed)}$`, 'i') } })
-                .select('_id name').lean().exec();
-            if (exact) return { _id: String(exact._id), name: exact.name };
-
-            const contains = await this.ingredientModel
-                .find({ name: { $regex: new RegExp(this.escapeRegex(trimmed), 'i') } })
-                .select('_id name').limit(5).lean().exec();
-            if (contains.length > 0) {
-                const best = contains.sort((a, b) => a.name.length - b.name.length)[0];
-                return { _id: String(best._id), name: best.name };
+                recipe = await this.structureAsJson(recipeContent, 'gpt-4o-mini');
+            } catch (miniErr: any) {
+                this.logger.warn(`[callAI] stage2 gpt-4o-mini failed: ${miniErr?.message}`);
+                recipe = await this.structureAsJson(recipeContent, 'gpt-4o');
             }
 
-            const aliases = INGREDIENT_ALIASES[queryLower] || [];
-            for (const alias of aliases) {
-                const found = await this.ingredientModel
-                    .findOne({ name: { $regex: new RegExp(`^${this.escapeRegex(alias)}$`, 'i') } })
-                    .select('_id name').lean().exec();
-                if (found) return { _id: String(found._id), name: found.name };
-            }
-            for (const alias of aliases) {
-                const partial = await this.ingredientModel
-                    .findOne({ name: { $regex: new RegExp(this.escapeRegex(alias), 'i') } })
-                    .select('_id name').lean().exec();
-                if (partial) return { _id: String(partial._id), name: partial.name };
+            if (youtubeVideoId && !recipe.youtubeId) {
+                recipe.youtubeId = youtubeVideoId;
+            } else if (isUrl && !recipe.youtubeId) {
+                const ytMatch = primaryUrl.match(/(?:v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+                if (ytMatch) recipe.youtubeId = ytMatch[1];
             }
 
-            const words = trimmed.split(/[\s\-_,&+]+/).map(w => w.trim().toLowerCase()).filter(w => w.length >= 2);
-            if (words.length > 0) {
-                const allVariants = words.flatMap(w => this.wordVariants(w));
-                const pattern = [...new Set(allVariants)].map(v => this.escapeRegex(v)).join('|');
-                const fuzzy = await this.ingredientModel
-                    .find({ name: { $regex: new RegExp(pattern, 'i') } })
-                    .select('_id name').limit(20).lean().exec();
-
-                if (fuzzy.length > 0) {
-                    const scored = fuzzy.map(r => {
-                        const nl = r.name.toLowerCase();
-                        let score = 0;
-                        for (const w of words) {
-                            if (this.wordVariants(w).some(v => nl.includes(v))) score += 3;
-                        }
-                        const nw = r.name.toLowerCase().split(/[\s\-_,&+]+/).filter(x => x.length >= 2);
-                        for (const n of nw) {
-                            if (this.wordVariants(n).some(v => queryLower.includes(v))) score += 2;
-                        }
-                        score -= Math.abs(nw.length - words.length) * 0.5;
-                        return { _id: String(r._id), name: r.name, score };
-                    }).sort((a, b) => b.score - a.score);
-
-                    if (scored[0].score >= 3) return { _id: scored[0]._id, name: scored[0].name };
-                }
-            }
-
-            this.logger.log(`Ingredient not found: "${trimmed}"`);
-            return { _id: null, name: trimmed };
+            const normalized = this.normalizeRecipeShape(recipe);
+            return { success: true, message: 'Recipe extracted successfully.', data: normalized };
         } catch (err: any) {
-            this.logger.error(`toolSearchIngredient error for "${name}":`, err?.message);
-            return { _id: null, name: String(name || '') };
-        }
-    }
-
-    private wordVariants(word: string): string[] {
-        const w = word.toLowerCase();
-        const v = new Set<string>([w]);
-        if (w.endsWith('ies') && w.length > 4) v.add(w.slice(0, -3) + 'y');
-        else if (w.endsWith('ves') && w.length > 4) { v.add(w.slice(0, -3) + 'f'); v.add(w.slice(0, -3) + 'fe'); }
-        else if (w.endsWith('ses') || w.endsWith('ches') || w.endsWith('shes')) v.add(w.slice(0, -2));
-        else if (w.endsWith('es') && w.length > 4) v.add(w.slice(0, -2));
-        else if (w.endsWith('s') && w.length > 3) v.add(w.slice(0, -1));
-        if (!w.endsWith('s')) { v.add(w + 's'); if (w.endsWith('y') && w.length > 2) v.add(w.slice(0, -1) + 'ies'); }
-        return [...v];
-    }
-
-    private async toolGetHacksOrTips(query: string): Promise<{ _id: string; title: string; shortDescription: string }[]> {
-        try {
-            const docs = await this.hackOrTipModel
-                .find({ title: { $regex: new RegExp(this.escapeRegex(query), 'i') }, isActive: true })
-                .select('_id title shortDescription').limit(10).lean().exec();
-            return docs.map((d: any) => ({ _id: String(d._id), title: d.title, shortDescription: d.shortDescription ?? '' }));
-        } catch (err: any) {
-            this.logger.error(`toolGetHacksOrTips error:`, err?.message);
-            return [];
-        }
-    }
-
-    private async toolGetFrameworkCategories(query: string): Promise<{ _id: string; title: string }[]> {
-        try {
-            const docs = await this.frameworkCategoryModel
-                .find({ title: { $regex: new RegExp(this.escapeRegex(query), 'i') }, isActive: true })
-                .select('_id title').limit(10).lean().exec();
-            return docs.map((d: any) => ({ _id: String(d._id), title: d.title }));
-        } catch (err: any) {
-            this.logger.error(`toolGetFrameworkCategories error:`, err?.message);
-            return [];
-        }
-    }
-
-    private async toolGetRecipes(query: string): Promise<{ _id: string; title: string }[]> {
-        try {
-            const docs = await this.recipeModel
-                .find({ title: { $regex: new RegExp(this.escapeRegex(query), 'i') }, isActive: true })
-                .select('_id title').limit(10).lean().exec();
-            return docs.map((d: any) => ({ _id: String(d._id), title: d.title }));
-        } catch (err: any) {
-            this.logger.error(`toolGetRecipes error:`, err?.message);
-            return [];
-        }
-    }
-
-    private extractRecipePayload(raw: string): { recipe: any; missingSuggestions: any } {
-        if (!raw) throw new Error('No recipe payload returned');
-
-        let cleaned = raw.trim();
-
-        const fenceMatch = cleaned.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/i);
-        if (fenceMatch) cleaned = fenceMatch[1].trim();
-
-        if (!cleaned.startsWith('{')) {
-            const idx = cleaned.indexOf('{');
-            if (idx !== -1) cleaned = cleaned.substring(idx);
-        }
-        if (cleaned.includes('}')) {
-            cleaned = cleaned.substring(0, cleaned.lastIndexOf('}') + 1);
-        }
-
-        cleaned = cleaned.replace(/,\s*([\]}])/g, '$1');
-        cleaned = cleaned.replace(/\/\/[^\n]*/g, '');
-
-        let parsed: any;
-        try {
-            parsed = JSON.parse(cleaned);
-        } catch {
-            try {
-                parsed = JSON.parse(cleaned.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' '));
-            } catch {
-                this.logger.error('JSON parse failed. Cleaned (first 1000):', cleaned.substring(0, 1000));
-                throw new Error('Recipe JSON returned by model is invalid');
+            if (err?.status === 429) {
+                return { success: false, message: 'Rate limited. Please wait a minute and try again.' };
             }
+            this.logger.error(`[callAI] Final error: ${err?.message}`, err?.stack);
+            throw err;
         }
-
-        const recipe = parsed.recipe || parsed.json || parsed.data || parsed;
-        const missingSuggestions = parsed.missingSuggestions || { ingredients: [], hacksOrTips: [] };
-        return { recipe, missingSuggestions };
-    }
-
-    private escapeRegex(str: string): string {
-        return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
 
     private buildUserMatch(userId: string) {
@@ -552,47 +445,45 @@ export class CookbookaiService {
     }
 
     private sanitizeRecipeData(data: any): any {
-        const isOid = (v: any) => Types.ObjectId.isValid(v) && String(new Types.ObjectId(v)) === String(v);
-
-        for (const key of ['frameworkCategories', 'hackOrTipIds', 'useLeftoversIn'] as const) {
-            data[key] = Array.isArray(data[key]) ? data[key].filter(isOid) : [];
-        }
-
-        if (data.stickerId && !isOid(data.stickerId)) data.stickerId = undefined;
-        if (data.sponsorId && !isOid(data.sponsorId)) data.sponsorId = undefined;
+        data.hackOrTipIds = [];
+        data.frameworkCategories = [];
+        data.useLeftoversIn = [];
+        data.stickerId = undefined;
+        data.sponsorId = undefined;
 
         if (Array.isArray(data.components)) {
             for (const wrapper of data.components) {
                 if (!Array.isArray(wrapper.component)) continue;
                 for (const comp of wrapper.component) {
+                    // Keep only name-based ingredients
                     if (Array.isArray(comp.requiredIngredients)) {
                         for (const ri of comp.requiredIngredients) {
-                            if (ri.recommendedIngredient && !isOid(ri.recommendedIngredient)) ri.recommendedIngredient = undefined;
+                            ri.recommendedIngredient = undefined;
                             if (Array.isArray(ri.alternativeIngredients)) {
                                 for (const ai of ri.alternativeIngredients) {
-                                    if (ai.ingredient && !isOid(ai.ingredient)) ai.ingredient = undefined;
+                                    ai.ingredient = undefined;
                                 }
                                 ri.alternativeIngredients = ri.alternativeIngredients.filter(
-                                    (ai: any) => (ai.ingredient && isOid(ai.ingredient)) || ai.ingredientName,
+                                    (ai: any) => ai.ingredientName,
                                 );
                             }
                         }
                         comp.requiredIngredients = comp.requiredIngredients.filter(
-                            (ri: any) => ri.recommendedIngredient || ri.ingredientName,
+                            (ri: any) => ri.ingredientName,
                         );
                     }
                     if (Array.isArray(comp.optionalIngredients)) {
                         for (const oi of comp.optionalIngredients) {
-                            if (oi.ingredient && !isOid(oi.ingredient)) oi.ingredient = undefined;
+                            oi.ingredient = undefined;
                         }
                         comp.optionalIngredients = comp.optionalIngredients.filter(
-                            (oi: any) => (oi.ingredient && isOid(oi.ingredient)) || oi.ingredientName,
+                            (oi: any) => oi.ingredientName,
                         );
                     }
                     if (Array.isArray(comp.componentSteps)) {
                         for (const step of comp.componentSteps) {
-                            step.relevantIngredients = Array.isArray(step.relevantIngredients) ? step.relevantIngredients.filter(isOid) : [];
-                            step.hackOrTipIds = Array.isArray(step.hackOrTipIds) ? step.hackOrTipIds.filter(isOid) : [];
+                            step.relevantIngredients = [];
+                            step.hackOrTipIds = [];
                         }
                     }
                 }
