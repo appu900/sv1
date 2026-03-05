@@ -604,6 +604,13 @@ export class InventoryService {
     } catch (e) {
       this.logger.warn('Cache invalidation failed:', e?.message);
     }
+    // Also clear the AI meal-suggestions cache so the next fetch re-computes
+    // against the updated inventory instead of returning stale suggestions.
+    try {
+      await this.redisService.delByPattern(`inventory-ai:suggestions:quick:${userId}*`);
+    } catch (e) {
+      this.logger.warn('AI suggestions cache invalidation failed:', e?.message);
+    }
   }
 
   async adminGetInventoryOverview(): Promise<{

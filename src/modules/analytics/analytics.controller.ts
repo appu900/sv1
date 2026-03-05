@@ -120,4 +120,14 @@ export class AnalyticsController {
   async getRecipeRatingStats(@Query('framework_id') frameworkId: string) {
     return this.analyticsService.getRecipeRatingStats(frameworkId);
   }
+
+  @Get('recipe-rating-stats-batch')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  async getRecipeRatingStatsBatch(@Query('ids') ids: string) {
+    const frameworkIds = (ids || '')
+      .split(',')
+      .map(id => id.trim())
+      .filter(Boolean);
+    return this.analyticsService.getRecipeRatingStatsBatch(frameworkIds);
+  }
 }

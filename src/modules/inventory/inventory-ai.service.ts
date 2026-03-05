@@ -287,47 +287,81 @@ Return JSON:
         'components.component.requiredIngredients.recommendedIngredient',
         'name',
       )
+      .populate(
+        'components.component.requiredIngredients.alternativeIngredients.ingredient',
+        'name',
+      )
       .lean()
       .exec();
 
     const scoredRecipes: MealSuggestion[] = [];
 
     for (const recipe of recipes) {
-      const allRequired: string[] = [];
-      const allRequiredNames: string[] = [];
+      // Each "slot" is one required-ingredient position.
+      // A slot is satisfied if EITHER the recommended ingredient OR any of its
+      // alternatives is present in the user's inventory.
+      const totalSlots: number[] = [];   // 1 per required ingredient slot
+      const matchedSlotIds: string[] = [];
+      const missingSlotNames: string[] = [];
+      const matchedIngredientNames: string[] = [];
 
       for (const compWrapper of recipe.components || []) {
         for (const comp of compWrapper.component || []) {
           for (const reqIng of comp.requiredIngredients || []) {
-            const ingId = reqIng.recommendedIngredient?._id?.toString() ||
+            const recId =
+              reqIng.recommendedIngredient?._id?.toString() ||
               reqIng.recommendedIngredient?.toString();
-            if (ingId) {
-              allRequired.push(ingId);
-              const ingName =
-                typeof reqIng.recommendedIngredient === 'object'
-                  ? (reqIng.recommendedIngredient as any)?.name
-                  : undefined;
-              if (ingName) allRequiredNames.push(ingName);
+
+            const recName =
+              typeof reqIng.recommendedIngredient === 'object'
+                ? (reqIng.recommendedIngredient as any)?.name
+                : undefined;
+
+            // Check recommended ingredient first
+            let slotMatched = recId && inventoryIngredientIdSet.has(recId);
+            let matchedId = slotMatched ? recId : undefined;
+            let matchedName = slotMatched ? recName : undefined;
+
+            // If not matched, check any alternative
+            if (!slotMatched) {
+              for (const alt of reqIng.alternativeIngredients || []) {
+                const altId =
+                  alt.ingredient?._id?.toString() ||
+                  alt.ingredient?.toString();
+                if (altId && inventoryIngredientIdSet.has(altId)) {
+                  slotMatched = true;
+                  matchedId = altId;
+                  matchedName =
+                    typeof alt.ingredient === 'object'
+                      ? (alt.ingredient as any)?.name
+                      : undefined;
+                  break;
+                }
+              }
+            }
+
+            totalSlots.push(1);
+            if (slotMatched && matchedId) {
+              matchedSlotIds.push(matchedId);
+              if (matchedName) matchedIngredientNames.push(matchedName);
+            } else {
+              if (recName) missingSlotNames.push(recName);
             }
           }
         }
       }
 
-      if (allRequired.length === 0) continue;
+      if (totalSlots.length === 0) continue;
 
-      const matched = allRequired.filter((id) =>
-        inventoryIngredientIdSet.has(id),
-      );
-      const missing = allRequired.filter(
-        (id) => !inventoryIngredientIdSet.has(id),
-      );
-      const matchPercentage = (matched.length / allRequired.length) * 100;
+      const matchPercentage = (matchedSlotIds.length / totalSlots.length) * 100;
 
-      // When filtering by ingredient, lower threshold to 20% to show more results
-      const minMatch = filterIngredientId ? 20 : 25;
-      if (matchPercentage < minMatch) continue;
+      // Require at least 1 matched ingredient — the sort order handles relevance.
+      // When filtering by a specific ingredient we drop even the 1-match floor and
+      // show everything (MongoDB already guarantees the recipe uses that ingredient).
+      const minMatch = filterIngredientId ? 0 : 1;
+      if (matchedSlotIds.length < minMatch) continue;
 
-      const expiringUsed = matched.filter((id) =>
+      const expiringUsed = matchedSlotIds.filter((id) =>
         expiringIngredientIds.has(id),
       );
 
@@ -340,14 +374,8 @@ Return JSON:
           prepCookTime: recipe.prepCookTime,
           portions: recipe.portions,
         },
-        matchedIngredients: matched.map(
-          (id) =>
-            allRequiredNames[allRequired.indexOf(id)] || id,
-        ),
-        missingIngredients: missing.map(
-          (id) =>
-            allRequiredNames[allRequired.indexOf(id)] || id,
-        ),
+        matchedIngredients: matchedIngredientNames,
+        missingIngredients: missingSlotNames,
         matchPercentage: Math.round(matchPercentage),
         expiringIngredientsUsed: expiringUsed.map(
           (id) =>

@@ -176,5 +176,6 @@ export const RecipeSchema = SchemaFactory.createForClass(Recipe);
 // Indexes for optimized queries
 RecipeSchema.index({ title: 1 });
 RecipeSchema.index({ frameworkCategories: 1 });
-RecipeSchema.index({ isActive: 1 });
-RecipeSchema.index({ order: 1 });
+RecipeSchema.index({ isActive: 1, order: 1 });          // covers findAll sort
+RecipeSchema.index({ isActive: 1, countries: 1, order: 1 }); // covers country-filtered findAll
+RecipeSchema.index({ frameworkCategories: 1, isActive: 1, countries: 1, order: 1 }); // covers category queries

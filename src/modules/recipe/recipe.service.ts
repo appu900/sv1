@@ -34,12 +34,22 @@ export class RecipeService implements OnModuleInit {
 
   async onModuleInit() {
     try {
-      await this.redisService.delByPattern(`${this.CACHE_KEY_ALL}:country:*`);
-      await this.redisService.delByPattern(`${this.CACHE_KEY_CATEGORY}:*:country:*`);
-      await this.redisService.delByPattern('recipes:ingredient:*:country:*');
-      console.log('[RecipeService] Country caches flushed on startup');
+      // Flush all recipe caches so any stale data is cleared on startup
+      await this.redisService.delByPattern('recipes:*');
+      await this.redisService.delByPattern('dietary:*');
+      console.log('[RecipeService] All recipe/dietary caches flushed on startup');
     } catch (e) {
-      console.warn('[RecipeService] Could not flush country caches on startup:', e?.message);
+      console.warn('[RecipeService] Could not flush recipe caches on startup:', e?.message);
+    }
+
+    // One-time cleanup: remove empty-string ObjectId fields that would cause cast errors
+    try {
+      await this.recipeModel.updateMany(
+        { $or: [{ stickerId: '' }, { sponsorId: '' }] },
+        { $unset: { stickerId: 1, sponsorId: 1 } },
+      );
+    } catch (e) {
+      console.warn('[RecipeService] Could not run ObjectId field cleanup:', e?.message);
     }
   }
 
@@ -262,32 +272,16 @@ export class RecipeService implements OnModuleInit {
       : this.CACHE_KEY_ALL;
 
     try {
-      const cached = await this.redisService.get(cacheKey);
+      const cached = await this.redisService.get<Recipe[]>(cacheKey);
       if (cached) {
-        return JSON.parse(cached);
+        return cached;
       }
     } catch (error) {
-      console.error('Error parsing cached recipes, clearing cache:', error.message);
+      console.error('Error reading cached recipes, clearing cache:', error.message);
       await this.redisService.del(cacheKey);
     }
 
     try {
-      // Clean up any recipes with empty string ObjectId fields before querying
-      await this.recipeModel.updateMany(
-        { 
-          $or: [
-            { stickerId: '' },
-            { sponsorId: '' },
-          ]
-        },
-        { 
-          $unset: { 
-            stickerId: 1,
-            sponsorId: 1,
-          } 
-        }
-      );
-
       // Build the match query with optional country filter.
       // When a country is provided, only return recipes explicitly tagged
       // with that country. Recipes with no countries field or an empty array
@@ -328,11 +322,7 @@ export class RecipeService implements OnModuleInit {
         .lean()
         .exec();
 
-      await this.redisService.set(
-        cacheKey,
-        JSON.stringify(recipes),
-        this.CACHE_TTL,
-      );
+      await this.redisService.set(cacheKey, recipes, this.CACHE_TTL);
 
       return recipes;
     } catch (error) {
@@ -351,12 +341,12 @@ export class RecipeService implements OnModuleInit {
 
     const cacheKey = `${this.CACHE_KEY_SINGLE}:${id}`;
     try {
-      const cached = await this.redisService.get(cacheKey);
+      const cached = await this.redisService.get<Recipe>(cacheKey);
       if (cached) {
-        return JSON.parse(cached);
+        return cached;
       }
     } catch (error) {
-      console.error('Error parsing cached recipe, clearing cache:', error.message);
+      console.error('Error reading cached recipe, clearing cache:', error.message);
       await this.redisService.del(cacheKey);
     }
 
@@ -394,11 +384,7 @@ export class RecipeService implements OnModuleInit {
       throw new NotFoundException(`Recipe with ID ${id} not found`);
     }
 
-    await this.redisService.set(
-      cacheKey,
-      JSON.stringify(recipe),
-      this.CACHE_TTL,
-    );
+    await this.redisService.set(cacheKey, recipe, this.CACHE_TTL);
 
     return recipe;
   }
@@ -411,12 +397,12 @@ export class RecipeService implements OnModuleInit {
 
     const cacheKey = `recipes:slug:${slug}`;
     try {
-      const cached = await this.redisService.get(cacheKey);
+      const cached = await this.redisService.get<Recipe>(cacheKey);
       if (cached) {
-        return JSON.parse(cached);
+        return cached;
       }
     } catch (error) {
-      console.error('Error parsing cached recipe by slug, clearing cache:', error.message);
+      console.error('Error reading cached recipe by slug, clearing cache:', error.message);
       await this.redisService.del(cacheKey);
     }
 
@@ -458,11 +444,7 @@ export class RecipeService implements OnModuleInit {
       throw new NotFoundException(`Recipe with slug "${slug}" not found`);
     }
 
-    await this.redisService.set(
-      cacheKey,
-      JSON.stringify(recipe),
-      this.CACHE_TTL,
-    );
+    await this.redisService.set(cacheKey, recipe, this.CACHE_TTL);
 
     return recipe;
   }
@@ -477,12 +459,12 @@ export class RecipeService implements OnModuleInit {
       ? `${this.CACHE_KEY_CATEGORY}:${categoryId}:country:${country.toLowerCase()}`
       : `${this.CACHE_KEY_CATEGORY}:${categoryId}`;
     try {
-      const cached = await this.redisService.get(cacheKey);
+      const cached = await this.redisService.get<Recipe[]>(cacheKey);
       if (cached) {
-        return JSON.parse(cached);
+        return cached;
       }
     } catch (error) {
-      console.error('Error parsing cached recipes by category, clearing cache:', error.message);
+      console.error('Error reading cached recipes by category, clearing cache:', error.message);
       await this.redisService.del(cacheKey);
     }
 
@@ -512,11 +494,7 @@ export class RecipeService implements OnModuleInit {
       .lean()
       .exec();
 
-    await this.redisService.set(
-      cacheKey,
-      JSON.stringify(recipes),
-      this.CACHE_TTL,
-    );
+    await this.redisService.set(cacheKey, recipes, this.CACHE_TTL);
 
     return recipes;
   }
@@ -531,12 +509,12 @@ export class RecipeService implements OnModuleInit {
       ? `recipes:ingredient:${ingredientId}:country:${country.toLowerCase()}`
       : `recipes:ingredient:${ingredientId}`;
     try {
-      const cached = await this.redisService.get(cacheKey);
+      const cached = await this.redisService.get<Recipe[]>(cacheKey);
       if (cached) {
-        return JSON.parse(cached);
+        return cached;
       }
     } catch (error) {
-      console.error('Error parsing cached recipes by ingredient, clearing cache:', error.message);
+      console.error('Error reading cached recipes by ingredient, clearing cache:', error.message);
       await this.redisService.del(cacheKey);
     }
 
@@ -590,11 +568,7 @@ export class RecipeService implements OnModuleInit {
       .lean()
       .exec();
 
-    await this.redisService.set(
-      cacheKey,
-      JSON.stringify(recipes),
-      this.CACHE_TTL,
-    );
+    await this.redisService.set(cacheKey, recipes, this.CACHE_TTL);
 
     return recipes;
   }
@@ -782,8 +756,8 @@ export class RecipeService implements OnModuleInit {
 
     // Return cached result if available
     try {
-      const cached = await this.redisService.get(resultCacheKey);
-      if (cached) return JSON.parse(cached);
+      const cached = await this.redisService.get<any[]>(resultCacheKey);
+      if (cached) return cached;
     } catch (_) { /* ignore redis errors */ }
 
     // ── 2. Resolve DietCategory ObjectIds ───────────────────────────────────
@@ -804,9 +778,9 @@ export class RecipeService implements OnModuleInit {
     let suitableIngredientIds: Set<string>;
 
     try {
-      const cached = await this.redisService.get(ingCacheKey);
+      const cached = await this.redisService.get<string[]>(ingCacheKey);
       if (cached) {
-        suitableIngredientIds = new Set(JSON.parse(cached));
+        suitableIngredientIds = new Set(cached);
       } else {
         throw new Error('miss');
       }
@@ -827,11 +801,7 @@ export class RecipeService implements OnModuleInit {
           .map((ing: any) => ing._id.toString()),
       );
 
-      await this.redisService.set(
-        ingCacheKey,
-        JSON.stringify([...suitableIngredientIds]),
-        this.CACHE_TTL,
-      ).catch(() => {});
+      await this.redisService.set(ingCacheKey, [...suitableIngredientIds], this.CACHE_TTL).catch(() => {});
     }
 
     const matchQuery: any = { isActive: true };
@@ -888,7 +858,7 @@ export class RecipeService implements OnModuleInit {
 
     const lean = result.map(({ components: _c, ...rest }: any) => rest);
 
-    await this.redisService.set(resultCacheKey, JSON.stringify(lean), this.CACHE_TTL).catch(() => {});
+    await this.redisService.set(resultCacheKey, lean, this.CACHE_TTL).catch(() => {});
 
     return lean;
   }

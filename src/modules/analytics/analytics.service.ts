@@ -711,6 +711,69 @@ Notes:
     };
   }
 
+  async getRecipeRatingStatsBatch(
+    frameworkIds: string[],
+  ): Promise<Record<string, { totalRatings: number; averageRating: number; ratingDistribution: { rating: number; count: number; percentage: number }[] }>> {
+    const result: Record<string, { totalRatings: number; averageRating: number; ratingDistribution: { rating: number; count: number; percentage: number }[] }> = {};
+
+    if (!frameworkIds || frameworkIds.length === 0) return result;
+
+    const empty = () => ({
+      totalRatings: 0,
+      averageRating: 0,
+      ratingDistribution: [5, 4, 3, 2, 1].map(r => ({ rating: r, count: 0, percentage: 0 })),
+    });
+
+    // Single aggregation query across all requested recipe IDs
+    const rows = await this.feedbackModel
+      .aggregate([
+        {
+          $match: {
+            framework_id: { $in: frameworkIds },
+            'data.rating': { $exists: true, $ne: null },
+          },
+        },
+        {
+          $group: {
+            _id: '$framework_id',
+            ratings: { $push: '$data.rating' },
+          },
+        },
+      ])
+      .exec();
+
+    for (const row of rows) {
+      const ratings: number[] = (row.ratings as any[]).map(Number).filter(v => v >= 1 && v <= 5);
+      const totalRatings = ratings.length;
+      if (totalRatings === 0) {
+        result[row._id] = empty();
+        continue;
+      }
+      const distribution: Record<number, number> = {};
+      let sum = 0;
+      for (const v of ratings) {
+        distribution[v] = (distribution[v] || 0) + 1;
+        sum += v;
+      }
+      result[row._id] = {
+        totalRatings,
+        averageRating: Math.round((sum / totalRatings) * 10) / 10,
+        ratingDistribution: [5, 4, 3, 2, 1].map(r => ({
+          rating: r,
+          count: distribution[r] || 0,
+          percentage: Math.round(((distribution[r] || 0) / totalRatings) * 100),
+        })),
+      };
+    }
+
+    // Fill in empties for any IDs not in the aggregation result
+    for (const id of frameworkIds) {
+      if (!result[id]) result[id] = empty();
+    }
+
+    return result;
+  }
+
   async getRecipeRatingStats(frameworkId: string): Promise<{
     totalRatings: number;
     averageRating: number;
