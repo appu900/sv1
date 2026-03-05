@@ -9,7 +9,7 @@ const EXTRACT_PROMPT = `You are a recipe extraction assistant. The user will pro
 You MUST use web search to look up the URL and extract the ACTUAL recipe from it.
 Do NOT invent or generate a recipe from your training data. Extract ONLY what is on the page/video.
 Describe the FULL recipe in plain text: title, description, ALL ingredients with exact quantities, ALL steps in detail, prep/cook time, portions, storage info.
-For YouTube, also note the video ID from the URL.
+For YouTube, also note the video ID from the URL. also revalidate the recipe from the video transcript if available for extra detail and add all necessary ingredients and steps mentioned in the video that may be missing from the web search.
 Be thorough — do not skip any ingredient or step. Output plain text, not JSON.`.trim();
 
 const JSON_PROMPT = `Convert the recipe content below into a JSON object. Output ONLY valid JSON.
