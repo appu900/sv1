@@ -21,7 +21,6 @@ export class UserSession {
 export const UserSessionSchema = SchemaFactory.createForClass(UserSession);
 export type UserSessionDocument = HydratedDocument<UserSession>;
 
-UserSessionSchema.index({ userId: 1 });
 UserSessionSchema.index({ lastActivity: -1 });
 UserSessionSchema.index(
   { lastActivity: 1 },

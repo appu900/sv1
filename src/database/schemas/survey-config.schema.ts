@@ -124,5 +124,3 @@ export class SurveyConfig {
 
 export type SurveyConfigDocument = SurveyConfig & Document;
 export const SurveyConfigSchema = SchemaFactory.createForClass(SurveyConfig);
-
-SurveyConfigSchema.index({ isActive: 1 });
