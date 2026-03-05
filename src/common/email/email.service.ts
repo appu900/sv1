@@ -13,7 +13,6 @@ export class EmailService implements OnModuleInit {
   private readonly logger = new Logger(EmailService.name);
   private readonly transporter: nodemailer.Transporter;
   private readonly fromEmail: string;
-  private readonly replyTo: string;
 
   private static readonly MAX_RETRIES = 3;
   private static readonly BASE_DELAY_MS = 2_000;
@@ -21,10 +20,6 @@ export class EmailService implements OnModuleInit {
   constructor(private readonly configService: ConfigService) {
     this.fromEmail =
       this.configService.get<string>('FROM_EMAIL') ??
-      '"Saveful" <saveful@jogaadindia.com>';
-
-    this.replyTo =
-      this.configService.get<string>('REPLY_TO') ??
       '"Saveful" <saveful@jogaadindia.com>';
 
     this.transporter = nodemailer.createTransport({
@@ -106,7 +101,6 @@ export class EmailService implements OnModuleInit {
       try {
         const info = await this.transporter.sendMail({
           from: this.fromEmail,
-          replyTo: this.replyTo,
           to,
           subject,
           html,
