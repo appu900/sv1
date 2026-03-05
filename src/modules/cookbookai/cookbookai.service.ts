@@ -67,7 +67,7 @@ Required shape:
 Rules:
 - Use plain ingredient names as strings in ingredientName (e.g. "Paneer", "Olive Oil"). No IDs.
 - Include 3-6 components minimum. Group logically: e.g. "Protein", "Liquid", "Cheese", "Extra Flavours", "Coating", "Oil/Cooking".
-- For YouTube URLs, extract youtubeId from "v=" param or youtu.be slug.
+- For YouTube URLs, extract youtubeId it should be the id form the link provided,from "v=" param or youtu.be slug.
 - heroImageUrl defaults to empty string.
 - prepCookTime in minutes.
 
