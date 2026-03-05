@@ -20,7 +20,7 @@ export class EmailService implements OnModuleInit {
   constructor(private readonly configService: ConfigService) {
     this.fromEmail =
       this.configService.get<string>('FROM_EMAIL') ??
-      '"Saveful" <saveful@jogaadindia.com>';
+      '"Saveful" <info@saveful.com>';
 
     this.transporter = nodemailer.createTransport({
       pool: true,
