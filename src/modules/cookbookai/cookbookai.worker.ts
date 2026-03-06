@@ -89,11 +89,11 @@ export class CookbookaiWorker extends WorkerHost {
 
       // Step 3: Send success notification
       const doc: any = createResponse.data;
-      const recipeId = String(doc._id || doc.id);
+      const savedRecipeId = String(doc._id || doc.id);
       const recipeTitle = doc.title || 'Your Recipe';
 
       this.logger.log(
-        `[job=${job.id}] Recipe created: id=${recipeId}, title="${recipeTitle}"`,
+        `[job=${job.id}] Recipe created: id=${savedRecipeId}, title="${recipeTitle}"`,
       );
 
       await this.notificationService.sendToUser(
@@ -103,13 +103,13 @@ export class CookbookaiWorker extends WorkerHost {
         {
           type: 'cookbookai',
           action: 'recipe_added',
-          recipeId,
+          recipeId: savedRecipeId,
         },
-        `saveful://cookbook/recipe/${recipeId}`,
+        `saveful://cookbook/recipe/${savedRecipeId}`,
       );
 
       this.logger.log(
-        `[job=${job.id}] Notification sent to user=${userId} for recipe=${recipeId}`,
+        `[job=${job.id}] Notification sent to user=${userId} for recipe=${savedRecipeId}`,
       );
     } catch (error: any) {
       this.logger.error(
