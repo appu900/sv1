@@ -23,11 +23,13 @@ export class CookbookaiProducer {
   async enqueueRecipeExtraction(
     userId: string,
     message: string,
+    recipeId?: string,
   ): Promise<string> {
     const jobData: CookbookaiJobData = {
       type: 'extract-recipe',
       userId,
       message,
+      recipeId,
     };
 
     const job = await this.queue.add('extract-recipe', jobData, {

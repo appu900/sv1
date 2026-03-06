@@ -23,7 +23,7 @@ export class CookbookaiWorker extends WorkerHost {
   }
 
   async process(job: Job<CookbookaiJobData>): Promise<void> {
-    const { userId, message } = job.data;
+    const { userId, message, recipeId } = job.data;
     this.logger.log(
       `[job=${job.id}] Processing recipe extraction for user=${userId}`,
     );
@@ -38,6 +38,10 @@ export class CookbookaiWorker extends WorkerHost {
           `[job=${job.id}] AI extraction failed: ${aiResponse.message}`,
         );
 
+        if (recipeId) {
+          await this.cookbookaiService.setRecipeStatus(recipeId, userId, 'rejected');
+        }
+
         await this.notificationService.sendToUser(
           userId,
           'Recipe Generation Failed',
@@ -48,15 +52,30 @@ export class CookbookaiWorker extends WorkerHost {
         return;
       }
 
-      // Step 2: Save the recipe
+      // Step 2: Save/update the recipe
       const recipeData = { ...aiResponse.data, userid: userId };
-      const createResponse =
-        await this.cookbookaiService.createRecipe(recipeData);
+      let createResponse = recipeId
+        ? await this.cookbookaiService.updatePendingRecipe(recipeId, userId, recipeData)
+        : await this.cookbookaiService.createRecipe(recipeData);
+
+      // If linked pending row was not found, fallback to create a fresh accepted
+      // recipe so users still get output, then mark stale pending as rejected.
+      if (!createResponse.success || !createResponse.data) {
+        this.logger.warn(`[job=${job.id}] update/create primary path failed, trying fallback create`);
+        createResponse = await this.cookbookaiService.createRecipe(recipeData);
+        if (recipeId) {
+          await this.cookbookaiService.setRecipeStatus(recipeId, userId, 'rejected');
+        }
+      }
 
       if (!createResponse.success || !createResponse.data) {
         this.logger.error(
           `[job=${job.id}] Recipe save failed for user=${userId}`,
         );
+
+        if (recipeId) {
+          await this.cookbookaiService.setRecipeStatus(recipeId, userId, 'rejected');
+        }
 
         await this.notificationService.sendToUser(
           userId,
@@ -97,6 +116,10 @@ export class CookbookaiWorker extends WorkerHost {
         `[job=${job.id}] Unexpected error: ${error?.message}`,
         error?.stack,
       );
+
+      if (recipeId) {
+        await this.cookbookaiService.setRecipeStatus(recipeId, userId, 'rejected');
+      }
 
       // Best-effort notification on unexpected failure
       try {

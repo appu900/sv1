@@ -97,16 +97,25 @@ export class CookbookaiController {
                 };
             }
 
-            // Queue the recipe extraction as a background job
+            // Create a pending row immediately so the app can show a stable
+            // loading card while background generation runs.
+            const pendingRecipe = await this.cookbookaiService.createPendingRecipe(
+                userId,
+                body.message,
+            );
+
+            // Queue the recipe extraction as a background job linked to this row.
             const jobId = await this.cookbookaiProducer.enqueueRecipeExtraction(
                 userId,
                 body.message,
+                String(pendingRecipe._id),
             );
 
             return {
                 success: true,
                 queued: true,
                 jobId,
+                data: pendingRecipe,
                 message: 'Your recipe is being generated! We\'ll send you a notification when it\'s ready.',
             };
         } catch (error) {

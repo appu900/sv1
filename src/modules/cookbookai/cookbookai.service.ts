@@ -10,6 +10,7 @@ You MUST use web search to look up the URL and extract the ACTUAL recipe from it
 Do NOT invent or generate a recipe from your training data. Extract ONLY what is on the page/video.
 Describe the FULL recipe in plain text: title, description, ALL ingredients with exact quantities, ALL steps in detail, prep/cook time, portions, storage info.
 For YouTube, also note the video ID from the URL. also revalidate the recipe from the video transcript if available for extra detail and add all necessary ingredients and steps mentioned in the video that may be missing from the web search.
+If the recipe details are missing or unclear from the provided source, return exactly: SOURCE_INSUFFICIENT.
 Be thorough — do not skip any ingredient or step. Output plain text, not JSON.`.trim();
 
 const JSON_PROMPT = `Convert the recipe content below into a JSON object. Output ONLY valid JSON.
@@ -226,7 +227,7 @@ export class CookbookaiService {
         const response: any = await this.openai.responses.create({
             model,
             instructions: EXTRACT_PROMPT,
-            input: [{ role: 'user', content: `Use web search to find and extract the EXACT recipe from this URL: ${url}\nDo NOT make up a recipe. Only return what you find from searching this URL.` }],
+            input: [{ role: 'user', content: `Use web search to find and extract the EXACT recipe from this URL: ${url}\nDo NOT make up a recipe. Only return what you find from searching this URL. If insufficient evidence from this exact URL context, return SOURCE_INSUFFICIENT.` }],
             tools: [{ type: 'web_search' }],
             tool_choice: 'required',
             max_output_tokens: 4096,
@@ -357,7 +358,8 @@ export class CookbookaiService {
                 ]);
 
                 const transcriptText = transcript.status === 'fulfilled' ? transcript.value : '';
-                const webText = webContent.status === 'fulfilled' ? webContent.value : '';
+                const webTextRaw = webContent.status === 'fulfilled' ? webContent.value : '';
+                const webText = /SOURCE_INSUFFICIENT/i.test(webTextRaw) ? '' : webTextRaw;
 
                 if (webText && transcriptText) {
                     recipeContent = `=== RECIPE FROM WEB SEARCH (source: ${primaryUrl}) ===\n${webText}\n\n=== YOUTUBE TRANSCRIPT (extra detail) ===\n${transcriptText.substring(0, 8000)}\n`;
@@ -369,8 +371,11 @@ export class CookbookaiService {
                     recipeContent = `=== YOUTUBE TRANSCRIPT (video ID: ${youtubeVideoId}) ===\n${transcriptText}\n`;
                     this.logger.log(`[callAI] Transcript only: ${transcriptText.length} chars`);
                 } else {
-                    this.logger.warn(`[callAI] Both failed, trying gpt-4o web search`);
-                    recipeContent = await this.fetchRecipeContent(primaryUrl, 'gpt-4o');
+                    this.logger.warn(`[callAI] Source insufficient for youtube link ${primaryUrl}`);
+                    return {
+                        success: false,
+                        message: 'Could not reliably extract recipe details from this YouTube link. Please try another link with clearer ingredients and steps.',
+                    };
                 }
             } else if (isUrl) {
                 try {
@@ -387,7 +392,7 @@ export class CookbookaiService {
                 }
             }
 
-            if (!recipeContent.trim()) {
+            if (!recipeContent.trim() || /SOURCE_INSUFFICIENT/i.test(recipeContent)) {
                 return { success: false, message: 'Could not extract recipe content. Please try a different link.' };
             }
 
@@ -428,6 +433,7 @@ export class CookbookaiService {
     }
 
     async findAllByUser(userId: string) {
+        await this.reconcileUserRecipeStatuses(userId);
         return await this.userRecipeModel.find(this.buildUserMatch(userId)).sort({ createdAt: -1 }).lean().exec();
     }
 
@@ -442,6 +448,113 @@ export class CookbookaiService {
         if (!recipe) return { success: false, message: 'Recipe not found.' };
         await this.userRecipeModel.deleteOne({ _id: new Types.ObjectId(id) });
         return { success: true, message: 'Recipe deleted successfully.' };
+    }
+
+    async createPendingRecipe(userId: string, sourceMessage: string) {
+        const trimmed = String(sourceMessage || '').trim();
+        const title = trimmed.length > 100 ? `${trimmed.substring(0, 97)}...` : (trimmed || 'Generating recipe...');
+        return await this.userRecipeModel.create({
+            userid: userId,
+            status: 'pending',
+            title,
+            shortDescription: '',
+            longDescription: '',
+            heroImageUrl: '',
+            youtubeId: '',
+            portions: '',
+            prepCookTime: 0,
+            hackOrTipIds: [],
+            frameworkCategories: [],
+            useLeftoversIn: [],
+            components: [],
+            isActive: true,
+            countries: [],
+        });
+    }
+
+    async updatePendingRecipe(recipeId: string, userId: string, recipeData: any) {
+        if (!Types.ObjectId.isValid(recipeId)) {
+            return { success: false, message: 'Invalid recipe ID.' };
+        }
+
+        try {
+            const sanitized = this.sanitizeRecipeData(recipeData);
+            sanitized.status = 'accepted';
+            sanitized.userid = userId;
+
+            const updated = await this.userRecipeModel
+                .findOneAndUpdate(
+                    { _id: new Types.ObjectId(recipeId), ...this.buildUserMatch(userId) },
+                    { $set: sanitized },
+                    { new: true },
+                )
+                .exec();
+
+            if (!updated) {
+                return { success: false, message: 'Pending recipe not found.' };
+            }
+
+            return { success: true, message: 'Recipe updated successfully.', data: updated };
+        } catch (error) {
+            console.error('Error updating pending recipe:', error);
+            return { success: false, message: 'An error occurred while updating the recipe.' };
+        }
+    }
+
+    async setRecipeStatus(recipeId: string, userId: string, status: 'pending' | 'accepted' | 'rejected') {
+        if (!Types.ObjectId.isValid(recipeId)) return null;
+        return await this.userRecipeModel
+            .findOneAndUpdate(
+                { _id: new Types.ObjectId(recipeId), ...this.buildUserMatch(userId) },
+                { $set: { status } },
+                { new: true },
+            )
+            .exec();
+    }
+
+    private async reconcileUserRecipeStatuses(userId: string) {
+        const userMatch = this.buildUserMatch(userId);
+
+        // Auto-heal rows that have completed content but are still marked pending.
+        await this.userRecipeModel.updateMany(
+            {
+                ...userMatch,
+                status: 'pending',
+                $or: [
+                    { shortDescription: { $exists: true, $ne: '' } },
+                    { 'components.0': { $exists: true } },
+                    { prepCookTime: { $gt: 0 } },
+                    { portions: { $exists: true, $ne: '' } },
+                ],
+            },
+            { $set: { status: 'accepted' } },
+        );
+
+        // If an accepted recipe already exists for the same youtubeId, any pending
+        // sibling entry is stale and should not keep loading forever.
+        const acceptedWithYoutube = await this.userRecipeModel
+            .find({ ...userMatch, status: 'accepted', youtubeId: { $exists: true, $ne: '' } })
+            .select({ youtubeId: 1 })
+            .lean()
+            .exec();
+        const acceptedYoutubeIds = Array.from(
+            new Set(
+                acceptedWithYoutube
+                    .map((r: any) => String(r.youtubeId || '').trim())
+                    .filter(Boolean),
+            ),
+        );
+
+        if (acceptedYoutubeIds.length > 0) {
+            await this.userRecipeModel.updateMany(
+                {
+                    ...userMatch,
+                    status: 'pending',
+                    youtubeId: { $in: acceptedYoutubeIds },
+                },
+                { $set: { status: 'rejected' } },
+            );
+        }
     }
 
     private sanitizeRecipeData(data: any): any {
@@ -495,6 +608,7 @@ export class CookbookaiService {
     async createRecipe(recipeData: any) {
         try {
             const sanitized = this.sanitizeRecipeData(recipeData);
+            sanitized.status = 'accepted';
             const data = await this.userRecipeModel.create(sanitized);
             return { success: true, message: 'Recipe created successfully.', data };
         } catch (error) {
