@@ -69,12 +69,10 @@ async saveFood(userId: string, ingredinatIds: string[], frameworkId?: string, di
     const country = normalizeCountry(user.country || 'India') || 'India';
 
     let ingredinats: Array<{ name: string; averageWeight: number }>; 
-    // Prefer DB lookup by IDs if provided
     if (ingredinatIds && ingredinatIds.length > 0) {
       const dbIngredients = await this.ingredinatModel.find({ _id: { $in: ingredinatIds } }).lean();
       ingredinats = dbIngredients.map(i => ({ name: i.name, averageWeight: i.averageWeight || 0 }));
     } else {
-      // Fallback to direct payload from client
       ingredinats = (directIngredients || []).map(i => ({ name: i.name, averageWeight: i.averageWeight || 0 }));
     }
 
