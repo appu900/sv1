@@ -142,16 +142,13 @@ export class AuthService {
       throw new BadRequestException('Invalid OTP');
     }
 
-    // Get pending signup data
     const pendingData = await this.redis.getPendingSignup(dto.email);
     if (!pendingData) {
       throw new BadRequestException('Signup session expired. Please request a new OTP.');
     }
 
-    // Hash password
     const passwordHash = await bcrypt.hash(pendingData.password, 10);
 
-    // Build dietary profile if any fields are provided
     const dietaryProfile = (pendingData.vegType || pendingData.dairyFree || pendingData.nutFree || pendingData.glutenFree || pendingData.hasDiabetes || pendingData.otherAllergies || pendingData.noOfAdults !== undefined || pendingData.noOfChildren !== undefined || pendingData.tastePreference)
       ? {
           vegType: pendingData.vegType || 'OMNI',
