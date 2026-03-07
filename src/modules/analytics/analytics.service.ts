@@ -335,12 +335,16 @@ Notes:
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
     const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
 
+    // Only consider feedbacks with valid 24-char hex ObjectId framework_ids.
+    // Legacy Craft CMS feedbacks stored UUIDs which can never match Recipe _id.
+    const objectIdMatch = { $regex: /^[0-9a-fA-F]{24}$/ };
+
     // Aggregate feedbacks for current month with valid framework_id
     let results = await this.feedbackModel.aggregate([
       {
         $match: {
           createdAt: { $gte: startOfMonth, $lt: endOfMonth },
-          framework_id: { $exists: true, $ne: null },
+          framework_id: objectIdMatch,
         },
       },
       {
@@ -360,7 +364,7 @@ Notes:
         {
           $match: {
             createdAt: { $gte: thirtyDaysAgo },
-            framework_id: { $exists: true, $ne: null },
+            framework_id: objectIdMatch,
           },
         },
         {
@@ -377,17 +381,31 @@ Notes:
     const ids = results.map(r => r._id).filter(Boolean);
     if (!ids.length) return { trending: [] };
 
-    // Build recipe filter: match IDs + optional strict country restriction.
-    // Only recipes explicitly tagged with the given country are returned.
-    const recipeFilter: any = { _id: { $in: ids.map(id => new Types.ObjectId(id)) } };
+    // Safely convert string IDs to ObjectIds, skipping any invalid ones
+    const objectIds = ids
+      .filter(id => Types.ObjectId.isValid(id))
+      .map(id => new Types.ObjectId(id));
+    if (!objectIds.length) return { trending: [] };
+
+    // Build recipe filter: match IDs + optional country restriction.
+    // If country filtering yields no results, fall back to unfiltered.
+    const recipeFilter: any = { _id: { $in: objectIds } };
     if (country) {
       recipeFilter.countries = country;
     }
 
-    const recipes = await this.recipeModel
+    let recipes = await this.recipeModel
       .find(recipeFilter)
       .select('title heroImageUrl shortDescription')
       .lean();
+
+    // Fallback: if country filter removed all results, fetch without country restriction
+    if (!recipes.length && country) {
+      recipes = await this.recipeModel
+        .find({ _id: { $in: objectIds } })
+        .select('title heroImageUrl shortDescription')
+        .lean();
+    }
 
     const byId = new Map(recipes.map((r: any) => [r._id.toString(), r]));
     const trending = results
