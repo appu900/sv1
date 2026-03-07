@@ -10,6 +10,7 @@ import { RedisService } from 'src/redis/redis.service';
 import { RegisterUserDto } from './dto/user.register.dto';
 import { UserService } from '../user/user.service';
 import * as bcrypt from 'bcrypt';
+import * as argon2 from 'argon2';
 import { UserRole } from 'src/database/schemas/user.auth.schema';
 import { UserLoginDto } from './dto/user.login.dto';
 import { nanoid } from 'nanoid';
@@ -40,6 +41,27 @@ export class AuthService {
 
   private generateOTP(): string {
     return Math.floor(100000 + Math.random() * 900000).toString();
+  }
+
+  private async verifyAndMigratePassword(
+    password: string,
+    storedHash: string,
+    userId: string,
+  ): Promise<boolean> {
+    let valid = false;
+
+    if (storedHash.startsWith('$argon2')) {
+      valid = await argon2.verify(storedHash, password);
+      if (valid) {
+        const bcryptHash = await bcrypt.hash(password, 10);
+        await this.userService.updatePasswordHash(userId, bcryptHash);
+        this.logger.log(`[Migration] Re-hashed argon2 → bcrypt for user ${userId}`);
+      }
+    } else {
+      valid = await bcrypt.compare(password, storedHash);
+    }
+
+    return valid;
   }
 
   async requestOTP(dto: RequestOtpDto) {
@@ -267,9 +289,10 @@ export class AuthService {
     if (!user) {
       throw new UnauthorizedException('Invalid Crediantls');
     }
-    const isPasswordValid = await bcrypt.compare(
+    const isPasswordValid = await this.verifyAndMigratePassword(
       dto.password,
       user.passwordHash,
+      user._id.toString(),
     );
     if (!isPasswordValid)
       throw new UnauthorizedException('Invalid Credentials');
@@ -363,9 +386,10 @@ export class AuthService {
       throw new UnauthorizedException(`Access denied. This login is only for ${requiredRole.toLowerCase()}s.`);
     }
     
-    const isPasswordValid = await bcrypt.compare(
+    const isPasswordValid = await this.verifyAndMigratePassword(
       dto.password,
       user.passwordHash,
+      user._id.toString(),
     );
     if (!isPasswordValid)
       throw new UnauthorizedException('Invalid Credentials');
@@ -522,7 +546,7 @@ export class AuthService {
     const user = await this.userService.findById(userId);
     if (!user) throw new UnauthorizedException('User not found');
 
-    const isCurrentValid = await bcrypt.compare(dto.currentPassword, user.passwordHash);
+    const isCurrentValid = await this.verifyAndMigratePassword(dto.currentPassword, user.passwordHash, userId);
     if (!isCurrentValid) {
       throw new BadRequestException('Current password is incorrect');
     }

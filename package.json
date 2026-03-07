@@ -51,6 +51,7 @@
     "@opentelemetry/semantic-conventions": "^1.38.0",
     "@opentelemetry/winston-transport": "^0.19.0",
     "@valkey/valkey-glide": "^2.2.5",
+    "argon2": "^0.44.0",
     "bcrypt": "^6.0.0",
     "bullmq": "^5.70.1",
     "class-transformer": "^0.5.1",
