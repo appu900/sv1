@@ -227,13 +227,18 @@ export class NotificationWorker extends WorkerHost {
       );
     }
 
+    const failedCount = result.invalidTokens.length + result.retryableTokens.length;
+
     await this.notifModel.findOneAndUpdate(
       { _id: notif._id },
-      { $inc: { successCount: result.successTokens.length, failureCount: result.invalidTokens.length } },
+      { $inc: { successCount: result.successTokens.length, failureCount: failedCount } },
     );
 
-    if (result.retryableTokens.length > 0 && result.successTokens.length === 0) {
-      throw new Error(`${result.retryableTokens.length} tokens need retry — all failed with transient errors`);
+    if (result.retryableTokens.length > 0) {
+      await this.notifModel.findOneAndUpdate(
+        { _id: notif._id },
+        { $addToSet: { failedTokens: { $each: result.retryableTokens } } },
+      );
     }
 
     await this.finalizeIfComplete(notif._id);

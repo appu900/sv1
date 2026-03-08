@@ -33,22 +33,29 @@ export class FirebaseGateway implements OnModuleInit {
       return;
     }
 
-    const resolvedKey = privateKey.includes('\n')
-      ? privateKey.replace(/\\n/g, '\n')
-      : privateKey;
+    const resolvedKey = privateKey.replace(/\\n/g, '\n');
 
     try {
-      this.app = admin.initializeApp({
-        credential: admin.credential.cert({
+      // Reuse existing app if already initialised (e.g. HMR / tests)
+      try {
+        this.app = admin.app();
+        this.logger.info('Reusing existing Firebase Admin app', {
+          service: 'FirebaseGateway',
           projectId,
-          clientEmail,
-          privateKey: resolvedKey,
-        }),
-      });
-      this.logger.info('Firebase Admin SDK initialised successfully', {
-        service: 'FirebaseGateway',
-        projectId,
-      });
+        });
+      } catch {
+        this.app = admin.initializeApp({
+          credential: admin.credential.cert({
+            projectId,
+            clientEmail,
+            privateKey: resolvedKey,
+          }),
+        });
+        this.logger.info('Firebase Admin SDK initialised successfully', {
+          service: 'FirebaseGateway',
+          projectId,
+        });
+      }
     } catch (error) {
       this.logger.error('Firebase Admin SDK init failed', {
         service: 'FirebaseGateway',
