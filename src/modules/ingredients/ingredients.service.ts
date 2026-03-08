@@ -328,15 +328,22 @@ export class IngredientsService implements OnModuleInit {
       .map(id => new Types.ObjectId(id));
     if (validIds.length === 0) return [];
 
+    // Check Redis cache for the batch (sorted IDs for stable key)
+    const sortedIdStrs = validIds.map(id => id.toString()).sort();
+    const batchCacheKey = `ingredients:batch:${sortedIdStrs.join(',')}`;
+    try {
+      const cached = await this.redisService.get(batchCacheKey);
+      if (cached) return cached;
+    } catch (_) { /* ignore */ }
+
+    // Only select fields actually consumed by the frontend adapter
     const ingredients = await this.ingredientModel
       .find({ _id: { $in: validIds } })
-      .populate('categoryId', 'name imageUrl')
-      .populate('suitableDiets', 'name')
-      .populate('parentIngredients', 'name averageWeight')
-      .populate({ path: 'foodFactId', populate: { path: 'sponsor', select: 'title logo logoBlackAndWhite broughtToYouBy tagline' } })
-      .populate('relatedHacks', 'title type shortDescription')
-      .populate('stickerId', 'title imageUrl description')
+      .select('name averageWeight categoryId')
+      .populate('categoryId', 'name')
       .lean();
+
+    await this.redisService.set(batchCacheKey, ingredients, 60 * 20).catch(() => {});
 
     return ingredients;
   }

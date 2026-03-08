@@ -293,30 +293,35 @@ export class RecipeService implements OnModuleInit {
 
       const recipes = await this.recipeModel
         .find(matchQuery)
-        .populate('hackOrTipIds')
-        .populate('stickerId')
-        .populate('frameworkCategories')
-        .populate('sponsorId')
-        .populate('useLeftoversIn')
+        .populate('hackOrTipIds', 'title type shortDescription')
+        .populate('stickerId', 'title imageUrl description')
+        .populate('frameworkCategories', 'name imageUrl')
+        .populate('sponsorId', 'title logo logoBlackAndWhite broughtToYouBy tagline')
+        .populate('useLeftoversIn', 'title heroImageUrl')
         .populate({
           path: 'components.component.requiredIngredients.recommendedIngredient',
           model: 'Ingredient',
+          select: 'name averageWeight',
         })
         .populate({
           path: 'components.component.requiredIngredients.alternativeIngredients.ingredient',
           model: 'Ingredient',
+          select: 'name averageWeight',
         })
         .populate({
           path: 'components.component.optionalIngredients.ingredient',
           model: 'Ingredient',
+          select: 'name averageWeight',
         })
         .populate({
           path: 'components.component.componentSteps.hackOrTipIds',
           model: 'HackOrTip',
+          select: 'title type shortDescription',
         })
         .populate({
           path: 'components.component.componentSteps.relevantIngredients',
           model: 'Ingredient',
+          select: 'name averageWeight',
         })
         .sort({ order: 1 })
         .lean()
@@ -352,30 +357,35 @@ export class RecipeService implements OnModuleInit {
 
     const recipe = await this.recipeModel
       .findById(id)
-      .populate('hackOrTipIds')
-      .populate('stickerId')
-      .populate('frameworkCategories')
-      .populate('sponsorId')
-      .populate('useLeftoversIn')
+      .populate('hackOrTipIds', 'title type shortDescription')
+      .populate('stickerId', 'title imageUrl description')
+      .populate('frameworkCategories', 'name imageUrl')
+      .populate('sponsorId', 'title logo logoBlackAndWhite broughtToYouBy tagline')
+      .populate('useLeftoversIn', 'title heroImageUrl')
       .populate({
         path: 'components.component.requiredIngredients.recommendedIngredient',
         model: 'Ingredient',
+        select: 'name averageWeight',
       })
       .populate({
         path: 'components.component.requiredIngredients.alternativeIngredients.ingredient',
         model: 'Ingredient',
+        select: 'name averageWeight',
       })
       .populate({
         path: 'components.component.optionalIngredients.ingredient',
         model: 'Ingredient',
+        select: 'name averageWeight',
       })
       .populate({
         path: 'components.component.componentSteps.hackOrTipIds',
         model: 'HackOrTip',
+        select: 'title type shortDescription',
       })
       .populate({
         path: 'components.component.componentSteps.relevantIngredients',
         model: 'Ingredient',
+        select: 'name averageWeight',
       })
       .lean()
       .exec();
@@ -408,34 +418,44 @@ export class RecipeService implements OnModuleInit {
 
     // Build a regex that matches titles whose slugified form equals the slug.
     // Convert slug back to a title-like pattern: "chicken-tikka" → "chicken tikka" (case-insensitive)
-    const titlePattern = slug.replace(/-/g, '\\s+');
+    // Each hyphen-separated token is escaped so regex-special characters in
+    // recipe titles (parentheses, brackets, +, etc.) are treated as literals.
+    const titlePattern = slug
+      .split('-')
+      .map(token => token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .join('[\\s\\-]+');
 
     const recipe = await this.recipeModel
       .findOne({ isActive: true, title: { $regex: new RegExp(`^${titlePattern}$`, 'i') } })
-      .populate('hackOrTipIds')
-      .populate('stickerId')
-      .populate('frameworkCategories')
-      .populate('sponsorId')
-      .populate('useLeftoversIn')
+      .populate('hackOrTipIds', 'title type shortDescription')
+      .populate('stickerId', 'title imageUrl description')
+      .populate('frameworkCategories', 'name imageUrl')
+      .populate('sponsorId', 'title logo logoBlackAndWhite broughtToYouBy tagline')
+      .populate('useLeftoversIn', 'title heroImageUrl')
       .populate({
         path: 'components.component.requiredIngredients.recommendedIngredient',
         model: 'Ingredient',
+        select: 'name averageWeight',
       })
       .populate({
         path: 'components.component.requiredIngredients.alternativeIngredients.ingredient',
         model: 'Ingredient',
+        select: 'name averageWeight',
       })
       .populate({
         path: 'components.component.optionalIngredients.ingredient',
         model: 'Ingredient',
+        select: 'name averageWeight',
       })
       .populate({
         path: 'components.component.componentSteps.hackOrTipIds',
         model: 'HackOrTip',
+        select: 'title type shortDescription',
       })
       .populate({
         path: 'components.component.componentSteps.relevantIngredients',
         model: 'Ingredient',
+        select: 'name averageWeight',
       })
       .lean()
       .exec();
@@ -478,17 +498,19 @@ export class RecipeService implements OnModuleInit {
 
     const recipes = await this.recipeModel
       .find(matchQuery)
-      .populate('hackOrTipIds')
-      .populate('stickerId')
-      .populate('frameworkCategories')
-      .populate('sponsorId')
+      .populate('hackOrTipIds', 'title type shortDescription')
+      .populate('stickerId', 'title imageUrl description')
+      .populate('frameworkCategories', 'name imageUrl')
+      .populate('sponsorId', 'title logo logoBlackAndWhite broughtToYouBy tagline')
       .populate({
         path: 'components.component.requiredIngredients.recommendedIngredient',
         model: 'Ingredient',
+        select: 'name averageWeight',
       })
       .populate({
         path: 'components.component.optionalIngredients.ingredient',
         model: 'Ingredient',
+        select: 'name averageWeight',
       })
       .sort({ order: 1 })
       .lean()
@@ -539,30 +561,35 @@ export class RecipeService implements OnModuleInit {
 
     const recipes = await this.recipeModel
       .find(matchQuery)
-      .populate('hackOrTipIds')
-      .populate('stickerId')
-      .populate('frameworkCategories')
-      .populate('sponsorId')
-      .populate('useLeftoversIn')
+      .populate('hackOrTipIds', 'title type shortDescription')
+      .populate('stickerId', 'title imageUrl description')
+      .populate('frameworkCategories', 'name imageUrl')
+      .populate('sponsorId', 'title logo logoBlackAndWhite broughtToYouBy tagline')
+      .populate('useLeftoversIn', 'title heroImageUrl')
       .populate({
         path: 'components.component.requiredIngredients.recommendedIngredient',
         model: 'Ingredient',
+        select: 'name averageWeight',
       })
       .populate({
         path: 'components.component.requiredIngredients.alternativeIngredients.ingredient',
         model: 'Ingredient',
+        select: 'name averageWeight',
       })
       .populate({
         path: 'components.component.optionalIngredients.ingredient',
         model: 'Ingredient',
+        select: 'name averageWeight',
       })
       .populate({
         path: 'components.component.componentSteps.hackOrTipIds',
         model: 'HackOrTip',
+        select: 'title type shortDescription',
       })
       .populate({
         path: 'components.component.componentSteps.relevantIngredients',
         model: 'Ingredient',
+        select: 'name averageWeight',
       })
       .sort({ order: 1 })
       .lean()

@@ -139,6 +139,19 @@ COMPONENT STRUCTURE GUIDE:
 Each component's variantTags should include the recipe title. Each component[].includedInVariants should also include the recipe title.`.trim();
 
 
+const GENERATE_FROM_INGREDIENTS_PROMPT = `You are a creative Indian recipe generator for the Saveful India app.
+The user has specific ingredients in their kitchen. Generate a COMPLETE, REALISTIC recipe using PRIMARILY those ingredients.
+
+RULES:
+1. Use AS MANY of the provided ingredients as possible.
+2. You may add a FEW basic pantry staples (salt, oil, water, common spices) if needed, but the core of the recipe must use the provided ingredients.
+3. If the user specifies a preference (e.g. "something spicy", "a quick snack", "South Indian"), respect that preference.
+4. The recipe must be practical, delicious, and achievable at home.
+5. Provide EXACT quantities, prep/cook times, and clear step-by-step instructions.
+6. Output the recipe as detailed plain text: title, description, ALL ingredients with exact quantities, ALL steps in detail, prep/cook time, portions, storage info.
+7. Focus on Indian cuisine unless the user's preference suggests otherwise.
+8. Be creative but realistic — don't suggest bizarre combinations.`.trim();
+
 @Injectable()
 export class CookbookaiService {
     private readonly logger = new Logger(CookbookaiService.name);
@@ -508,6 +521,17 @@ export class CookbookaiService {
             .exec();
     }
 
+    async updateRecipeSource(recipeId: string, userId: string, source: 'link' | 'ai_ingredients') {
+        if (!Types.ObjectId.isValid(recipeId)) return null;
+        return await this.userRecipeModel
+            .findOneAndUpdate(
+                { _id: new Types.ObjectId(recipeId), ...this.buildUserMatch(userId) },
+                { $set: { source } },
+                { new: true },
+            )
+            .exec();
+    }
+
     private async reconcileUserRecipeStatuses(userId: string) {
         const userMatch = this.buildUserMatch(userId);
 
@@ -599,6 +623,63 @@ export class CookbookaiService {
             }
         }
         return data;
+    }
+
+    async getAiIngredientsRecipeCount(userId: string): Promise<number> {
+        const userMatch = this.buildUserMatch(userId);
+        return this.userRecipeModel.countDocuments({
+            ...userMatch,
+            source: 'ai_ingredients',
+        }).exec();
+    }
+
+    async getTotalUserRecipeCount(userId: string): Promise<number> {
+        const userMatch = this.buildUserMatch(userId);
+        return this.userRecipeModel.countDocuments(userMatch).exec();
+    }
+
+    async generateRecipeFromIngredients(
+        ingredients: string[],
+        preference?: string,
+    ): Promise<{ success: boolean; message: string; data?: any }> {
+        this.logger.log(`[generateFromIngredients] ingredients=${ingredients.length}, pref="${preference || 'none'}"`);
+
+        try {
+            let userMessage = `My available ingredients: ${ingredients.join(', ')}`;
+            if (preference) {
+                userMessage += `\n\nI would like: ${preference}`;
+            }
+            userMessage += '\n\nPlease generate a complete recipe using primarily these ingredients.';
+
+            const completion = await this.openai.chat.completions.create({
+                model: 'gpt-4o-mini',
+                messages: [
+                    { role: 'system', content: GENERATE_FROM_INGREDIENTS_PROMPT },
+                    { role: 'user', content: userMessage },
+                ],
+                max_tokens: 4096,
+                temperature: 0.7,
+            });
+
+            const recipeContent = completion.choices?.[0]?.message?.content ?? '';
+            if (!recipeContent.trim()) {
+                return { success: false, message: 'AI did not generate a recipe. Please try again.' };
+            }
+
+            let recipe: any;
+            try {
+                recipe = await this.structureAsJson(recipeContent, 'gpt-4o-mini');
+            } catch (miniErr: any) {
+                this.logger.warn(`[generateFromIngredients] stage2 gpt-4o-mini failed: ${miniErr?.message}`);
+                recipe = await this.structureAsJson(recipeContent, 'gpt-4o');
+            }
+
+            const normalized = this.normalizeRecipeShape(recipe);
+            return { success: true, message: 'Recipe generated successfully.', data: normalized };
+        } catch (err: any) {
+            this.logger.error(`[generateFromIngredients] Error: ${err?.message}`, err?.stack);
+            return { success: false, message: `Failed to generate recipe. ${err?.message || 'Please try again.'}` };
+        }
     }
 
     async createRecipe(recipeData: any) {

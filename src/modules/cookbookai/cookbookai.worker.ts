@@ -23,7 +23,12 @@ export class CookbookaiWorker extends WorkerHost {
   }
 
   async process(job: Job<CookbookaiJobData>): Promise<void> {
-    const { userId, message, recipeId } = job.data;
+    const { type, userId, message, recipeId, ingredients, preference } = job.data;
+
+    if (type === 'generate-from-ingredients') {
+      return this.processGenerateFromIngredients(job, userId, recipeId, ingredients || [], preference);
+    }
+
     this.logger.log(
       `[job=${job.id}] Processing recipe extraction for user=${userId}`,
     );
@@ -137,6 +142,123 @@ export class CookbookaiWorker extends WorkerHost {
       }
 
       throw error; // Re-throw so BullMQ can retry
+    }
+  }
+
+  private async processGenerateFromIngredients(
+    job: Job<CookbookaiJobData>,
+    userId: string,
+    recipeId: string | undefined,
+    ingredients: string[],
+    preference: string | undefined,
+  ): Promise<void> {
+    this.logger.log(
+      `[job=${job.id}] Processing recipe from ingredients for user=${userId}, ingredients=${ingredients.length}`,
+    );
+
+    try {
+      const aiResponse = await this.cookbookaiService.generateRecipeFromIngredients(
+        ingredients,
+        preference,
+      );
+
+      if (!aiResponse.success) {
+        this.logger.warn(`[job=${job.id}] AI generation failed: ${aiResponse.message}`);
+
+        if (recipeId) {
+          await this.cookbookaiService.setRecipeStatus(recipeId, userId, 'rejected');
+        }
+
+        await this.notificationService.sendToUser(
+          userId,
+          'Recipe Generation Failed',
+          aiResponse.message || 'We couldn\'t generate a recipe from your ingredients. Please try again.',
+          { type: 'cookbookai', action: 'failed' },
+          'saveful://cookbook',
+        );
+        return;
+      }
+
+      const recipeData = { ...aiResponse.data, userid: userId, source: 'ai_ingredients' };
+      let createResponse = recipeId
+        ? await this.cookbookaiService.updatePendingRecipe(recipeId, userId, recipeData)
+        : await this.cookbookaiService.createRecipe(recipeData);
+
+      if (!createResponse.success || !createResponse.data) {
+        this.logger.warn(`[job=${job.id}] update/create primary path failed, trying fallback create`);
+        createResponse = await this.cookbookaiService.createRecipe(recipeData);
+        if (recipeId) {
+          await this.cookbookaiService.setRecipeStatus(recipeId, userId, 'rejected');
+        }
+      }
+
+      // Ensure source is set on the final recipe
+      if (createResponse.success && createResponse.data) {
+        const finalId = String((createResponse.data as any)._id || (createResponse.data as any).id);
+        await this.cookbookaiService.updateRecipeSource(finalId, userId, 'ai_ingredients');
+      }
+
+      if (!createResponse.success || !createResponse.data) {
+        this.logger.error(`[job=${job.id}] Recipe save failed for user=${userId}`);
+
+        if (recipeId) {
+          await this.cookbookaiService.setRecipeStatus(recipeId, userId, 'rejected');
+        }
+
+        await this.notificationService.sendToUser(
+          userId,
+          'Recipe Save Failed',
+          'We generated the recipe but couldn\'t save it. Please try again.',
+          { type: 'cookbookai', action: 'failed' },
+          'saveful://cookbook',
+        );
+        return;
+      }
+
+      const doc: any = createResponse.data;
+      const savedRecipeId = String(doc._id || doc.id);
+      const recipeTitle = doc.title || 'Your AI Recipe';
+
+      this.logger.log(
+        `[job=${job.id}] AI recipe created: id=${savedRecipeId}, title="${recipeTitle}"`,
+      );
+
+      await this.notificationService.sendToUser(
+        userId,
+        '🍳 AI Recipe Ready!',
+        `"${recipeTitle}" has been generated from your ingredients and added to your cookbook!`,
+        {
+          type: 'cookbookai',
+          action: 'recipe_added',
+          recipeId: savedRecipeId,
+        },
+        `saveful://cookbook/recipe/${savedRecipeId}`,
+      );
+    } catch (error: any) {
+      this.logger.error(
+        `[job=${job.id}] Unexpected error in generateFromIngredients: ${error?.message}`,
+        error?.stack,
+      );
+
+      if (recipeId) {
+        await this.cookbookaiService.setRecipeStatus(recipeId, userId, 'rejected');
+      }
+
+      try {
+        await this.notificationService.sendToUser(
+          userId,
+          'Recipe Generation Failed',
+          'Something went wrong while generating your recipe. Please try again.',
+          { type: 'cookbookai', action: 'failed' },
+          'saveful://cookbook',
+        );
+      } catch (notifErr: any) {
+        this.logger.error(
+          `[job=${job.id}] Failed to send error notification: ${notifErr?.message}`,
+        );
+      }
+
+      throw error;
     }
   }
 }

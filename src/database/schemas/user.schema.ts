@@ -188,6 +188,9 @@ export class userRecipe {
 
   @Prop({ type: [String], default: [] })
   countries: string[];
+
+  @Prop({ type: String, enum: ['link', 'ai_ingredients'], default: 'link' })
+  source: string;
 }
 
 export type UserRecipeDocument = userRecipe & Document;

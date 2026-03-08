@@ -7,6 +7,7 @@ import { Roles } from 'src/common/decorators/role.decorators';
 import { Request } from '@nestjs/common';
 import { RedisService } from 'src/redis/redis.service';
 import { AddRecipeDto } from './dto/add-recipe.dto';
+import { GenerateFromIngredientsDto } from './dto/generate-from-ingredients.dto';
 
 @Controller('cookbookai')
 export class CookbookaiController {
@@ -81,19 +82,15 @@ export class CookbookaiController {
                 };
             }
 
-            const key = `user:${userId}:cookbookai`;
-
-            const currentCount = await this.redisService.incr(key);
-
-            if (currentCount === 1) {
-                await this.redisService.expire(key, 60 * 60 * 24);
-            }
-
-            if (currentCount > 5) {
+            // Lifetime limit of 3 total recipes (all types combined)
+            const totalCount = await this.cookbookaiService.getTotalUserRecipeCount(userId);
+            if (totalCount >= 3) {
                 return {
                     success: false,
-                    message: 'You have reached the maximum limit of 5 requests per day.',
-                    limit: 5,
+                    message: 'You have used all 3 of your free recipe generations. Stay tuned for our subscription plan!',
+                    limitReached: true,
+                    count: totalCount,
+                    limit: 3,
                 };
             }
 
@@ -126,6 +123,74 @@ export class CookbookaiController {
             };
         }
     }
+    @Get("/ai-generation-count")
+    @Roles('USER')
+    @UseGuards(JwtAuthGuard, RolesGuard)
+    async getAiGenerationCount(@Request() req) {
+        const userId = this.resolveUserId(req);
+        const count = await this.cookbookaiService.getTotalUserRecipeCount(userId);
+        return { success: true, count, limit: 3, remaining: Math.max(0, 3 - count) };
+    }
+
+    @Post("/generate-from-ingredients")
+    @Roles('USER')
+    @UseGuards(JwtAuthGuard, RolesGuard)
+    async generateFromIngredients(@Request() req, @Body() body: GenerateFromIngredientsDto) {
+        try {
+            const userId = this.resolveUserId(req);
+            if (!userId) {
+                return {
+                    success: false,
+                    message: 'Unable to resolve current user. Please login again.',
+                };
+            }
+
+            // Lifetime limit of 3 total recipes (all types combined)
+            const existingCount = await this.cookbookaiService.getTotalUserRecipeCount(userId);
+            if (existingCount >= 3) {
+                return {
+                    success: false,
+                    message: 'You have used all 3 of your free recipe generations. Stay tuned for our subscription plan!',
+                    limitReached: true,
+                    count: existingCount,
+                    limit: 3,
+                };
+            }
+
+            // Create a pending row immediately so the app shows a loading card
+            const pendingRecipe = await this.cookbookaiService.createPendingRecipe(
+                userId,
+                `AI Recipe from: ${body.ingredients.slice(0, 5).join(', ')}${body.ingredients.length > 5 ? '...' : ''}`,
+            );
+
+            // Mark the pending recipe with source
+            await this.cookbookaiService.updateRecipeSource(String(pendingRecipe._id), userId, 'ai_ingredients');
+
+            // Queue the recipe generation as a background job
+            const jobId = await this.cookbookaiProducer.enqueueRecipeFromIngredients(
+                userId,
+                body.ingredients,
+                body.preference,
+                String(pendingRecipe._id),
+            );
+
+            return {
+                success: true,
+                queued: true,
+                jobId,
+                data: pendingRecipe,
+                message: 'Your recipe is being generated! We\'ll notify you when it\'s ready.',
+                remaining: Math.max(0, 3 - existingCount - 1),
+            };
+        } catch (error) {
+            console.error('Error in generateFromIngredients:', error);
+            return {
+                success: false,
+                message: 'An error occurred while processing your request.',
+            };
+        }
+    }
+
     @Get("/invalidate-cache")
     @Roles('USER')
     @UseGuards(JwtAuthGuard, RolesGuard)
