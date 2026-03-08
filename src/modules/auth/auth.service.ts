@@ -284,7 +284,7 @@ export class AuthService {
   async login(dto: UserLoginDto) {
     const user = await this.userService.findByEmail(dto.email);
     if (!user) {
-      throw new UnauthorizedException('Invalid Crediantls');
+      throw new UnauthorizedException('Invalid Credentials');
     }
     const isPasswordValid = await this.verifyAndMigratePassword(
       dto.password,
