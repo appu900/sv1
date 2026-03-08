@@ -385,11 +385,7 @@ export class CookbookaiService {
                     recipeContent = await this.fetchRecipeContent(primaryUrl, 'gpt-4o');
                 }
             } else {
-                try {
-                    recipeContent = await this.fetchRecipeContent(message, 'gpt-4o-mini');
-                } catch {
-                    recipeContent = String(message || '').trim();
-                }
+                recipeContent = String(message || '').trim();
             }
 
             if (!recipeContent.trim() || /SOURCE_INSUFFICIENT/i.test(recipeContent)) {
