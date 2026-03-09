@@ -173,13 +173,11 @@ export class RecipeService implements OnModuleInit {
       const processedComponents = this.processComponents(
         createRecipeDto.components,
       );
-      // Debug: log processed structure for the first wrapper/component
       if (processedComponents?.length) {
         const firstWrapper = processedComponents[0] as any;
         const firstComp = Array.isArray(firstWrapper?.component)
           ? firstWrapper.component[0]
           : undefined;
-        // Using console.log here to ensure visibility even if Nest logger level changes
         console.log('RecipeService.processedComponents count:', processedComponents.length);
         console.log('RecipeService.firstWrapper keys:', Object.keys(firstWrapper || {}));
         if (firstComp) {
@@ -187,7 +185,6 @@ export class RecipeService implements OnModuleInit {
         }
       }
 
-      // Validate and convert framework categories
       const validFrameworkCategories = createRecipeDto.frameworkCategories
         .filter(id => id && Types.ObjectId.isValid(id))
         .map(id => new Types.ObjectId(id));
@@ -196,7 +193,6 @@ export class RecipeService implements OnModuleInit {
         throw new BadRequestException('At least one valid framework category is required');
       }
 
-      // Validate and convert optional ObjectId fields
       const recipeData: any = {
         ...createRecipeDto,
         heroImageUrl: heroImageUrl || createRecipeDto.heroImageUrl,
@@ -638,6 +634,11 @@ export class RecipeService implements OnModuleInit {
         ...updateRecipeDto,
       };
 
+      // Always remove these from the spread — they are handled explicitly below
+      // to avoid saving empty strings as ObjectId fields (which causes CastErrors on populate).
+      delete updateData.stickerId;
+      delete updateData.sponsorId;
+
       if (heroImageUrl) {
         updateData.heroImageUrl = heroImageUrl;
       }
@@ -666,20 +667,35 @@ export class RecipeService implements OnModuleInit {
           .map((id) => new Types.ObjectId(id));
       }
 
-      if (updateRecipeDto.stickerId && Types.ObjectId.isValid(updateRecipeDto.stickerId)) {
-        updateData.stickerId = new Types.ObjectId(updateRecipeDto.stickerId);
+      const unsetFields: Record<string, 1> = {};
+
+      if ('stickerId' in updateRecipeDto) {
+        if (updateRecipeDto.stickerId && Types.ObjectId.isValid(updateRecipeDto.stickerId)) {
+          updateData.stickerId = new Types.ObjectId(updateRecipeDto.stickerId);
+        } else {
+          // Empty string or null means "clear the sticker"
+          unsetFields.stickerId = 1;
+        }
       }
 
-      if (updateRecipeDto.sponsorId && Types.ObjectId.isValid(updateRecipeDto.sponsorId)) {
-        updateData.sponsorId = new Types.ObjectId(updateRecipeDto.sponsorId);
+      if ('sponsorId' in updateRecipeDto) {
+        if (updateRecipeDto.sponsorId && Types.ObjectId.isValid(updateRecipeDto.sponsorId)) {
+          updateData.sponsorId = new Types.ObjectId(updateRecipeDto.sponsorId);
+        } else {
+          unsetFields.sponsorId = 1;
+        }
       }
 
       if (processedComponents) {
         updateData.components = processedComponents;
       }
 
+      const mongoUpdate = Object.keys(unsetFields).length > 0
+        ? { $set: updateData, $unset: unsetFields }
+        : updateData;
+
       const updatedRecipe = await this.recipeModel
-        .findByIdAndUpdate(id, updateData, { new: true })
+        .findByIdAndUpdate(id, mongoUpdate, { new: true })
         .exec();
 
       if (!updatedRecipe) {
