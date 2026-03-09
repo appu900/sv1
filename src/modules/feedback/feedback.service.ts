@@ -243,10 +243,12 @@ export class FeedbackService {
           .select('name email')
           .lean();
         
-        const recipe = await this.recipeModel
-          .findById(feedback.framework_id)
-          .select('title heroImageUrl')
-          .lean();
+        const recipe = Types.ObjectId.isValid(feedback.framework_id)
+          ? await this.recipeModel
+              .findById(feedback.framework_id)
+              .select('title heroImageUrl')
+              .lean()
+          : null;
 
         return {
           ...feedback,
@@ -277,10 +279,12 @@ export class FeedbackService {
           .select('name email')
           .lean();
         
-        const recipe = await this.recipeModel
-          .findById(feedback.framework_id)
-          .select('title heroImageUrl')
-          .lean();
+        const recipe = Types.ObjectId.isValid(feedback.framework_id)
+          ? await this.recipeModel
+              .findById(feedback.framework_id)
+              .select('title heroImageUrl')
+              .lean()
+          : null;
 
         return {
           ...feedback,

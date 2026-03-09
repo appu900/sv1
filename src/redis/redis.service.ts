@@ -96,7 +96,7 @@ async expire(key: string, ttlSeconds: number) {
       const [nextCursor, keys] = await this.client.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
       cursor = nextCursor;
       if (keys.length > 0) {
-        await this.client.del(...keys);
+        await Promise.all(keys.map((key) => this.client.del(key)));
       }
     } while (cursor !== '0');
   }
