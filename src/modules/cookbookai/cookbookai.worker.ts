@@ -49,8 +49,8 @@ export class CookbookaiWorker extends WorkerHost {
 
         await this.notificationService.sendToUser(
           userId,
-          'Recipe Generation Failed',
-          aiResponse.message || 'We couldn\'t extract a recipe from that link. Please try a different link.',
+          'Our servers are busy',
+          'We couldn\'t complete your recipe right now. Your generation slot has been restored — please try again in a few minutes.',
           { type: 'cookbookai', action: 'failed' },
           'saveful://cookbook',
         );
@@ -59,19 +59,9 @@ export class CookbookaiWorker extends WorkerHost {
 
       // Step 2: Save/update the recipe
       const recipeData = { ...aiResponse.data, userid: userId };
-      let createResponse = recipeId
+      const createResponse = recipeId
         ? await this.cookbookaiService.updatePendingRecipe(recipeId, userId, recipeData)
         : await this.cookbookaiService.createRecipe(recipeData);
-
-      // If linked pending row was not found, fallback to create a fresh accepted
-      // recipe so users still get output, then mark stale pending as rejected.
-      if (!createResponse.success || !createResponse.data) {
-        this.logger.warn(`[job=${job.id}] update/create primary path failed, trying fallback create`);
-        createResponse = await this.cookbookaiService.createRecipe(recipeData);
-        if (recipeId) {
-          await this.cookbookaiService.setRecipeStatus(recipeId, userId, 'rejected');
-        }
-      }
 
       if (!createResponse.success || !createResponse.data) {
         this.logger.error(
@@ -84,8 +74,8 @@ export class CookbookaiWorker extends WorkerHost {
 
         await this.notificationService.sendToUser(
           userId,
-          'Recipe Save Failed',
-          'We extracted the recipe but couldn\'t save it. Please try again.',
+          'Our servers are busy',
+          'We couldn\'t save your recipe right now. Your generation slot has been restored — please try again in a few minutes.',
           { type: 'cookbookai', action: 'failed' },
           'saveful://cookbook',
         );
@@ -130,8 +120,8 @@ export class CookbookaiWorker extends WorkerHost {
       try {
         await this.notificationService.sendToUser(
           userId,
-          'Recipe Generation Failed',
-          'Something went wrong while generating your recipe. Please try again.',
+          'Our servers are busy',
+          'Our servers are a bit busy right now. Your generation slot has been restored — please try again in a few minutes.',
           { type: 'cookbookai', action: 'failed' },
           'saveful://cookbook',
         );
@@ -171,8 +161,8 @@ export class CookbookaiWorker extends WorkerHost {
 
         await this.notificationService.sendToUser(
           userId,
-          'Recipe Generation Failed',
-          aiResponse.message || 'We couldn\'t generate a recipe from your ingredients. Please try again.',
+          'Our servers are busy',
+          'We couldn\'t complete your recipe right now. Your generation slot has been restored — please try again in a few minutes.',
           { type: 'cookbookai', action: 'failed' },
           'saveful://cookbook',
         );
@@ -180,17 +170,9 @@ export class CookbookaiWorker extends WorkerHost {
       }
 
       const recipeData = { ...aiResponse.data, userid: userId, source: 'ai_ingredients' };
-      let createResponse = recipeId
+      const createResponse = recipeId
         ? await this.cookbookaiService.updatePendingRecipe(recipeId, userId, recipeData)
         : await this.cookbookaiService.createRecipe(recipeData);
-
-      if (!createResponse.success || !createResponse.data) {
-        this.logger.warn(`[job=${job.id}] update/create primary path failed, trying fallback create`);
-        createResponse = await this.cookbookaiService.createRecipe(recipeData);
-        if (recipeId) {
-          await this.cookbookaiService.setRecipeStatus(recipeId, userId, 'rejected');
-        }
-      }
 
       // Ensure source is set on the final recipe
       if (createResponse.success && createResponse.data) {
@@ -207,8 +189,8 @@ export class CookbookaiWorker extends WorkerHost {
 
         await this.notificationService.sendToUser(
           userId,
-          'Recipe Save Failed',
-          'We generated the recipe but couldn\'t save it. Please try again.',
+          'Our servers are busy',
+          'We couldn\'t save your recipe right now. Your generation slot has been restored — please try again in a few minutes.',
           { type: 'cookbookai', action: 'failed' },
           'saveful://cookbook',
         );
@@ -247,8 +229,8 @@ export class CookbookaiWorker extends WorkerHost {
       try {
         await this.notificationService.sendToUser(
           userId,
-          'Recipe Generation Failed',
-          'Something went wrong while generating your recipe. Please try again.',
+          'Our servers are busy',
+          'Our servers are a bit busy right now. Your generation slot has been restored — please try again in a few minutes.',
           { type: 'cookbookai', action: 'failed' },
           'saveful://cookbook',
         );

@@ -84,6 +84,9 @@ export class ExpoGateway {
     };
 
     try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15_000);
+
       const response = await fetch(EXPO_PUSH_URL, {
         method: 'POST',
         headers: {
@@ -92,7 +95,10 @@ export class ExpoGateway {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(messages),
+        signal: controller.signal,
       });
+
+      clearTimeout(timeout);
 
       if (!response.ok) {
         this.logger.error('Expo push API HTTP error', {
@@ -117,7 +123,7 @@ export class ExpoGateway {
           const errCode = ticket.details?.error ?? '';
           this.logger.warn('Expo push ticket error', {
             service: 'ExpoGateway',
-            token: token.substring(0, 30),
+            token: token.slice(0, 12) + '…',
             error: ticket.message,
             code: errCode,
           });

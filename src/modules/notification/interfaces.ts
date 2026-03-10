@@ -31,10 +31,15 @@ export interface FanOutJobData {
   notificationId: string;
 }
 
+export interface TokenWithType {
+  token: string;
+  tokenType: 'apns' | 'fcm' | 'expo';
+}
+
 export interface SendBatchJobData {
   type: 'send-batch';
   notificationId: string;
-  tokens: string[];
+  tokens: TokenWithType[];
   batchIndex: number;
   totalBatches: number;
 }

@@ -23,11 +23,13 @@ import {
   SendBatchJobData,
   FirebaseMessagePayload,
   BatchSendResult,
+  TokenWithType,
 } from './interfaces';
 import {
   NOTIFICATION_QUEUE_NAME,
   WORKER_CONCURRENCY,
   TOKEN_FAILURE_THRESHOLD,
+  FAN_OUT_BATCH_SIZE,
 } from './constants';
 
 @Processor(NOTIFICATION_QUEUE_NAME, {
@@ -148,7 +150,7 @@ export class NotificationWorker extends WorkerHost {
     notif.totalTargets = tokens.length;
     await notif.save();
 
-    if (tokens.length <= 1000) {
+    if (tokens.length <= FAN_OUT_BATCH_SIZE) {
       await this.sendTokens(notif, tokens);
       return;
     }
@@ -187,7 +189,7 @@ export class NotificationWorker extends WorkerHost {
 
   private async sendTokens(
     notif: NotificationDocument,
-    tokens: string[],
+    tokens: TokenWithType[],
   ): Promise<void> {
     const payload: FirebaseMessagePayload = {
       title: notif.title,
@@ -200,8 +202,8 @@ export class NotificationWorker extends WorkerHost {
       imageUrl: notif.imageUrl,
     };
 
-    const expoTokens = tokens.filter((t) => t.startsWith('ExponentPushToken[') || t.startsWith('ExpoPushToken['));
-    const fcmTokens = tokens.filter((t) => !t.startsWith('ExponentPushToken[') && !t.startsWith('ExpoPushToken['));
+    const expoTokens = tokens.filter((t) => t.tokenType === 'expo').map((t) => t.token);
+    const fcmTokens = tokens.filter((t) => t.tokenType === 'fcm').map((t) => t.token);
 
     const [expoResult, firebaseResult] = await Promise.all([
       expoTokens.length > 0
@@ -239,6 +241,28 @@ export class NotificationWorker extends WorkerHost {
         { _id: notif._id },
         { $addToSet: { failedTokens: { $each: result.retryableTokens } } },
       );
+
+      // Auto-requeue retryable tokens as a new batch job
+      const retryDocs = await this.tokenModel
+        .find({ token: { $in: result.retryableTokens }, isActive: true })
+        .select('token tokenType')
+        .lean();
+      if (retryDocs.length > 0) {
+        const retryTokens: TokenWithType[] = retryDocs.map((d) => ({
+          token: d.token,
+          tokenType: d.tokenType,
+        }));
+        await this.producer.enqueueBatches(
+          String(notif._id),
+          retryTokens,
+          'low',
+        );
+        this.logger.info('Retryable tokens requeued', {
+          service: 'NotificationWorker',
+          notificationId: String(notif._id),
+          retryCount: retryTokens.length,
+        });
+      }
     }
 
     await this.finalizeIfComplete(notif._id);
@@ -251,7 +275,20 @@ export class NotificationWorker extends WorkerHost {
     const totalProcessed = (latest.successCount || 0) + (latest.failureCount || 0);
     const totalTargets = latest.totalTargets || 0;
 
-    if (totalProcessed < totalTargets || totalTargets === 0) return;
+    if (totalProcessed < totalTargets && totalTargets > 0) {      const createdAt = (latest as any).createdAt ?? latest['_id'].getTimestamp();
+      const ageMs = Date.now() - new Date(createdAt).getTime();
+      if (ageMs < 30 * 60 * 1000) return;
+
+      this.logger.warn('Notification timed out — finalizing with partial results', {
+        service: 'NotificationWorker',
+        notificationId: String(notificationId),
+        totalProcessed,
+        totalTargets,
+        ageMs,
+      });
+    }
+
+    if (totalTargets === 0) return;
 
     if (latest.successCount === 0) {
       latest.status = NotificationStatus.FAILED;
@@ -272,7 +309,7 @@ export class NotificationWorker extends WorkerHost {
     });
   }
 
-  private async resolveTokens(notif: NotificationDocument): Promise<string[]> {
+  private async resolveTokens(notif: NotificationDocument): Promise<TokenWithType[]> {
     const filter: any = { isActive: true };
 
     if (!notif.isBroadcast && notif.targetUserIds?.length > 0) {
@@ -281,10 +318,14 @@ export class NotificationWorker extends WorkerHost {
       return [];
     }
 
-    const tokens: string[] = [];
-    const cursor = this.tokenModel.find(filter).select('token').lean().cursor();
+    const tokens: TokenWithType[] = [];
+    const cursor = this.tokenModel
+      .find(filter)
+      .select('token tokenType')
+      .lean()
+      .cursor({ batchSize: 500 });
     for await (const doc of cursor) {
-      tokens.push(doc.token);
+      tokens.push({ token: doc.token, tokenType: doc.tokenType });
     }
     return tokens;
   }

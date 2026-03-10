@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Delete, UseGuards, Body, Param } from '@nestjs/common';
+import { Controller, Get, Post, Delete, UseGuards, Body, Param, BadRequestException, NotFoundException } from '@nestjs/common';
 import { CookbookaiService } from './cookbookai.service';
 import { CookbookaiProducer } from './cookbookai.producer';
 import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
@@ -52,11 +52,15 @@ export class CookbookaiController {
     @UseGuards(JwtAuthGuard, RolesGuard)
     async getRecipeById(@Request() req, @Param('id') id: string) {
         const userId = this.resolveUserId(req);
-        const recipe = await this.cookbookaiService.findById(id, userId);
-        console.log('[getRecipeById] found:', !!recipe);
-        if (!recipe) {
-            return { success: false, message: 'Recipe not found.' };
+        if (!id || !/^[a-f\d]{24}$/i.test(id)) {
+            throw new BadRequestException('Invalid recipe ID.');
         }
+
+        const recipe = await this.cookbookaiService.findById(id, userId);
+        if (!recipe) {
+            throw new NotFoundException('Recipe not found.');
+        }
+
         return { success: true, data: recipe };
     }
 

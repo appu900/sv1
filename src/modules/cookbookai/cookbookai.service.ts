@@ -635,7 +635,10 @@ export class CookbookaiService {
 
     async getTotalUserRecipeCount(userId: string): Promise<number> {
         const userMatch = this.buildUserMatch(userId);
-        return this.userRecipeModel.countDocuments(userMatch).exec();
+        return this.userRecipeModel.countDocuments({
+            ...userMatch,
+            status: { $in: ['accepted', 'pending'] },
+        }).exec();
     }
 
     async generateRecipeFromIngredients(

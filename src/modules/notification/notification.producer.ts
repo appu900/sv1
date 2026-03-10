@@ -7,6 +7,7 @@ import {
   FanOutJobData,
   SendBatchJobData,
   NotificationJobData,
+  TokenWithType,
 } from './interfaces';
 import {
   NOTIFICATION_QUEUE_NAME,
@@ -59,10 +60,10 @@ export class NotificationProducer {
 
   async enqueueBatches(
     notificationId: string,
-    tokens: string[],
+    tokens: TokenWithType[],
     priority: 'high' | 'normal' | 'low' = 'normal',
   ): Promise<number> {
-    const chunks: string[][] = [];
+    const chunks: TokenWithType[][] = [];
     for (let i = 0; i < tokens.length; i += FAN_OUT_BATCH_SIZE) {
       chunks.push(tokens.slice(i, i + FAN_OUT_BATCH_SIZE));
     }
