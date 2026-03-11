@@ -247,7 +247,13 @@ export class QantasService {
       .findOne({ userId: userIdObj, isDeleted: false, isLinked: true })
       .lean();
     if (!ffn) return null;
-    return this.toResponseDto(ffn);
+
+    const surveysCount = await this.getSurveyCountSinceLinking(
+      userId,
+      ffn.linkedAt?.toISOString?.() ?? ffn.linkedAt ?? null,
+    );
+
+    return this.toResponseDto(ffn, surveysCount);
   }
 
   async getDashboard(userId: string): Promise<QantasDashboardDto | null> {
@@ -309,13 +315,15 @@ export class QantasService {
 
     if (!profile) return;
 
-    profile.surveysCompletedSinceLink += 1;
-    await profile.save();
-
     const surveysCount = await this.getSurveyCountSinceLinking(
       userId,
       profile.linkedAt?.toISOString() ?? new Date().toISOString(),
     );
+
+    if (profile.surveysCompletedSinceLink !== surveysCount) {
+      profile.surveysCompletedSinceLink = surveysCount;
+      await profile.save();
+    }
 
     if (surveysCount < this.minSurveyThreshold) return;
 
@@ -540,7 +548,7 @@ export class QantasService {
 
   private async getSurveyCountSinceLinking(
     userId: string,
-    linkedAt: string | null,
+    linkedAt: string | Date | null,
   ): Promise<number> {
     const userIdObj = new Types.ObjectId(userId);
 
@@ -550,7 +558,10 @@ export class QantasService {
     });
   }
 
-  private toResponseDto(doc: any): QantasFFNResponseDto {
+  private toResponseDto(
+    doc: any,
+    surveysCompletedSinceLink?: number,
+  ): QantasFFNResponseDto {
     return {
       _id: doc._id.toString(),
       userId: doc.userId.toString(),
@@ -560,7 +571,8 @@ export class QantasService {
       linkStatus: doc.linkStatus ?? QantasLinkStatus.FAILED,
       linkedAt: doc.linkedAt?.toISOString?.() ?? doc.linkedAt,
       isRewarded: doc.isRewarded ?? false,
-      surveysCompletedSinceLink: doc.surveysCompletedSinceLink ?? 0,
+      surveysCompletedSinceLink:
+        surveysCompletedSinceLink ?? doc.surveysCompletedSinceLink ?? 0,
       totalPointsAwarded: doc.totalPointsAwarded ?? 0,
       greenTierUnlocked: doc.greenTierUnlocked ?? false,
       expirationDate: doc.expirationDate?.toISOString?.() ?? null,
