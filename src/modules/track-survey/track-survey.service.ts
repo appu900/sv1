@@ -34,6 +34,24 @@ export class TrackSurveyService {
     private readonly surveyConfigService: SurveyConfigService,
   ) {}
 
+  private normalizeSurveyDay(
+    surveyDay?: number | null,
+    fallbackDate?: Date | string,
+  ): number {
+    if (typeof surveyDay === 'number' && surveyDay >= 0 && surveyDay <= 6) {
+      return surveyDay;
+    }
+
+    if (fallbackDate) {
+      const parsedFallback = new Date(fallbackDate);
+      if (!Number.isNaN(parsedFallback.getTime())) {
+        return parsedFallback.getDay();
+      }
+    }
+
+    return new Date().getDay();
+  }
+
   private getWeekStart(surveyDay: number): Date {
     const today = new Date();
     const dayOfWeek = today.getDay();
@@ -44,8 +62,9 @@ export class TrackSurveyService {
     return weekStart;
   }
 
-  private getNextSurveyDate(lastSurveyWeek: Date, surveyDay: number): Date {
-    const nextWeek = new Date(lastSurveyWeek);
+  private getNextSurveyDate(surveyDay: number): Date {
+    const currentWeekStart = this.getWeekStart(surveyDay);
+    const nextWeek = new Date(currentWeekStart);
     nextWeek.setDate(nextWeek.getDate() + 7);
     return nextWeek;
   }
@@ -62,7 +81,6 @@ export class TrackSurveyService {
       (r) => r.countryCode === dto.country && r.isActive,
     );
     if (!countryRate) {
-      // Fallback: try India, then first active rate, then a hardcoded default
       countryRate = config.countryRates.find(
         (r) => r.countryCode === 'IN' && r.isActive,
       );
@@ -129,15 +147,16 @@ export class TrackSurveyService {
       };
     }
 
-    const currentWeekStart = this.getWeekStart(lastSurvey.surveyDay);
+    const surveyDay = this.normalizeSurveyDay(
+      lastSurvey.surveyDay,
+      lastSurvey.surveyWeek,
+    );
+    const currentWeekStart = this.getWeekStart(surveyDay);
     const lastSurveyWeek = new Date(lastSurvey.surveyWeek);
 
     const eligible = currentWeekStart.getTime() > lastSurveyWeek.getTime();
 
-    const nextSurveyDate = this.getNextSurveyDate(
-      lastSurveyWeek,
-      lastSurvey.surveyDay,
-    );
+    const nextSurveyDate = this.getNextSurveyDate(surveyDay);
 
     return {
       eligible,
@@ -156,15 +175,23 @@ export class TrackSurveyService {
   ): Promise<TrackSurveyResponseDto> {
     const userIdObj = new Types.ObjectId(userId);
 
+    const latestSurvey = await this.trackSurveyModel
+      .findOne({ userId: userIdObj })
+      .sort({ surveyWeek: -1 })
+      .lean();
+
+    const surveyDay = this.normalizeSurveyDay(
+      dto.surveyDay ?? latestSurvey?.surveyDay,
+      latestSurvey?.surveyWeek,
+    );
+    const weekStart = this.getWeekStart(surveyDay);
+
     const eligibility = await this.checkEligibility(userId);
     if (!eligibility.eligible) {
       throw new BadRequestException(
         'You have already completed a survey for this week',
       );
     }
-
-    const surveyDay = dto.surveyDay ?? new Date().getDay();
-    const weekStart = this.getWeekStart(surveyDay);
 
     const existingSurvey = await this.trackSurveyModel.findOne({
       userId: userIdObj,

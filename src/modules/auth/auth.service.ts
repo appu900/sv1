@@ -302,7 +302,6 @@ export class AuthService {
       sessionId,
     );
     
-    // Generate refresh token (same as access token but stored separately)
     const refreshToken = this.jwt.sign(
       { sub: user._id.toString(), sid: sessionId, role: user.role, type: 'refresh' },
       { expiresIn: '7d' }
@@ -328,26 +327,22 @@ export class AuthService {
     }
 
     try {
-      // Verify the refresh token
       const payload = this.jwt.verify(refreshToken);
       
       if (payload.type !== 'refresh') {
         throw new UnauthorizedException('Invalid token type');
       }
 
-      // Check if session is still valid in Redis
       const userId = await this.redis.getSession(payload.sid);
       if (!userId) {
         throw new UnauthorizedException('Session expired');
       }
 
-      // Get user to ensure they still exist
       const user = await this.userService.findById(payload.sub);
       if (!user) {
         throw new UnauthorizedException('User not found');
       }
 
-      // Generate new tokens
       const newSessionId = nanoid();
       await this.redis.setSession(newSessionId, user._id.toString(), 60 * 60 * 24 * 7);
       await this.redis.addUserSession(user._id.toString(), newSessionId, 60 * 60 * 24 * 7);
@@ -413,12 +408,10 @@ export class AuthService {
     };
   }
 
-  // ── Forgot Password ─────────────────────────────────────────────────────
   async forgotPassword(dto: ForgotPasswordDto) {
     this.logger.log(`[ForgotPassword] Request for: ${dto.email}`);
 
     const user = await this.userService.findByEmail(dto.email);
-    // Always return success to prevent email enumeration
     if (!user) {
       this.logger.warn(`[ForgotPassword] Email not found: ${dto.email}`);
       return { success: true, message: 'If this email is registered, a reset code has been sent.' };
@@ -438,7 +431,6 @@ export class AuthService {
     return { success: true, message: 'If this email is registered, a reset code has been sent.' };
   }
 
-  // ── Reset Password ────────────────────────────────────────────────────────
   async resetPassword(dto: ResetPasswordDto) {
     this.logger.log(`[ResetPassword] Attempting for: ${dto.email}`);
 
@@ -446,7 +438,6 @@ export class AuthService {
       throw new BadRequestException('Passwords do not match');
     }
 
-    // Per-email brute-force protection (max 5 attempts for this OTP)
     const attempts = await this.redis.incrementResetAttempts(dto.email);
     if (attempts > 5) {
       throw new BadRequestException('Too many attempts. Please request a new reset code.');
@@ -469,10 +460,8 @@ export class AuthService {
     const passwordHash = await bcrypt.hash(dto.newPassword, 10);
     await this.userService.updatePasswordHash(user._id.toString(), passwordHash);
 
-    // Invalidate all active sessions so stolen tokens no longer work
     await this.redis.deleteAllUserSessions(user._id.toString());
 
-    // Clear the OTP and brute-force counter
     await Promise.all([
       this.redis.del(`auth:reset-otp:${dto.email}`),
       this.redis.deleteResetAttempts(dto.email),
@@ -487,23 +476,20 @@ export class AuthService {
       throw new BadRequestException('invalid userId');
     const user = await this.userService.findById(userId);
     if (!user) throw new UnauthorizedException();
-    // Support both flat fields and nested dietaryProfile
     return {
       id: user._id.toString(),
-      _id: user._id, // Keep MongoDB ID for backward compatibility
+      _id: user._id,
       email: user.email,
       name: user.name,
-      first_name: user.name, // App expects first_name
+      first_name: user.name,
       role: user.role,
       country: user.country,
       stateCode: user.stateCode,
       pincode: (user as any).pincode || null,
 
-      // Add timestamp fields for account creation tracking
-      inserted_at: (user as any).createdAt, // MongoDB timestamps field
-      app_joined_at: (user as any).createdAt, // Alternative field name
+      inserted_at: (user as any).createdAt, 
+      app_joined_at: (user as any).createdAt, 
       
-      // Flatten dietary profile for easier access
       vegType: user.dietaryProfile?.vegType || 'OMNI',
       dairyFree: user.dietaryProfile?.dairyFree || false,
       nutFree: user.dietaryProfile?.nutFree || false,
@@ -514,12 +500,10 @@ export class AuthService {
       noOfChildren: user.dietaryProfile?.noOfChildren,
       tastePreference: user.dietaryProfile?.tastePrefrence || [],
       
-      // Keep nested structure for backward compatibility
       dietaryProfile: user.dietaryProfile,
     };
   }
 
-  // ── Update Profile (name) ────────────────────────────────────────────────
   async updateProfile(userId: string, dto: UpdateProfileDto) {
     if (!Types.ObjectId.isValid(userId))
       throw new BadRequestException('Invalid userId');
@@ -528,11 +512,9 @@ export class AuthService {
       await this.userService.updateName(userId, dto.name);
     }
 
-    // Return the updated profile in the same shape as getProfile
     return this.getProfile(userId);
   }
 
-  // ── Change Password (authenticated) ──────────────────────────────────────
   async changePassword(userId: string, dto: ChangePasswordDto) {
     this.logger.log(`[ChangePassword] userId: ${userId}`);
 
@@ -555,42 +537,26 @@ export class AuthService {
     return { success: true, message: 'Password updated successfully' };
   }
 
-  // ── Delete Account ────────────────────────────────────────────────────────
   async deleteAccount(userId: string): Promise<{ success: boolean; message: string }> {
     this.logger.log(`[DeleteAccount] Deleting account for userId: ${userId}`);
 
-    // 1. Fetch user first (need email + name for the farewell email)
     const user = await this.userService.findById(userId);
     if (!user) throw new UnauthorizedException('User not found');
 
     const { email, name } = user;
 
-    // 2. Invalidate all active sessions so JWTs stop working immediately
     await this.redis.deleteAllUserSessions(userId);
 
-    // 3. Hard-delete from the database
     await this.userService.deleteUser(userId);
 
     this.logger.log(`[DeleteAccount] Account deleted for ${email}`);
 
-    // 4. Queue farewell email (non-blocking – processed by BullMQ worker)
     await this.emailQueue.queueAccountDeletionEmail(email, name);
 
     return { success: true, message: 'Account deleted successfully' };
   }
 
-  /**
-   * Returns a derived onboarding snapshot for the authenticated user.
-   *
-   * The canonical signal for "onboarding complete" is whether the user has a
-   * country set (written when the onboarding carousel calls
-   * PUT /auth/dietary-profile). We map the stored user fields back to the
-   * legacy Onboarding shape so all existing client code keeps working.
-   *
-   * Returns { onboarding: null } when country is not yet set so that
-   * InitialNavigator and OnboardingScreen correctly route to the onboarding
-   * flow instead of silently skipping it on app restart.
-   */
+
   async getOnboarding(userId: string) {
     if (!Types.ObjectId.isValid(userId))
       throw new BadRequestException('invalid userId');
@@ -603,7 +569,6 @@ export class AuthService {
 
     return {
       onboarding: {
-        // Legacy clients read `suburb` as the country/location code.
         suburb: user.country,
         postcode: (user as any).pincode ?? '',
         no_of_people: {
@@ -613,8 +578,6 @@ export class AuthService {
         dietary_requirements: [],
         allergies: user.dietaryProfile?.otherAllergies ?? [],
         taste_preference: user.dietaryProfile?.tastePrefrence ?? [],
-        // track_survey_day is not stored on the user document; return a safe
-        // default so callers that pass it to getWeekNumber don't crash.
         track_survey_day: 'monday',
       },
     };
