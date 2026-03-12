@@ -35,6 +35,7 @@ import createWinstonLogger from './logger';
 import { SqsModule } from './sqs/sqs.module';
 import { NotificationModule } from './modules/notification/notification.module';
 import { CookbookaiModule } from './modules/cookbookai/cookbookai.module';
+import { SelfDestructModule } from './modules/self-destruct/self-destruct.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
@@ -104,6 +105,7 @@ import { CookbookaiModule } from './modules/cookbookai/cookbookai.module';
     SqsModule,
     NotificationModule,
     CookbookaiModule,
+    SelfDestructModule,
   ],
   controllers: [AppController],
   providers: [AppService],
