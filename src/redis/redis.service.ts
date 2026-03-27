@@ -179,10 +179,15 @@ async expire(key: string, ttlSeconds: number) {
   // Rate limiting for OTP requests
   async incrementOTPRequests(email: string, ttlSeconds: number = 3600): Promise<number> {
     const key = `auth:otp:rate:${email}`;
-    const count = await this.client.incr(key);
-    if (count === 1) {
-      await this.client.expire(key, ttlSeconds);
-    }
+    // Atomically INCR and set TTL only on first creation via Lua script
+    const count = await this.client.eval(
+      `local count = redis.call('INCR', KEYS[1])
+       if count == 1 then
+         redis.call('EXPIRE', KEYS[1], ARGV[1])
+       end
+       return count`,
+      1, key, String(ttlSeconds),
+    ) as number;
     return count;
   }
 
@@ -218,10 +223,15 @@ async expire(key: string, ttlSeconds: number) {
 
   async incrementResetAttempts(email: string): Promise<number> {
     const key = `auth:reset-attempts:${email}`;
-    const count = await this.client.incr(key);
-    if (count === 1) {
-      await this.client.expire(key, 900);
-    }
+    // Atomically INCR and set TTL only on first creation via Lua script
+    const count = await this.client.eval(
+      `local count = redis.call('INCR', KEYS[1])
+       if count == 1 then
+         redis.call('EXPIRE', KEYS[1], ARGV[1])
+       end
+       return count`,
+      1, key, '900',
+    ) as number;
     return count;
   }
 
