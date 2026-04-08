@@ -5,6 +5,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  OnModuleInit,
   UnauthorizedException,
   Inject,
   forwardRef,
@@ -25,6 +26,7 @@ import {
   CommunityGroupMemberDocument,
   GroupMemberRole,
 } from 'src/database/schemas/CommunityGroupMember.schema';
+import type {} from 'multer';
 import { JoinGroupDto } from './dto/Join-group.Memebr.dto';
 import { User, UserDocument } from 'src/database/schemas/user.auth.schema';
 import { Type } from 'class-transformer';
@@ -44,7 +46,7 @@ import { ListBucketInventoryConfigurationsCommand } from '@aws-sdk/client-s3';
 import { BadgesService } from '../badges/badges.service';
 
 @Injectable()
-export class CommunityGroupsService {
+export class CommunityGroupsService implements OnModuleInit {
   private readonly logger = new Logger(CommunityGroupsService.name);
   private readonly SINGLE_COMMUNITY_CACHE_KEY = 'community:group';
 
@@ -64,12 +66,256 @@ export class CommunityGroupsService {
     private readonly badgesService: BadgesService,
   ) {}
 
+  private buildOwnerIdQuery(userId: string) {
+    if (!Types.ObjectId.isValid(userId)) {
+      return userId;
+    }
+
+    return { $in: [userId, new Types.ObjectId(userId)] };
+  }
+
+  private isOwnerIdMatch(ownerId: Types.ObjectId | string | undefined, userId: string) {
+    return this.extractDocumentId(ownerId) === userId;
+  }
+
+  private extractDocumentId(value: unknown): string | null {
+    if (!value) return null;
+
+    if (typeof value === 'string') {
+      return value;
+    }
+
+    if (typeof value === 'object') {
+      const documentValue = value as {
+        _id?: Types.ObjectId | string;
+        id?: Types.ObjectId | string;
+        toString?: () => string;
+      };
+      const nestedId = documentValue._id ?? documentValue.id;
+      if (nestedId) {
+        return nestedId.toString();
+      }
+
+      const stringValue = documentValue.toString?.();
+      if (stringValue && stringValue !== '[object Object]') {
+        return stringValue;
+      }
+    }
+
+    return null;
+  }
+
+  private normalizeCachedValue<T>(cachedData: T | string | null): T | null {
+    if (cachedData === null) return null;
+    if (typeof cachedData !== 'string') return cachedData;
+
+    try {
+      return JSON.parse(cachedData) as T;
+    } catch {
+      return cachedData as T;
+    }
+  }
+
+  private async ensureOwnerMembership(groupId: Types.ObjectId, userId: string) {
+    const ownerUserId = new Types.ObjectId(userId);
+
+    await this.communityGroupMemberModel.findOneAndUpdate(
+      { groupId, userId: ownerUserId },
+      {
+        $set: { isActive: true, role: GroupMemberRole.OWNER },
+        $setOnInsert: { groupId, userId: ownerUserId },
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true },
+    );
+  }
+
+  private async authorizeOwnerByGroup(
+    group: { _id: Types.ObjectId; ownerId?: Types.ObjectId | string } | null,
+    userId: string,
+  ) {
+    if (!group || !Types.ObjectId.isValid(userId)) return false;
+
+    const ownerMembership = await this.communityGroupMemberModel.findOne({
+      groupId: group._id,
+      userId: new Types.ObjectId(userId),
+      isActive: true,
+      role: GroupMemberRole.OWNER,
+    });
+
+    if (ownerMembership) return true;
+
+    const isOwnerByField = this.isOwnerIdMatch(group.ownerId, userId);
+    if (!isOwnerByField) return false;
+
+    await this.ensureOwnerMembership(group._id, userId);
+    return true;
+  }
+
+  async onModuleInit() {
+    await this.migrateLegacyCommunityOwners();
+    await this.syncJoinCodesToRedis();
+  }
+
+  private async migrateLegacyCommunityOwners() {
+    try {
+      const legacyOwnerGroups = await this.CommunityModel.find({
+        ownerId: { $type: 'string' },
+      })
+        .select('_id ownerId')
+        .lean();
+
+      const ownerIdWrites: Array<any> = [];
+      let skippedInvalidOwnerIds = 0;
+
+      for (const group of legacyOwnerGroups as Array<{
+        _id: Types.ObjectId;
+        ownerId?: Types.ObjectId | string;
+      }>) {
+        const ownerId = group.ownerId?.toString();
+        if (!ownerId || !Types.ObjectId.isValid(ownerId)) {
+          skippedInvalidOwnerIds++;
+          this.logger.warn(
+            `[CommunityOwnerMigration] Skipping group ${group._id.toString()} due to invalid ownerId: ${ownerId}`,
+          );
+          continue;
+        }
+
+        ownerIdWrites.push({
+          updateOne: {
+            filter: { _id: group._id },
+            update: { $set: { ownerId: new Types.ObjectId(ownerId) } },
+          },
+        });
+      }
+
+      if (ownerIdWrites.length > 0) {
+        await this.CommunityModel.bulkWrite(ownerIdWrites, { ordered: false });
+      }
+
+      const activeGroups = await this.CommunityModel.find({
+        isDeleted: false,
+        ownerId: { $exists: true, $ne: null },
+      })
+        .select('_id ownerId')
+        .lean();
+
+      const membershipWrites: Array<any> = [];
+      const groupIdsToRecount = new Map<string, Types.ObjectId>();
+
+      for (const group of activeGroups as Array<{
+        _id: Types.ObjectId;
+        ownerId?: Types.ObjectId | string;
+      }>) {
+        const ownerId = group.ownerId?.toString();
+        if (!ownerId || !Types.ObjectId.isValid(ownerId)) {
+          skippedInvalidOwnerIds++;
+          this.logger.warn(
+            `[CommunityOwnerMigration] Cannot reconcile memberships for group ${group._id.toString()} due to invalid ownerId: ${ownerId}`,
+          );
+          continue;
+        }
+
+        const groupId = new Types.ObjectId(group._id.toString());
+        const ownerObjectId = new Types.ObjectId(ownerId);
+
+        groupIdsToRecount.set(groupId.toString(), groupId);
+        membershipWrites.push(
+          {
+            updateMany: {
+              filter: {
+                groupId,
+                role: GroupMemberRole.OWNER,
+                userId: { $ne: ownerObjectId },
+              },
+              update: { $set: { role: GroupMemberRole.MEMBER } },
+            },
+          },
+          {
+            updateOne: {
+              filter: { groupId, userId: ownerObjectId },
+              update: {
+                $set: { isActive: true, role: GroupMemberRole.OWNER },
+                $setOnInsert: { groupId, userId: ownerObjectId },
+              },
+              upsert: true,
+            },
+          },
+        );
+      }
+
+      if (membershipWrites.length > 0) {
+        await this.communityGroupMemberModel.bulkWrite(membershipWrites, {
+          ordered: false,
+        });
+      }
+
+      const groupIds = Array.from(groupIdsToRecount.values());
+      if (groupIds.length > 0) {
+        const membershipCounts = await this.communityGroupMemberModel.aggregate<{
+          _id: Types.ObjectId;
+          count: number;
+        }>([
+          {
+            $match: {
+              groupId: { $in: groupIds },
+              isActive: true,
+            },
+          },
+          {
+            $group: {
+              _id: '$groupId',
+              count: { $sum: 1 },
+            },
+          },
+        ]);
+
+        const countMap = new Map(
+          membershipCounts.map((entry) => [entry._id.toString(), entry.count]),
+        );
+
+        const countWrites = groupIds.map((groupId) => ({
+          updateOne: {
+            filter: { _id: groupId },
+            update: { $set: { memberCount: countMap.get(groupId.toString()) ?? 0 } },
+          },
+        }));
+
+        await this.CommunityModel.bulkWrite(countWrites, { ordered: false });
+      }
+
+      if (ownerIdWrites.length > 0 || membershipWrites.length > 0) {
+        await Promise.all([
+          this.redisService.delByPattern(`${this.SINGLE_COMMUNITY_CACHE_KEY}:*`),
+          this.redisService.delByPattern('community:Groups:*'),
+          this.redisService.delByPattern('community:members:*'),
+        ]);
+      }
+
+      if (
+        ownerIdWrites.length > 0 ||
+        membershipWrites.length > 0 ||
+        skippedInvalidOwnerIds > 0
+      ) {
+        this.logger.log(
+          `[CommunityOwnerMigration] normalizedOwnerIds=${ownerIdWrites.length} reconciledGroups=${groupIdsToRecount.size} skippedInvalidOwnerIds=${skippedInvalidOwnerIds}`,
+        );
+      }
+    } catch (error) {
+      const migrationError =
+        error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `[CommunityOwnerMigration] Failed to run legacy owner migration: ${migrationError}`,
+      );
+    }
+  }
+
   async syncJoinCodesToRedis() {
     const codes = await this.CommunityModel.find({ isDeleted: false })
       .select('joinCode')
       .lean();
+
+    await this.redisService.resetJoinCodes();
     if (codes.length > 0) {
-      await this.redisService.resetJoinCodes();
       await this.redisService.addJoinCodes(codes.map((c) => c.joinCode));
     }
   }
@@ -126,7 +372,7 @@ export class CommunityGroupsService {
       description: createCommunityGroupDto.description,
       profilePhotoUrl: profileImageUrl,
       joinCode: code,
-      ownerId: userId,
+      ownerId: new Types.ObjectId(userId),
       memberCount: 1,
     });
 
@@ -139,7 +385,7 @@ export class CommunityGroupsService {
     });
 
     if (await this.redisService.isHealthy()) {
-      await this.redisService.releaseJoinCode(code);
+      await this.redisService.addJoinCodes([code]);
       await this.redisService.del(cachedKey);
     }
     console.log(group);
@@ -151,12 +397,13 @@ export class CommunityGroupsService {
     const cachedKey = `community:Groups:${userId}`;
     const cachedData = await this.redisService.get(cachedKey);
     console.log('CachedData', cachedData);
-    if (cachedData) return cachedData;
+    const normalizedCache = this.normalizeCachedValue<typeof cachedData>(cachedData);
+    if (normalizedCache) return normalizedCache;
     const result = await this.CommunityModel.find({ 
-      ownerId: userId,
+      ownerId: this.buildOwnerIdQuery(userId),
       isDeleted: false 
     });
-    await this.redisService.set(cachedKey, JSON.stringify(result), 60 * 20);
+    await this.redisService.set(cachedKey, result, 60 * 20);
     return result;
   }
 
@@ -227,7 +474,8 @@ export class CommunityGroupsService {
 
       return { message: 'Joined this group sucessfully' };
     } catch (error) {
-      if (error.code === 11000) {
+      const databaseError = error as { code?: number };
+      if (databaseError.code === 11000) {
         throw new BadRequestException('already a memeber');
       }
       throw error;
@@ -241,7 +489,8 @@ export class CommunityGroupsService {
     // ** caching phase
     const cachedKey = `${this.SINGLE_COMMUNITY_CACHE_KEY}:${groupId.toString()}`;
     const cachedData = await this.redisService.get(cachedKey);
-    if (cachedData) return cachedData;
+    const normalizedCache = this.normalizeCachedValue<typeof cachedData>(cachedData);
+    if (normalizedCache) return normalizedCache;
 
     const group = await this.CommunityModel.findOne({
       _id: new Types.ObjectId(groupId),
@@ -257,7 +506,7 @@ export class CommunityGroupsService {
       group,
       members,
     };
-    await this.redisService.set(cachedKey, JSON.stringify(response), 60 * 20);
+    await this.redisService.set(cachedKey, response, 60 * 20);
     return response;
   }
 
@@ -273,13 +522,8 @@ export class CommunityGroupsService {
     );
     if (!group || group.isDeleted === true)
       throw new NotFoundException('community Not found');
-    const groupMemebr = await this.communityGroupMemberModel.findOne({
-      groupId: group._id,
-      userId: new Types.ObjectId(userId),
-      isActive: true,
-      role: GroupMemberRole.OWNER,
-    });
-    if (!groupMemebr) throw new ForbiddenException('only owner can edit');
+    const isOwner = await this.authorizeOwnerByGroup(group, userId);
+    if (!isOwner) throw new ForbiddenException('only owner can edit');
     if (dto.name) group.name = dto.name;
     if (dto.description) group.description = dto.description;
     let imageUrl = '';
@@ -303,13 +547,8 @@ export class CommunityGroupsService {
     if (!existingGroup || existingGroup.isDeleted === true) {
       throw new NotFoundException('Community not found');
     }
-    const isAuthorizedMemeber = await this.communityGroupMemberModel.findOne({
-      groupId: existingGroup._id,
-      userId: new Types.ObjectId(userId),
-      isActive: true,
-      role: GroupMemberRole.OWNER,
-    });
-    if (!isAuthorizedMemeber)
+    const isOwner = await this.authorizeOwnerByGroup(existingGroup, userId);
+    if (!isOwner)
       throw new ForbiddenException('Only owner can Perform this Operation');
     
     const allMembers = await this.communityGroupMemberModel.find({
@@ -319,6 +558,10 @@ export class CommunityGroupsService {
 
     existingGroup.isDeleted = true;
     await existingGroup.save();
+
+    if (await this.redisService.isHealthy()) {
+      await this.redisService.releaseJoinCode(existingGroup.joinCode);
+    }
 
     await this.communityGroupMemberModel.updateMany(
       { groupId: existingGroup._id, isActive: true },
@@ -362,18 +605,15 @@ export class CommunityGroupsService {
       !Types.ObjectId.isValid(dto.communityId)
     )
       throw new BadRequestException();
-    const authorizedUser = await this.communityGroupMemberModel.findOne({
-      groupId: new Types.ObjectId(dto.communityId),
-      userId: new Types.ObjectId(userId),
-      isActive: true,
-      role: GroupMemberRole.OWNER,
-    });
-    if (!authorizedUser)
-      throw new ForbiddenException('only owners can create the challange');
     const community = await this.CommunityModel.findById(
       new Types.ObjectId(dto.communityId),
     );
     if (!community) throw new NotFoundException();
+
+    const isOwner = await this.authorizeOwnerByGroup(community, userId);
+    if (!isOwner)
+      throw new ForbiddenException('only owners can create the challange');
+
     const result = await this.communityChallengeModel.create({
       communityId: new Types.ObjectId(dto.communityId),
       createdBy: new Types.ObjectId(userId),
@@ -397,7 +637,8 @@ export class CommunityGroupsService {
       : `community:challenges:communityId:${communityId}`;
     
     const cachedData = await this.redisService.get(cachedKey);
-    if (cachedData) return cachedData;
+    const normalizedCache = this.normalizeCachedValue<typeof cachedData>(cachedData);
+    if (normalizedCache) return normalizedCache;
     
     const community = await this.CommunityModel.findById(
       new Types.ObjectId(communityId),
@@ -436,7 +677,7 @@ export class CommunityGroupsService {
       userParticipation,
     };
 
-    await this.redisService.set(cachedKey, JSON.stringify(result), 60 * 30);
+    await this.redisService.set(cachedKey, result, 60 * 30);
     return result;
   }
 
@@ -656,6 +897,21 @@ export class CommunityGroupsService {
     }
 
     // Verify current user is the owner
+    // Verify group exists and is not deleted
+    const group = await this.CommunityModel.findOne({
+      _id: new Types.ObjectId(groupId),
+      isDeleted: false,
+    });
+
+    if (!group) {
+      throw new NotFoundException('Group not found');
+    }
+
+    const isOwner = await this.authorizeOwnerByGroup(group, userId);
+    if (!isOwner) {
+      throw new ForbiddenException('Only the owner can transfer ownership');
+    }
+
     const currentOwnerMembership = await this.communityGroupMemberModel.findOne({
       groupId: new Types.ObjectId(groupId),
       userId: new Types.ObjectId(userId),
@@ -665,16 +921,6 @@ export class CommunityGroupsService {
 
     if (!currentOwnerMembership) {
       throw new ForbiddenException('Only the owner can transfer ownership');
-    }
-
-    // Verify group exists and is not deleted
-    const group = await this.CommunityModel.findOne({
-      _id: new Types.ObjectId(groupId),
-      isDeleted: false,
-    });
-
-    if (!group) {
-      throw new NotFoundException('Group not found');
     }
 
     // Check if new owner is already a member
@@ -743,12 +989,8 @@ export class CommunityGroupsService {
     }
 
     // Verify user is the owner of the group
-    const isOwner = await this.communityGroupMemberModel.findOne({
-      groupId: challenge.communityId,
-      userId: new Types.ObjectId(userId),
-      isActive: true,
-      role: GroupMemberRole.OWNER,
-    });
+    const group = await this.CommunityModel.findById(challenge.communityId);
+    const isOwner = await this.authorizeOwnerByGroup(group as any, userId);
 
     if (!isOwner) {
       throw new ForbiddenException('Only group owner can edit challenges');
@@ -787,12 +1029,8 @@ export class CommunityGroupsService {
     }
 
     // Verify user is the owner of the group
-    const isOwner = await this.communityGroupMemberModel.findOne({
-      groupId: challenge.communityId,
-      userId: new Types.ObjectId(userId),
-      isActive: true,
-      role: GroupMemberRole.OWNER,
-    });
+    const group = await this.CommunityModel.findById(challenge.communityId);
+    const isOwner = await this.authorizeOwnerByGroup(group as any, userId);
 
     if (!isOwner) {
       throw new ForbiddenException('Only group owner can delete challenges');
@@ -901,12 +1139,8 @@ export class CommunityGroupsService {
       throw new NotFoundException('Challenge not found');
     }
 
-    const isOwner = await this.communityGroupMemberModel.findOne({
-      groupId: challenge.communityId,
-      userId: new Types.ObjectId(userId),
-      isActive: true,
-      role: GroupMemberRole.OWNER,
-    });
+    const group = await this.CommunityModel.findById(challenge.communityId);
+    const isOwner = await this.authorizeOwnerByGroup(group as any, userId);
 
     if (!isOwner) {
       throw new ForbiddenException('Only group owner can finalize challenges');
@@ -931,7 +1165,7 @@ export class CommunityGroupsService {
     const totalParticipants = participants.length;
     const winners = participants.slice(0, Math.min(topWinnersCount, totalParticipants));
     const badgesAwarded: Array<{
-      userId: Types.ObjectId;
+      userId: string;
       rank: number;
       mealsCompleted: number;
     }> = [];
@@ -940,12 +1174,20 @@ export class CommunityGroupsService {
     for (let i = 0; i < winners.length; i++) {
       const winner = winners[i];
       const rank = i + 1;
+      const winnerUserId = this.extractDocumentId(winner.userId);
+
+      if (!winnerUserId) {
+        this.logger.warn(
+          `Skipping badge award for challenge ${challengeId} because winner userId could not be resolved`,
+        );
+        continue;
+      }
       
       try {
         const userBadge = await this.badgesService.awardChallengeWinnerBadge(
           challengeId.toString(),
           challenge.challengeName,
-          winner.userId.toString(),
+          winnerUserId,
           rank,
           totalParticipants,
           winner.totalMealsCompleted || 0,
@@ -953,14 +1195,14 @@ export class CommunityGroupsService {
 
         if (userBadge) {
           badgesAwarded.push({
-            userId: winner.userId,
+            userId: winnerUserId,
             rank,
             mealsCompleted: winner.totalMealsCompleted,
           });
         }
       } catch (error) {
         this.logger.error(
-          `Failed to award badge to winner ${winner.userId} for challenge ${challengeId}:`,
+          `Failed to award badge to winner ${winnerUserId} for challenge ${challengeId}:`,
           error,
         );
       }
@@ -1014,6 +1256,32 @@ export class CommunityGroupsService {
           role: GroupMemberRole.OWNER,
           isActive: true,
         }).select('userId');
+
+        if (!owner) {
+          const group = await this.CommunityModel.findById(ch.communityId as any)
+            .select('_id ownerId')
+            .lean();
+
+          if (group?.ownerId) {
+            const ownerUserId = String(group.ownerId);
+            if (Types.ObjectId.isValid(ownerUserId)) {
+              await this.ensureOwnerMembership(new Types.ObjectId(group._id as any), ownerUserId);
+
+              const res = await this.finalizeChallengeAndAwardBadges(
+                ownerUserId,
+                (ch._id as any).toString(),
+                topWinnersCount,
+              );
+
+              results.push({
+                challengeId: (ch._id as any).toString(),
+                finalized: true,
+                winnersAwarded: (res as any)?.winnersAwarded ?? 0,
+              });
+              continue;
+            }
+          }
+        }
 
         if (!owner) {
           results.push({

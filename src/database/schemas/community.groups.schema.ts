@@ -16,7 +16,7 @@ export class CommunityGroups {
   joinCode: string;
 
   @Prop({ type:Types.ObjectId,ref:'User',required:true})
-  ownerId: string;
+  ownerId: Types.ObjectId | string;
 
   @Prop({ default:1 })
   memberCount: number;
