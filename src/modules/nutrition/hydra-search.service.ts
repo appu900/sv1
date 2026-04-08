@@ -1,0 +1,377 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { FoodItemService } from './food-item.service';
+import { OpenFoodFactsProvider } from './providers/open-food-facts.provider';
+import { UsdaProvider } from './providers/usda.provider';
+import { CalorieNinjasProvider } from './providers/calorie-ninjas.provider';
+import { NormalizedFood } from './providers/open-food-facts.provider';
+import { FoodItemDocument } from '../../database/schemas/nutrition/food-item.schema';
+
+interface HydraSearchOpts {
+  limit?: number;
+  locale?: string;
+}
+
+interface ScoredFood extends NormalizedFood {
+  _hydraScore: number;
+}
+
+interface CircuitState {
+  failures: number;
+  lastFailure: number;
+  state: 'closed' | 'open' | 'half-open';
+}
+
+type ProviderName = 'calorieNinjas' | 'usda' | 'offIndia' | 'offGlobal';
+
+
+const CIRCUIT_FAILURE_THRESHOLD = 3;
+const CIRCUIT_COOLDOWN_MS = 30_000; 
+const PER_PROVIDER_TIMEOUT_MS = 6_000;
+
+const SOURCE_WEIGHT: Record<ProviderName, number> = {
+  calorieNinjas: 0.90, 
+  usda: 1.0,          
+  offIndia: 0.80,     
+  offGlobal: 0.70,   
+};
+
+const QUERY_EXPANSIONS: Record<string, string> = {
+  'pb': 'peanut butter',
+  'oj': 'orange juice',
+  'chix': 'chicken',
+  'bc': 'butter chicken',
+  'pbm': 'paneer butter masala',
+  'pp': 'palak paneer',
+  'dm': 'dal makhani',
+  'gc': 'grilled chicken',
+};
+
+@Injectable()
+export class HydraSearchService {
+  private readonly logger = new Logger('HydraSearch');
+
+  private circuits: Record<ProviderName, CircuitState> = {
+    calorieNinjas: { failures: 0, lastFailure: 0, state: 'closed' },
+    usda: { failures: 0, lastFailure: 0, state: 'closed' },
+    offIndia: { failures: 0, lastFailure: 0, state: 'closed' },
+    offGlobal: { failures: 0, lastFailure: 0, state: 'closed' },
+  };
+
+  constructor(
+    private readonly foodItemService: FoodItemService,
+    private readonly calorieNinjas: CalorieNinjasProvider,
+    private readonly usda: UsdaProvider,
+    private readonly openFoodFacts: OpenFoodFactsProvider,
+  ) {}
+
+  async search(
+    rawQuery: string,
+    opts: HydraSearchOpts = {},
+  ): Promise<{ count: number; items: FoodItemDocument[] }> {
+    const limit = Math.min(Math.max(opts.limit ?? 20, 1), 50);
+    const locale = opts.locale ?? 'in';
+
+    const q = this.normalize(rawQuery);
+    if (!q) {
+      const cached = await this.foodItemService.search({ limit });
+      return { count: cached.length, items: cached };
+    }
+
+
+    const [cached, liveResults] = await Promise.all([
+      this.foodItemService.search({ q, locale, limit }),
+      this.fanOut(q, limit, locale),
+    ]);
+
+    this.logger.debug(
+      `HydraSearch "${q}": cache=${cached.length}, live providers=${liveResults.length} [${liveResults.map((r) => `${r.provider}:${r.items.length}`).join(', ')}]`,
+    );
+
+    const scored = this.scoreAndDedupe(q, liveResults);
+
+    if (scored.length === 0 && cached.length > 0) {
+      this.logger.debug(`HydraSearch "${q}": all providers empty, serving ${cached.length} cached items`);
+      return { count: cached.length, items: cached.slice(0, limit) };
+    }
+
+    const liveKeys = new Set(scored.map((s) => this.dedupeKey(s)));
+    for (const doc of cached) {
+      const key = `${(doc.canonicalName ?? '').replace(/\s+/g, ' ')}|${(doc.brand ?? '').toLowerCase().trim()}`;
+      if (liveKeys.has(key)) continue;
+      scored.push({
+        canonicalName: doc.canonicalName,
+        displayName: doc.displayName,
+        aliases: doc.aliases ?? [],
+        brand: doc.brand ?? null,
+        barcode: doc.barcode ?? null,
+        category: doc.category,
+        servingOptions: doc.servingOptions ?? [],
+        per100g: doc.per100g,
+        source: doc.source,
+        confidence: doc.confidence ?? 0.7,
+        verified: doc.verified ?? false,
+        locale: doc.locale ?? 'global',
+        _hydraScore: 0,
+      } as ScoredFood);
+      liveKeys.add(key);
+    }
+
+    const finalItems = scored.slice(0, limit);
+    const items = await this.warmCacheAndReturn(finalItems);
+
+    return { count: items.length, items };
+  }
+
+  
+  private normalize(raw: string): string {
+    let q = raw.trim().toLowerCase();
+
+    if (QUERY_EXPANSIONS[q]) q = QUERY_EXPANSIONS[q];
+
+    q = q.replace(/\b(the|a|an|of|with|and|in)\b/g, ' ').replace(/\s+/g, ' ').trim();
+
+    return q;
+  }
+
+  
+  private async fanOut(
+    q: string,
+    limit: number,
+    locale: string,
+  ): Promise<{ provider: ProviderName; items: NormalizedFood[] }[]> {
+    type Head = {
+      name: ProviderName;
+      fn: () => Promise<NormalizedFood[]>;
+    };
+
+    const heads: Head[] = [
+      {
+        name: 'calorieNinjas',
+        fn: () => this.calorieNinjas.search(q, { limit }),
+      },
+      {
+        name: 'usda',
+        fn: () => this.usda.search(q, { pageSize: limit }),
+      },
+      {
+        name: 'offIndia',
+        fn: () => this.openFoodFacts.search(q, { pageSize: limit, country: 'india' }),
+      },
+      {
+        name: 'offGlobal',
+        fn: () => this.openFoodFacts.search(q, { pageSize: Math.ceil(limit / 2) }),
+      },
+    ];
+
+    const activeHeads = heads.filter((h) => this.shouldAttempt(h.name));
+
+    const settled = await Promise.allSettled(
+      activeHeads.map(async (head) => {
+        try {
+          const items = await this.withTimeout(head.fn(), PER_PROVIDER_TIMEOUT_MS);
+          this.recordSuccess(head.name);
+          return { provider: head.name, items };
+        } catch (err) {
+          this.recordFailure(head.name, err as Error);
+          return { provider: head.name, items: [] as NormalizedFood[] };
+        }
+      }),
+    );
+
+    return settled
+      .filter((r): r is PromiseFulfilledResult<{ provider: ProviderName; items: NormalizedFood[] }> =>
+        r.status === 'fulfilled',
+      )
+      .map((r) => r.value);
+  }
+
+  private scoreAndDedupe(
+    query: string,
+    providerResults: { provider: ProviderName; items: NormalizedFood[] }[],
+  ): ScoredFood[] {
+    const buckets: ScoredFood[][] = [];
+
+    for (const { provider, items } of providerResults) {
+      if (items.length === 0) continue;
+      const scored: ScoredFood[] = items.map((item) => ({
+        ...item,
+        _hydraScore: this.computeScore(query, item, provider),
+      }));
+      scored.sort((a, b) => b._hydraScore - a._hydraScore);
+      buckets.push(scored);
+    }
+
+    buckets.sort(
+      (a, b) => (b[0]?._hydraScore ?? 0) - (a[0]?._hydraScore ?? 0),
+    );
+
+ 
+    const interleaved: ScoredFood[] = [];
+    const cursors = buckets.map(() => 0);
+    let active = true;
+
+    while (active) {
+      active = false;
+      for (let b = 0; b < buckets.length; b++) {
+        if (cursors[b] < buckets[b].length) {
+          interleaved.push(buckets[b][cursors[b]]);
+          cursors[b]++;
+          active = true;
+        }
+      }
+    }
+
+    const deduped: ScoredFood[] = [];
+    const seenKeys = new Set<string>();
+
+    for (const item of interleaved) {
+      const key = this.dedupeKey(item);
+      if (seenKeys.has(key)) continue;
+
+      if (this.isNearDuplicate(item, deduped)) continue;
+
+      seenKeys.add(key);
+      deduped.push(item);
+    }
+
+    return deduped;
+  }
+
+  private computeScore(
+    query: string,
+    item: NormalizedFood,
+    provider: ProviderName,
+  ): number {
+    let score = 0;
+
+    score += (SOURCE_WEIGHT[provider] ?? 0.5) * 30;
+
+    const name = item.canonicalName;
+    if (name === query) {
+      score += 40; 
+    } else if (name.startsWith(query)) {
+      score += 30;
+    } else if (name.includes(query)) {
+      score += 20;
+    } else {
+      const qt = new Set(query.split(/\s+/));
+      const nt = name.split(/\s+/);
+      const overlap = nt.filter((t) => qt.has(t)).length;
+      score += Math.min(overlap * 8, 20);
+    }
+
+    const n = item.per100g;
+    const filled = [n.kcal, n.protein_g, n.carbs_g, n.fat_g, n.fiber_g, n.sugar_g, n.sodium_mg]
+      .filter((v) => v > 0).length;
+    score += (filled / 7) * 15;
+
+    if (item.verified) score += 10;
+
+    score += (item.confidence ?? 0) * 5;
+
+    return Math.round(score * 100) / 100;
+  }
+
+  private dedupeKey(item: NormalizedFood): string {
+    return `${item.canonicalName.replace(/\s+/g, ' ')}|${(item.brand ?? '').toLowerCase().trim()}`;
+  }
+
+  private isNearDuplicate(candidate: ScoredFood, accepted: ScoredFood[]): boolean {
+    const cTokens = candidate.canonicalName.split(/\s+/).filter(Boolean);
+    if (cTokens.length === 0) return false;
+
+    for (const existing of accepted) {
+      if ((candidate.brand ?? '') !== (existing.brand ?? '')) continue;
+
+      const eTokens = new Set(existing.canonicalName.split(/\s+/).filter(Boolean));
+      const overlap = cTokens.filter((t) => eTokens.has(t)).length;
+      const ratio = overlap / Math.max(cTokens.length, eTokens.size);
+
+      if (ratio >= 0.8) return true;
+    }
+    return false;
+  }
+
+  private async warmCacheAndReturn(scored: ScoredFood[]): Promise<FoodItemDocument[]> {
+    const results = await Promise.all(
+      scored.map(async (item) => {
+        const { _hydraScore, ...normalized } = item;
+        try {
+          return await this.foodItemService.upsert({ ...normalized, isPublic: true });
+        } catch (err) {
+          this.logger.warn(
+            `Cache warm failed for "${item.canonicalName}": ${(err as Error).message}`,
+          );
+          return this.toDocument(item);
+        }
+      }),
+    );
+    return results;
+  }
+
+  private toDocument(item: ScoredFood): FoodItemDocument {
+    const { _hydraScore, ...rest } = item;
+    return {
+      _id: this.syntheticId(item),
+      ...rest,
+      isPublic: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as any;
+  }
+
+  private syntheticId(item: NormalizedFood): string {
+    const raw = `${item.canonicalName}|${item.brand ?? ''}|${item.locale}`;
+    let hash = 0;
+    for (let i = 0; i < raw.length; i++) {
+      hash = ((hash << 5) - hash + raw.charCodeAt(i)) | 0;
+    }
+    return Math.abs(hash).toString(36).padStart(12, '0');
+  }
+
+  private shouldAttempt(name: ProviderName): boolean {
+    const c = this.circuits[name];
+    if (c.state === 'closed') return true;
+
+    const elapsed = Date.now() - c.lastFailure;
+    if (elapsed >= CIRCUIT_COOLDOWN_MS) {
+      c.state = 'half-open';
+      this.logger.log(`Circuit ${name}: OPEN → HALF-OPEN (cooldown elapsed)`);
+      return true;
+    }
+
+    return false;
+  }
+
+  private recordSuccess(name: ProviderName): void {
+    const c = this.circuits[name];
+    if (c.state !== 'closed') {
+      this.logger.log(`Circuit ${name}: ${c.state} → CLOSED (success)`);
+    }
+    c.failures = 0;
+    c.state = 'closed';
+  }
+
+  private recordFailure(name: ProviderName, err: Error): void {
+    const c = this.circuits[name];
+    c.failures++;
+    c.lastFailure = Date.now();
+
+    if (c.state === 'half-open' || c.failures >= CIRCUIT_FAILURE_THRESHOLD) {
+      c.state = 'open';
+      this.logger.warn(
+        `Circuit ${name}: → OPEN after ${c.failures} failures (${err.message}). ` +
+          `Cooling down ${CIRCUIT_COOLDOWN_MS / 1000}s.`,
+      );
+    }
+  }
+
+  private withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`Timeout after ${ms}ms`)), ms);
+      promise
+        .then((val) => { clearTimeout(timer); resolve(val); })
+        .catch((err) => { clearTimeout(timer); reject(err); });
+    });
+  }
+}

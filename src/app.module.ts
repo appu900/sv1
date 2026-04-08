@@ -36,6 +36,7 @@ import { SqsModule } from './sqs/sqs.module';
 import { NotificationModule } from './modules/notification/notification.module';
 import { CookbookaiModule } from './modules/cookbookai/cookbookai.module';
 import { SharedRecipeModule } from './modules/shared-recipe/shared-recipe.module';
+import { NutritionModule } from './modules/nutrition/nutrition.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
@@ -106,6 +107,7 @@ import { SharedRecipeModule } from './modules/shared-recipe/shared-recipe.module
     NotificationModule,
     CookbookaiModule,
     SharedRecipeModule,
+    NutritionModule,
   ],
   controllers: [AppController],
   providers: [AppService],
