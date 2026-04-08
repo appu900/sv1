@@ -8,7 +8,7 @@ import { Type } from "class-transformer";
 export class SaveFoodDto{
     @IsOptional()
     @IsArray()
-    ingredinatsIds:string[]
+    ingredinatsIds?: string[]
 
     @IsOptional()
     @IsString()

@@ -62,7 +62,7 @@ export class AnalyticsService {
     private readonly leaderboardProfileModel: Model<LeaderboardProfileDocument>,
     private readonly eventEmmiter: EventEmitter2,
   ) {}
-async saveFood(userId: string, ingredinatIds: string[], frameworkId?: string, directIngredients?: { name: string; averageWeight: number }[]) {
+async saveFood(userId: string, ingredinatIds: string[] = [], frameworkId?: string, directIngredients?: { name: string; averageWeight: number }[]) {
   try {
     const user = await this.userModel.findOne({ _id: userId }).lean();
     if (!user) throw new Error('User not found');
