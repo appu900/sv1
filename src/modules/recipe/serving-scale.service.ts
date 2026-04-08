@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
@@ -299,10 +300,29 @@ Return JSON:
   }
 
   private buildCacheKey(dto: ScaleServingsDto): string {
-    const ingredientHash = dto.ingredients
-      .map((i) => `${i.ingredientName}:${i.originalQuantity}`)
-      .sort()
-      .join('|');
-    return `${this.CACHE_PREFIX}:${dto.originalServings}:${dto.desiredServings}:${Buffer.from(ingredientHash).toString('base64').substring(0, 64)}`;
+    const normalizedPayload = {
+      recipeId: dto.recipeId?.trim() || '',
+      recipeTitle: dto.recipeTitle?.trim().toLowerCase() || '',
+      originalServings: dto.originalServings,
+      desiredServings: dto.desiredServings,
+      ingredients: dto.ingredients
+        .map((ingredient) => ({
+          ingredientId: ingredient.ingredientId?.trim() || '',
+          ingredientName: ingredient.ingredientName.trim().toLowerCase(),
+          originalQuantity: ingredient.originalQuantity.trim().toLowerCase(),
+          preparation: ingredient.preparation?.trim().toLowerCase() || '',
+        }))
+        .sort((left, right) =>
+          `${left.ingredientId}:${left.ingredientName}:${left.originalQuantity}:${left.preparation}`.localeCompare(
+            `${right.ingredientId}:${right.ingredientName}:${right.originalQuantity}:${right.preparation}`,
+          ),
+        ),
+    };
+
+    const payloadHash = createHash('sha256')
+      .update(JSON.stringify(normalizedPayload))
+      .digest('hex');
+
+    return `${this.CACHE_PREFIX}:${payloadHash}`;
   }
 }
