@@ -78,12 +78,7 @@ export class HydraSearchService {
       return { count: cached.length, items: cached };
     }
 
-
-    const cached = await this.foodItemService.search({ q, locale, limit });
-    if (cached.length >= limit) {
-      this.logger.debug(`HydraSearch "${q}": cache sufficient (${cached.length} items), skipping live providers`);
-      return { count: cached.length, items: cached.slice(0, limit) };
-    }
+    const cached = await this.foodItemService.search({ q, locale, limit: Math.max(limit * 2, limit) });
 
     const liveResults = await this.fanOut(q, limit, locale);
     this.logger.debug(
@@ -99,7 +94,7 @@ export class HydraSearchService {
 
     const liveKeys = new Set(scored.map((s) => this.dedupeKey(s)));
     for (const doc of cached) {
-      const key = `${(doc.canonicalName ?? '').replace(/\s+/g, ' ')}|${(doc.brand ?? '').toLowerCase().trim()}`;
+      const key = this.dedupeKey(doc as any);
       if (liveKeys.has(key)) continue;
       scored.push({
         canonicalName: doc.canonicalName,
@@ -119,6 +114,7 @@ export class HydraSearchService {
       liveKeys.add(key);
     }
 
+    scored.sort((a, b) => b._hydraScore - a._hydraScore);
     const finalItems = scored.slice(0, limit);
     const items = await this.warmCacheAndReturn(finalItems);
 
@@ -289,7 +285,16 @@ export class HydraSearchService {
   }
 
   private dedupeKey(item: NormalizedFood): string {
-    return `${item.canonicalName.replace(/\s+/g, ' ')}|${(item.brand ?? '').toLowerCase().trim()}`;
+    if (item.barcode) {
+      return `bc:${item.barcode}`;
+    }
+
+    return [
+      item.canonicalName.replace(/\s+/g, ' '),
+      (item.brand ?? '').toLowerCase().trim(),
+      item.locale ?? 'global',
+      item.source ?? 'unknown',
+    ].join('|');
   }
 
   private async warmCacheAndReturn(scored: ScoredFood[]): Promise<FoodItemDocument[]> {
@@ -300,25 +305,62 @@ export class HydraSearchService {
 
     try {
       const docs = await this.foodItemService.bulkUpsert(normalized);
-      // Preserve the original scored order
-      const docMap = new Map<string, FoodItemDocument>();
-      for (const doc of docs) {
-        const key = `${(doc.canonicalName ?? '').toLowerCase()}|${(doc.brand ?? '').toLowerCase().trim()}|${doc.locale ?? 'global'}`;
-        docMap.set(key, doc);
-        if (doc.barcode) docMap.set(`bc:${doc.barcode}`, doc);
-      }
-      return scored.map((item) => {
-        if (item.barcode) {
-          const found = docMap.get(`bc:${item.barcode}`);
-          if (found) return found;
-        }
-        const key = `${item.canonicalName.toLowerCase()}|${(item.brand ?? '').toLowerCase().trim()}|${item.locale ?? 'global'}`;
-        return docMap.get(key) ?? this.toDocument(item);
-      });
+      return this.mapScoredItemsToDocs(scored, docs);
     } catch (err) {
       this.logger.warn(`Bulk cache warm failed: ${(err as Error).message}`);
-      return scored.map((item) => this.toDocument(item));
+
+      const docs: FoodItemDocument[] = [];
+      for (const item of normalized) {
+        try {
+          const doc = await this.foodItemService.upsert(item);
+          docs.push(doc);
+        } catch (upsertErr) {
+          this.logger.warn(
+            `Single-item cache warm failed for ${item.displayName}: ${(upsertErr as Error).message}`,
+          );
+
+          if (item.barcode) {
+            const existing = await this.foodItemService.findByBarcode(item.barcode);
+            if (existing) {
+              docs.push(existing);
+            }
+          }
+        }
+      }
+
+      return this.mapScoredItemsToDocs(scored, docs);
     }
+  }
+
+  private mapScoredItemsToDocs(
+    scored: ScoredFood[],
+    docs: FoodItemDocument[],
+  ): FoodItemDocument[] {
+    const docMap = new Map<string, FoodItemDocument>();
+    for (const doc of docs) {
+      const key = [
+        (doc.canonicalName ?? '').toLowerCase(),
+        (doc.brand ?? '').toLowerCase().trim(),
+        doc.locale ?? 'global',
+        doc.source ?? 'unknown',
+      ].join('|');
+      docMap.set(key, doc);
+      if (doc.barcode) docMap.set(`bc:${doc.barcode}`, doc);
+    }
+
+    return scored.map((item) => {
+      if (item.barcode) {
+        const found = docMap.get(`bc:${item.barcode}`);
+        if (found) return found;
+      }
+      const key = [
+        item.canonicalName.toLowerCase(),
+        (item.brand ?? '').toLowerCase().trim(),
+        item.locale ?? 'global',
+        item.source ?? 'unknown',
+      ].join('|');
+      return docMap.get(key) ?? this.toDocument(item);
+    });
   }
 
   private toDocument(item: ScoredFood): FoodItemDocument {
@@ -333,7 +375,7 @@ export class HydraSearchService {
   }
 
   private syntheticId(_item: NormalizedFood): string {
-    return new Types.ObjectId().toHexString();
+    return `synthetic-${Math.random().toString(36).slice(2, 10)}`;
   }
 
   private shouldAttempt(name: ProviderName): boolean {

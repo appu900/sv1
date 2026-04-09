@@ -92,6 +92,7 @@ export class FoodItemService {
           canonicalName: (partial.canonicalName ?? '').toLowerCase(),
           brand: partial.brand ?? null,
           locale: partial.locale ?? 'global',
+          source: partial.source ?? FoodSource.MANUAL,
         };
 
     return this.foodModel
@@ -114,6 +115,7 @@ export class FoodItemService {
             canonicalName: (partial.canonicalName ?? '').toLowerCase(),
             brand: partial.brand ?? null,
             locale: partial.locale ?? 'global',
+            source: partial.source ?? FoodSource.MANUAL,
           };
       return {
         updateOne: {
@@ -133,6 +135,7 @@ export class FoodItemService {
             canonicalName: (partial.canonicalName ?? '').toLowerCase(),
             brand: partial.brand ?? null,
             locale: partial.locale ?? 'global',
+            source: partial.source ?? FoodSource.MANUAL,
           },
     );
 
