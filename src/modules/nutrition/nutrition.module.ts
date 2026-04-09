@@ -33,6 +33,8 @@ import { UsdaProvider } from './providers/usda.provider';
 import { CalorieNinjasProvider } from './providers/calorie-ninjas.provider';
 import { HydraSearchService } from './hydra-search.service';
 import { NutritionAiService } from './nutrition-ai.service';
+import { UpcItemDbProvider } from './providers/upc-itemdb.provider';
+import { BarcodeLookupService } from './barcode-lookup.service';
 
 @Module({
   imports: [
@@ -62,6 +64,8 @@ import { NutritionAiService } from './nutrition-ai.service';
     OpenFoodFactsProvider,
     UsdaProvider,
     CalorieNinjasProvider,
+    UpcItemDbProvider,
+    BarcodeLookupService,
     HydraSearchService,
     NutritionAiService,
   ],

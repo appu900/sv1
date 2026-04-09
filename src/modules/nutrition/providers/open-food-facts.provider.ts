@@ -19,6 +19,10 @@ interface OffProduct {
   nutriments?: {
     'energy-kcal_100g'?: number;
     'energy-kcal'?: number;
+    'energy-kj_100g'?: number;
+    'energy-kj'?: number;
+    energy_100g?: number;
+    energy?: number;
     proteins_100g?: number;
     carbohydrates_100g?: number;
     fat_100g?: number;
@@ -59,6 +63,15 @@ export class OpenFoodFactsProvider {
   private readonly logger = new Logger(OpenFoodFactsProvider.name);
 
   async fetchByBarcode(barcode: string): Promise<NormalizedFood | null> {
+    // Try the barcode as-is first, then alternate formats
+    for (const code of this.barcodeVariants(barcode)) {
+      const result = await this.fetchSingleBarcode(code);
+      if (result) return result;
+    }
+    return null;
+  }
+
+  private async fetchSingleBarcode(barcode: string): Promise<NormalizedFood | null> {
     const url = `${OFF_BASE}/api/v2/product/${encodeURIComponent(
       barcode,
     )}.json?fields=code,product_name,product_name_en,generic_name,brands,categories_tags,countries_tags,serving_quantity,serving_size,nutriments,completeness`;
@@ -67,6 +80,28 @@ export class OpenFoodFactsProvider {
     if (!res) return null;
     if (res.status === 0 || !res.product) return null;
     return this.normalize(res.product as OffProduct);
+  }
+
+  /**
+   * Generate barcode variants to try:
+   * - Original as-is
+   * - UPC-A (12 digits) → EAN-13 (prepend 0)
+   * - EAN-13 with leading 0 → UPC-A (strip 0)
+   * - Zero-padded to 13 digits
+   */
+  private barcodeVariants(barcode: string): string[] {
+    const variants = [barcode];
+    if (barcode.length === 12) {
+      variants.push('0' + barcode); // UPC-A → EAN-13
+    }
+    if (barcode.length === 13 && barcode.startsWith('0')) {
+      variants.push(barcode.slice(1)); // EAN-13 → UPC-A
+    }
+    if (barcode.length < 13) {
+      const padded = barcode.padStart(13, '0');
+      if (!variants.includes(padded)) variants.push(padded);
+    }
+    return variants;
   }
 
 
@@ -117,7 +152,14 @@ export class OpenFoodFactsProvider {
   /** Map an OFF product → our FoodItem shape. Returns null if unusable. */
   private normalize(p: OffProduct): NormalizedFood | null {
     const n = p.nutriments ?? {};
-    const kcal = numeric(n['energy-kcal_100g'] ?? n['energy-kcal']);
+    // Try kcal fields first, fall back to kJ→kcal conversion (1 kcal ≈ 4.184 kJ)
+    let kcal = numeric(n['energy-kcal_100g'] ?? n['energy-kcal']);
+    if (kcal === null) {
+      const kj = numeric(n['energy-kj_100g'] ?? n['energy-kj'] ?? n.energy_100g ?? n.energy);
+      if (kj !== null) {
+        kcal = Math.round(kj / 4.184);
+      }
+    }
     if (kcal === null) return null; // without calories the entry is useless
 
     const name = (

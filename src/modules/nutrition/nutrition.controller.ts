@@ -23,6 +23,7 @@ import { UserCustomFoodService } from './user-custom-food.service';
 import { NutritionService } from './nutrition.service';
 import { OpenFoodFactsProvider } from './providers/open-food-facts.provider';
 import { HydraSearchService } from './hydra-search.service';
+import { BarcodeLookupService } from './barcode-lookup.service';
 import {
   BarcodeLookupDto,
   FoodSearchQueryDto,
@@ -60,6 +61,7 @@ export class NutritionController {
     private readonly hydraSearch: HydraSearchService,
     private readonly nutritionAi: NutritionAiService,
     private readonly healthProfileService: HealthProfileService,
+    private readonly barcodeLookup: BarcodeLookupService,
   ) {}
 
   private resolveUserId(req: any): string {
@@ -92,21 +94,14 @@ export class NutritionController {
   @Post('foods/barcode')
   @HttpCode(HttpStatus.OK)
   async lookupBarcode(@Body() dto: BarcodeLookupDto) {
-    const cached = await this.foodItemService.findByBarcode(dto.barcode);
-    if (cached) {
-      return { source: 'cache', item: cached };
-    }
-
-    this.logger.log(`Barcode ${dto.barcode} not cached, fetching from OFF`);
-    const fetched = await this.openFoodFacts.fetchByBarcode(dto.barcode);
-    if (!fetched) {
+    const result = await this.barcodeLookup.lookup(dto.barcode);
+    if (!result) {
+      this.logger.warn(`Barcode ${dto.barcode} not found in any data source`);
       throw new NotFoundException(
-        'No product found for this barcode in OpenFoodFacts',
+        `No product found for barcode ${dto.barcode}`,
       );
     }
-
-    const saved = await this.foodItemService.upsert(fetched);
-    return { source: 'openfoodfacts', item: saved };
+    return result;
   }
 
   @Get('custom-foods')
