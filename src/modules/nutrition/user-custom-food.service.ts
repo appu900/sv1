@@ -16,6 +16,16 @@ import {
   NutritionFactsDto,
   UpdateCustomFoodDto,
 } from './dto/custom-food.dto';
+import { NutritionValues } from './nutrition-ai.service';
+
+export interface PhotoFoodInput {
+  name: string;
+  servingLabel: string;
+  servingGrams: number;
+  perServing: NutritionValues;
+  notes?: string;
+  imageUrl?: string | null;
+}
 
 @Injectable()
 export class UserCustomFoodService {
@@ -195,6 +205,65 @@ export class UserCustomFoodService {
       })
       .lean<UserCustomFoodDocument>()
       .exec();
+  }
+
+  /**
+   * Create a custom food from photo-based AI analysis.
+   * If a food with the same name already exists for the user,
+   * appends a timestamp suffix to avoid conflicts.
+   */
+  async createFromPhotoAnalysis(
+    userId: string,
+    input: PhotoFoodInput,
+  ): Promise<UserCustomFoodDocument> {
+    this.assertUserId(userId);
+
+    const trimmedName = input.name.trim().slice(0, 120) || 'Photo food';
+    let normalizedName = trimmedName.toLowerCase();
+
+    // Resolve name conflict by appending a short timestamp suffix
+    const existing = await this.customFoodModel
+      .findOne({
+        userId: new Types.ObjectId(userId),
+        normalizedName,
+        isActive: true,
+      })
+      .lean()
+      .exec();
+
+    const displayName = existing
+      ? `${trimmedName} (${new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })})`
+      : trimmedName;
+    if (existing) {
+      normalizedName = displayName.toLowerCase();
+    }
+
+    const perServing: CustomFoodNutrition = {
+      kcal: input.perServing.kcal,
+      protein_g: input.perServing.protein_g,
+      carbs_g: input.perServing.carbs_g,
+      fat_g: input.perServing.fat_g,
+      fiber_g: input.perServing.fiber_g,
+      sugar_g: input.perServing.sugar_g,
+      sodium_mg: input.perServing.sodium_mg,
+    };
+
+    const payload: Partial<UserCustomFood> = {
+      userId: new Types.ObjectId(userId),
+      name: displayName,
+      normalizedName,
+      servingLabel: input.servingLabel.trim().slice(0, 60) || '1 serving',
+      servingGrams: input.servingGrams > 0 ? input.servingGrams : null,
+      per100g: null,
+      perServing,
+      notes: (input.notes ?? '').trim().slice(0, 500),
+      origin: 'photo_ai',
+      imageUrl: input.imageUrl ?? null,
+      isActive: true,
+    };
+
+    const created = await this.customFoodModel.create(payload);
+    return created.toObject() as UserCustomFoodDocument;
   }
 
   private normalizeFacts(

@@ -85,8 +85,8 @@ export class CreateCustomFoodDto {
   notes?: string;
 
   @IsOptional()
-  @IsEnum(['user_entered', 'ai_estimated', 'label_ocr'])
-  origin?: 'user_entered' | 'ai_estimated' | 'label_ocr';
+  @IsEnum(['user_entered', 'ai_estimated', 'label_ocr', 'photo_ai'])
+  origin?: 'user_entered' | 'ai_estimated' | 'label_ocr' | 'photo_ai';
 }
 
 

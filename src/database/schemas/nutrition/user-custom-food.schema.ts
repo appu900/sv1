@@ -81,10 +81,14 @@ export class UserCustomFood {
   /** Source of the numbers — lets the UI show a confidence chip. */
   @Prop({
     type: String,
-    enum: ['user_entered', 'ai_estimated', 'label_ocr'],
+    enum: ['user_entered', 'ai_estimated', 'label_ocr', 'photo_ai'],
     default: 'user_entered',
   })
-  origin: 'user_entered' | 'ai_estimated' | 'label_ocr';
+  origin: 'user_entered' | 'ai_estimated' | 'label_ocr' | 'photo_ai';
+
+  /** URL of the user's photo (S3), only set for photo-based entries. */
+  @Prop({ type: String, default: null, maxlength: 500 })
+  imageUrl?: string | null;
 
   @Prop({ default: true })
   isActive: boolean;

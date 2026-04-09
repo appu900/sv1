@@ -89,6 +89,10 @@ export class FoodItem {
   @Prop({ type: String, trim: true, default: null })
   barcode?: string | null;
 
+  /** S3 URL of the product image (photo of packaging/label). */
+  @Prop({ type: String, trim: true, default: null })
+  imageUrl?: string | null;
+
   @Prop({
     type: String,
     enum: FoodCategory,

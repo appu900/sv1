@@ -14,8 +14,11 @@ import {
   Query,
   Request,
   UnauthorizedException,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { FoodItemService } from './food-item.service';
@@ -38,6 +41,7 @@ import {
   UpdateLogEntryDto,
 } from './dto/log-entry.dto';
 import { AiEstimateDto } from './dto/ai-estimate.dto';
+import { PhotoQuickAddDto } from './dto/photo-quick-add.dto';
 import {
   CreateHealthProfileDto,
   UpdateHealthProfileDto,
@@ -48,6 +52,8 @@ import {
 import { NutritionAiService } from './nutrition-ai.service';
 import { RecipeNutritionService } from './recipe-nutrition.service';
 import { HealthProfileService } from './health-profile.service';
+import { ProductImageAnalysisService } from './product-image-analysis.service';
+import { ImageUploadService } from '../image-upload/image-upload.service';
 import { isValidObjectId } from 'mongoose';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
@@ -69,6 +75,8 @@ export class NutritionController {
     private readonly recipeNutrition: RecipeNutritionService,
     private readonly healthProfileService: HealthProfileService,
     private readonly barcodeLookup: BarcodeLookupService,
+    private readonly productImageAnalysis: ProductImageAnalysisService,
+    private readonly imageUpload: ImageUploadService,
     @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
   ) {}
 
@@ -115,6 +123,236 @@ export class NutritionController {
       );
     }
     return result;
+  }
+
+  @Post('foods/analyze-image')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @UseInterceptors(
+    FileInterceptor('image', {
+      limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB max
+      fileFilter: (_req, file, cb) => {
+        if (!file.mimetype.startsWith('image/')) {
+          cb(new BadRequestException('Only image files are allowed'), false);
+          return;
+        }
+        cb(null, true);
+      },
+    }),
+  )
+  async analyzeProductImage(
+    @Request() req: any,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    this.resolveUserId(req);
+
+    if (!file || !file.buffer || file.buffer.length === 0) {
+      throw new BadRequestException('Image file is required');
+    }
+
+    // 1) Analyze image with AI Vision
+    const base64 = file.buffer.toString('base64');
+    const analysis = await this.productImageAnalysis.analyzeProductImage(
+      base64,
+      file.mimetype,
+    );
+
+    // 2) If AI found a barcode, check if product already exists in DB
+    if (analysis.barcode) {
+      const existing = await this.barcodeLookup.lookup(analysis.barcode);
+      if (existing) {
+        this.logger.log(
+          `Image analysis found barcode ${analysis.barcode} — returning existing product`,
+        );
+        return { source: existing.source, item: existing.item, fromImage: true };
+      }
+    }
+
+    // 3) Check if a product with this name already exists in DB
+    const existingByName = await this.foodItemService.findExistingProduct(
+      analysis.productName.toLowerCase(),
+      analysis.brand,
+    );
+    if (existingByName) {
+      this.logger.log(
+        `Found existing product "${existingByName.displayName}" — returning instead of creating duplicate`,
+      );
+      return { source: existingByName.source ?? 'catalog', item: existingByName, fromImage: true };
+    }
+
+    // 4) Upload product image to S3
+    let imageUrl: string | null = null;
+    try {
+      imageUrl = await this.imageUpload.uploadFile(file, 'product-images');
+    } catch (err) {
+      this.logger.warn(`Failed to upload product image: ${(err as Error).message}`);
+      // Non-fatal — continue without the image URL
+    }
+
+    // 5) Convert analysis result to food item and save
+    const normalized = this.productImageAnalysis.analysisToNormalizedFood(
+      analysis,
+      imageUrl,
+    );
+    const saved = await this.foodItemService.upsert(normalized);
+
+    return {
+      source: 'image-ai',
+      item: saved,
+      analysis: {
+        confidence: analysis.confidence,
+        barcodeDetected: !!analysis.barcode,
+      },
+      fromImage: true,
+    };
+  }
+
+  @Post('foods/identify-food')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @UseInterceptors(
+    FileInterceptor('image', {
+      limits: { fileSize: 10 * 1024 * 1024 },
+      fileFilter: (_req, file, cb) => {
+        if (!file.mimetype.startsWith('image/')) {
+          cb(new BadRequestException('Only image files are allowed'), false);
+          return;
+        }
+        cb(null, true);
+      },
+    }),
+  )
+  async identifyFoodFromImage(
+    @Request() req: any,
+    @UploadedFile() file: Express.Multer.File,
+    @Query('limit') limit?: string,
+    @Query('locale') locale?: string,
+  ) {
+    this.resolveUserId(req);
+
+    if (!file || !file.buffer || file.buffer.length === 0) {
+      throw new BadRequestException('Image file is required');
+    }
+
+    const base64 = file.buffer.toString('base64');
+    const identified = await this.nutritionAi.identifyFoodFromImage(
+      base64,
+      file.mimetype,
+    );
+
+    if (!identified.primaryFood) {
+      throw new NotFoundException('Could not identify any food in the image');
+    }
+
+    // Search hydra with the identified primary food name
+    const parsedLimit = limit ? parseInt(limit, 10) : 20;
+    const safeLimit = Number.isFinite(parsedLimit) ? Math.min(Math.max(parsedLimit, 1), 50) : 20;
+
+    const searchResults = await this.hydraSearch.search(
+      identified.primaryFood,
+      { limit: safeLimit, locale: locale ?? undefined },
+    );
+
+    return {
+      identified,
+      searchResults,
+    };
+  }
+
+  /* ─── Photo Quick-Add ──────────────────────────────── */
+
+  @Post('foods/photo-quick-add')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @UseInterceptors(
+    FileInterceptor('image', {
+      limits: { fileSize: 10 * 1024 * 1024 },
+      fileFilter: (_req, file, cb) => {
+        if (!file.mimetype.startsWith('image/')) {
+          cb(new BadRequestException('Only image files are allowed'), false);
+          return;
+        }
+        cb(null, true);
+      },
+    }),
+  )
+  async photoQuickAdd(
+    @Request() req: any,
+    @UploadedFile() file: Express.Multer.File,
+    @Body() dto: PhotoQuickAddDto,
+  ) {
+    const userId = this.resolveUserId(req);
+
+    if (!file || !file.buffer || file.buffer.length === 0) {
+      throw new BadRequestException('Image file is required');
+    }
+
+    const country = await this.resolveUserCountry(userId);
+
+    // 1) AI: identify food from photo + user hints, estimate full nutrition
+    const base64 = file.buffer.toString('base64');
+    const analysis = await this.nutritionAi.analyzeAndEstimateFoodFromPhoto(
+      base64,
+      file.mimetype,
+      dto.description,
+      dto.servingLabel,
+      dto.servingGrams,
+      country,
+    );
+
+    // 2) Upload photo to S3 (non-fatal if it fails)
+    let imageUrl: string | null = null;
+    try {
+      imageUrl = await this.imageUpload.uploadFile(file, 'photo-food');
+    } catch (err) {
+      this.logger.warn(`Failed to upload food photo: ${(err as Error).message}`);
+    }
+
+    // 3) Save as a user custom food with AI-estimated nutrition
+    const customFood = await this.userCustomFoodService.createFromPhotoAnalysis(
+      userId,
+      {
+        name: analysis.primaryFoodName,
+        servingLabel:
+          dto.servingLabel ??
+          (analysis.foods.length === 1
+            ? analysis.foods[0].servingLabel
+            : '1 plate (as photographed)'),
+        servingGrams:
+          dto.servingGrams ??
+          analysis.foods.reduce((sum, f) => sum + f.servingGrams, 0),
+        perServing: analysis.totalPerServing,
+        notes: dto.description ?? undefined,
+        imageUrl,
+      },
+    );
+
+    // 4) Optionally auto-log to daily intake
+    let logEntry: any = null;
+    if (dto.autoLog) {
+      logEntry = await this.nutritionService.logEntry(userId, {
+        ref: { kind: 'custom' as any, customFoodId: String(customFood._id) },
+        portion: { mode: 'serving' as any, servings: 1 },
+        mealSlot: dto.mealSlot,
+        date: dto.date,
+        freeformFacts: undefined,
+      });
+    }
+
+    return {
+      analysis: {
+        foods: analysis.foods,
+        totalNutrition: analysis.totalPerServing,
+        primaryFoodName: analysis.primaryFoodName,
+        confidence: analysis.confidence,
+      },
+      customFood,
+      imageUrl,
+      logged: dto.autoLog ? { entryId: logEntry?.entryId, date: logEntry?.date } : null,
+    };
   }
 
   @Get('custom-foods')

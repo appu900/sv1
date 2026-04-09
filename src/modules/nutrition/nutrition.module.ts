@@ -48,6 +48,7 @@ import { NutritionAiService } from './nutrition-ai.service';
 import { RecipeNutritionService } from './recipe-nutrition.service';
 import { UpcItemDbProvider } from './providers/upc-itemdb.provider';
 import { BarcodeLookupService } from './barcode-lookup.service';
+import { ProductImageAnalysisService } from './product-image-analysis.service';
 
 @Module({
   imports: [
@@ -85,6 +86,7 @@ import { BarcodeLookupService } from './barcode-lookup.service';
     HydraSearchService,
     NutritionAiService,
     RecipeNutritionService,
+    ProductImageAnalysisService,
   ],
   exports: [
     FoodItemService,

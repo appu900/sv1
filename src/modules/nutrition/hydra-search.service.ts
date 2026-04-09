@@ -289,11 +289,12 @@ export class HydraSearchService {
       return `bc:${item.barcode}`;
     }
 
+    // Source-agnostic dedupe: same product name + brand + locale = same product
+    // regardless of whether it came from AI, OFF, USDA, etc.
     return [
       item.canonicalName.replace(/\s+/g, ' '),
       (item.brand ?? '').toLowerCase().trim(),
       item.locale ?? 'global',
-      item.source ?? 'unknown',
     ].join('|');
   }
 
