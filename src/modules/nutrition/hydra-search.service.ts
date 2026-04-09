@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { Types } from 'mongoose';
 import { FoodItemService } from './food-item.service';
 import { OpenFoodFactsProvider } from './providers/open-food-facts.provider';
 import { UsdaProvider } from './providers/usda.provider';
@@ -78,11 +79,13 @@ export class HydraSearchService {
     }
 
 
-    const [cached, liveResults] = await Promise.all([
-      this.foodItemService.search({ q, locale, limit }),
-      this.fanOut(q, limit, locale),
-    ]);
+    const cached = await this.foodItemService.search({ q, locale, limit });
+    if (cached.length >= limit) {
+      this.logger.debug(`HydraSearch "${q}": cache sufficient (${cached.length} items), skipping live providers`);
+      return { count: cached.length, items: cached.slice(0, limit) };
+    }
 
+    const liveResults = await this.fanOut(q, limit, locale);
     this.logger.debug(
       `HydraSearch "${q}": cache=${cached.length}, live providers=${liveResults.length} [${liveResults.map((r) => `${r.provider}:${r.items.length}`).join(', ')}]`,
     );
@@ -223,12 +226,25 @@ export class HydraSearchService {
 
     const deduped: ScoredFood[] = [];
     const seenKeys = new Set<string>();
+    const acceptedTokenSets: { brand: string; tokens: Set<string> }[] = [];
 
     for (const item of interleaved) {
       const key = this.dedupeKey(item);
       if (seenKeys.has(key)) continue;
 
-      if (this.isNearDuplicate(item, deduped)) continue;
+      const cTokens = item.canonicalName.split(/\s+/).filter(Boolean);
+      if (cTokens.length > 0) {
+        const brand = item.brand ?? '';
+        let isDup = false;
+        for (const acc of acceptedTokenSets) {
+          if (brand !== acc.brand) continue;
+          const overlap = cTokens.filter((t) => acc.tokens.has(t)).length;
+          const ratio = overlap / Math.max(cTokens.length, acc.tokens.size);
+          if (ratio >= 0.8) { isDup = true; break; }
+        }
+        if (isDup) continue;
+        acceptedTokenSets.push({ brand, tokens: new Set(cTokens) });
+      }
 
       seenKeys.add(key);
       deduped.push(item);
@@ -276,37 +292,33 @@ export class HydraSearchService {
     return `${item.canonicalName.replace(/\s+/g, ' ')}|${(item.brand ?? '').toLowerCase().trim()}`;
   }
 
-  private isNearDuplicate(candidate: ScoredFood, accepted: ScoredFood[]): boolean {
-    const cTokens = candidate.canonicalName.split(/\s+/).filter(Boolean);
-    if (cTokens.length === 0) return false;
-
-    for (const existing of accepted) {
-      if ((candidate.brand ?? '') !== (existing.brand ?? '')) continue;
-
-      const eTokens = new Set(existing.canonicalName.split(/\s+/).filter(Boolean));
-      const overlap = cTokens.filter((t) => eTokens.has(t)).length;
-      const ratio = overlap / Math.max(cTokens.length, eTokens.size);
-
-      if (ratio >= 0.8) return true;
-    }
-    return false;
-  }
-
   private async warmCacheAndReturn(scored: ScoredFood[]): Promise<FoodItemDocument[]> {
-    const results = await Promise.all(
-      scored.map(async (item) => {
-        const { _hydraScore, ...normalized } = item;
-        try {
-          return await this.foodItemService.upsert({ ...normalized, isPublic: true });
-        } catch (err) {
-          this.logger.warn(
-            `Cache warm failed for "${item.canonicalName}": ${(err as Error).message}`,
-          );
-          return this.toDocument(item);
+    const normalized = scored.map((item) => {
+      const { _hydraScore, ...rest } = item;
+      return { ...rest, isPublic: true };
+    });
+
+    try {
+      const docs = await this.foodItemService.bulkUpsert(normalized);
+      // Preserve the original scored order
+      const docMap = new Map<string, FoodItemDocument>();
+      for (const doc of docs) {
+        const key = `${(doc.canonicalName ?? '').toLowerCase()}|${(doc.brand ?? '').toLowerCase().trim()}|${doc.locale ?? 'global'}`;
+        docMap.set(key, doc);
+        if (doc.barcode) docMap.set(`bc:${doc.barcode}`, doc);
+      }
+      return scored.map((item) => {
+        if (item.barcode) {
+          const found = docMap.get(`bc:${item.barcode}`);
+          if (found) return found;
         }
-      }),
-    );
-    return results;
+        const key = `${item.canonicalName.toLowerCase()}|${(item.brand ?? '').toLowerCase().trim()}|${item.locale ?? 'global'}`;
+        return docMap.get(key) ?? this.toDocument(item);
+      });
+    } catch (err) {
+      this.logger.warn(`Bulk cache warm failed: ${(err as Error).message}`);
+      return scored.map((item) => this.toDocument(item));
+    }
   }
 
   private toDocument(item: ScoredFood): FoodItemDocument {
@@ -320,13 +332,8 @@ export class HydraSearchService {
     } as any;
   }
 
-  private syntheticId(item: NormalizedFood): string {
-    const raw = `${item.canonicalName}|${item.brand ?? ''}|${item.locale}`;
-    let hash = 0;
-    for (let i = 0; i < raw.length; i++) {
-      hash = ((hash << 5) - hash + raw.charCodeAt(i)) | 0;
-    }
-    return Math.abs(hash).toString(36).padStart(12, '0');
+  private syntheticId(_item: NormalizedFood): string {
+    return new Types.ObjectId().toHexString();
   }
 
   private shouldAttempt(name: ProviderName): boolean {

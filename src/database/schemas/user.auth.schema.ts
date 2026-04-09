@@ -28,6 +28,9 @@ export class User {
   country?:string
 
   @Prop({})
+  timezone?:string
+
+  @Prop({})
   pincode?:string
 
   @Prop({type:UserDietaryProfile})

@@ -24,6 +24,12 @@ import {
   CustomFoodNutrition,
   UserCustomFoodDocument,
 } from '../../database/schemas/nutrition/user-custom-food.schema';
+import {
+  HealthProfile,
+  HealthProfileDocument,
+} from '../../database/schemas/nutrition/health-profile.schema';
+import { User, UserDocument } from '../../database/schemas/user.auth.schema';
+import { resolveTimezone, localDateISO } from '../../common/utils/timezone.util';
 import { FoodItemService } from './food-item.service';
 import { UserCustomFoodService } from './user-custom-food.service';
 import {
@@ -52,6 +58,10 @@ export class NutritionService {
   constructor(
     @InjectModel(DailyIntake.name)
     private readonly dailyModel: Model<DailyIntakeDocument>,
+    @InjectModel(HealthProfile.name)
+    private readonly profileModel: Model<HealthProfileDocument>,
+    @InjectModel(User.name)
+    private readonly userModel: Model<UserDocument>,
     private readonly foodItemService: FoodItemService,
     private readonly userCustomFoodService: UserCustomFoodService,
   ) {}
@@ -62,7 +72,7 @@ export class NutritionService {
   ): Promise<{ entry: DailyIntakeEntry; daily: DailyIntakeDocument }> {
     this.validateRefDto(dto.ref);
 
-    const date = dto.date ?? this.todayISO();
+    const date = dto.date ?? await this.todayISO(userId);
     const computed = await this.resolveNutrition(userId, dto.ref, dto.portion, dto.freeformFacts);
 
     const entry: any = {
@@ -74,28 +84,170 @@ export class NutritionService {
       computed,
     };
 
+    const existingDaily = await this.dailyModel
+      .findOne({ userId: new Types.ObjectId(userId), date })
+      .select('_id')
+      .lean()
+      .exec();
+
+    const setOnInsertData: any = {
+      userId: new Types.ObjectId(userId),
+      date,
+    };
+    if (!existingDaily) {
+      const profileTargets = await this.getActiveTargets(userId);
+      if (profileTargets) {
+        setOnInsertData.targets = {
+          kcal: profileTargets.kcal,
+          protein_g: profileTargets.protein_g,
+          carbs_g: profileTargets.carbs_g,
+          fat_g: profileTargets.fat_g,
+          fiber_g: profileTargets.fiber_g ?? 0,
+          water_ml: profileTargets.water_ml ?? 0,
+        };
+      }
+    }
+
     const daily = await this.dailyModel.findOneAndUpdate(
       { userId: new Types.ObjectId(userId), date },
       {
         $push: { entries: entry },
-        $setOnInsert: { userId: new Types.ObjectId(userId), date },
+        $setOnInsert: setOnInsertData,
       },
       { new: true, upsert: true },
     ).exec();
 
-    daily.totals = this.recomputeTotals(daily.entries);
+    const prev = daily.totals ?? { kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0 };
+    daily.totals = {
+      kcal: round(prev.kcal + (computed.kcal ?? 0)),
+      protein_g: round(prev.protein_g + (computed.protein_g ?? 0)),
+      carbs_g: round(prev.carbs_g + (computed.carbs_g ?? 0)),
+      fat_g: round(prev.fat_g + (computed.fat_g ?? 0)),
+      fiber_g: round(prev.fiber_g + (computed.fiber_g ?? 0)),
+    };
     await daily.save();
 
-    return { entry, daily: daily.toObject() as DailyIntakeDocument };
+    const dailyObj = daily.toObject() as DailyIntakeDocument;
+
+    if (!this.hasCompleteTargets(dailyObj.targets)) {
+      const fallbackTargets = await this.getActiveTargets(userId);
+      if (fallbackTargets) {
+        const prev: Record<string, number> = (dailyObj as any).targets ?? {};
+        const merged = {
+          kcal: (prev.kcal ?? 0) > 0 ? prev.kcal : fallbackTargets.kcal,
+          protein_g: prev.protein_g ?? fallbackTargets.protein_g,
+          carbs_g: prev.carbs_g ?? fallbackTargets.carbs_g,
+          fat_g: prev.fat_g ?? fallbackTargets.fat_g,
+          fiber_g: prev.fiber_g ?? fallbackTargets.fiber_g,
+          water_ml: prev.water_ml ?? fallbackTargets.water_ml,
+        };
+        await this.dailyModel.updateOne({ _id: dailyObj._id }, { $set: { targets: merged } }).exec();
+        dailyObj.targets = merged as any;
+      }
+    }
+
+    return { entry, daily: dailyObj };
   }
 
   async getDaily(userId: string, date?: string): Promise<DailyIntakeDocument | null> {
-    const d = date ?? this.todayISO();
+    const d = date ?? await this.todayISO(userId);
     const doc = await this.dailyModel
       .findOne({ userId: new Types.ObjectId(userId), date: d })
       .lean<DailyIntakeDocument>()
       .exec();
-    return doc;
+    if (!doc) {
+      return null;
+    }
+
+    if (this.hasCompleteTargets(doc.targets)) {
+      return doc;
+    }
+
+    const fallbackTargets = await this.getActiveTargets(userId);
+    if (!fallbackTargets) {
+      return doc;
+    }
+
+    const curr = doc.targets ?? ({} as any);
+    const mergedTargets = {
+      kcal: (curr.kcal ?? 0) > 0 ? curr.kcal : fallbackTargets.kcal,
+      protein_g: Number.isFinite(curr.protein_g) ? curr.protein_g : fallbackTargets.protein_g,
+      carbs_g: Number.isFinite(curr.carbs_g) ? curr.carbs_g : fallbackTargets.carbs_g,
+      fat_g: Number.isFinite(curr.fat_g) ? curr.fat_g : fallbackTargets.fat_g,
+      fiber_g: Number.isFinite(curr.fiber_g) ? curr.fiber_g : fallbackTargets.fiber_g,
+      water_ml: Number.isFinite(curr.water_ml) ? curr.water_ml : fallbackTargets.water_ml,
+    };
+
+    await this.dailyModel
+      .updateOne({ _id: doc._id }, { $set: { targets: mergedTargets } })
+      .exec();
+
+    return {
+      ...doc,
+      targets: mergedTargets,
+    } as DailyIntakeDocument;
+  }
+
+  async getDailyHistory(
+    userId: string,
+    month: string,
+  ): Promise<
+    {
+      date: string;
+      totals: DayTotals;
+      targets: DailyIntakeDocument['targets'] | null;
+      water_ml: number;
+      dailyRecommendation: {
+        recommendations: string[];
+        generatedAt?: Date | null;
+      } | null;
+    }[]
+  > {
+    const [yearStr, monthStr] = month.split('-');
+    const year = parseInt(yearStr, 10);
+    const mon = parseInt(monthStr, 10);
+    const startDate = `${month}-01`;
+    const lastDay = new Date(year, mon, 0).getDate();
+    const endDate = `${month}-${String(lastDay).padStart(2, '0')}`;
+
+    const docs = await this.dailyModel
+      .find({
+        userId: new Types.ObjectId(userId),
+        date: { $gte: startDate, $lte: endDate },
+      })
+      .select('date totals targets waterIntake.total_ml dailyRecommendation.recommendations dailyRecommendation.generatedAt')
+      .sort({ date: 1 })
+      .lean()
+      .exec();
+
+    const docsByDate = new Map(
+      docs.map((doc: any) => [doc.date, doc]),
+    );
+
+    const todayStr = await this.todayISO(userId);
+    const todayMonth = todayStr.slice(0, 7);
+    const maxDay = (month === todayMonth)
+      ? Math.min(lastDay, parseInt(todayStr.slice(8, 10), 10))
+      : lastDay;
+
+    return Array.from({ length: maxDay }, (_, index) => {
+      const day = String(index + 1).padStart(2, '0');
+      const date = `${month}-${day}`;
+      const doc: any = docsByDate.get(date);
+
+      return {
+        date,
+        totals: doc?.totals ?? { kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0 },
+        targets: doc?.targets ?? null,
+        water_ml: doc?.waterIntake?.total_ml ?? 0,
+        dailyRecommendation: doc?.dailyRecommendation
+          ? {
+              recommendations: doc.dailyRecommendation.recommendations ?? [],
+              generatedAt: doc.dailyRecommendation.generatedAt ?? null,
+            }
+          : null,
+      };
+    });
   }
 
   async deleteEntry(
@@ -113,10 +265,25 @@ export class NutritionService {
       throw new NotFoundException('Entry not found');
     }
 
+    const entryToRemove = (daily.entries as any[]).find(
+      (e: any) => String(e._id) === entryId,
+    );
     daily.entries = (daily.entries as any[]).filter(
       (e: any) => String(e._id) !== entryId,
     );
-    daily.totals = this.recomputeTotals(daily.entries);
+    const rc = entryToRemove?.computed;
+    if (rc) {
+      const prev = daily.totals ?? { kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0 };
+      daily.totals = {
+        kcal: round(Math.max(0, prev.kcal - (rc.kcal ?? 0))),
+        protein_g: round(Math.max(0, prev.protein_g - (rc.protein_g ?? 0))),
+        carbs_g: round(Math.max(0, prev.carbs_g - (rc.carbs_g ?? 0))),
+        fat_g: round(Math.max(0, prev.fat_g - (rc.fat_g ?? 0))),
+        fiber_g: round(Math.max(0, prev.fiber_g - (rc.fiber_g ?? 0))),
+      };
+    } else {
+      daily.totals = this.recomputeTotals(daily.entries);
+    }
     await daily.save();
 
     return daily.toObject() as DailyIntakeDocument;
@@ -145,7 +312,20 @@ export class NutritionService {
 
     const existing = (daily.entries as any[])[entryIdx];
 
-    if (dto.portion) {
+    if (dto.ref) {
+      this.validateRefDto(dto.ref);
+      const computed = await this.resolveNutrition(
+        userId,
+        dto.ref,
+        dto.portion ?? existing.portion,
+        dto.freeformFacts,
+      );
+      existing.ref = this.buildRef(dto.ref);
+      if (dto.portion) {
+        existing.portion = this.buildPortion(dto.portion);
+      }
+      existing.computed = computed;
+    } else if (dto.portion) {
       const computed = await this.resolveNutrition(
         userId,
         existing.ref,
@@ -214,7 +394,7 @@ export class NutritionService {
       confidence: food.verified
         ? ConfidenceLevel.VERIFIED
         : ConfidenceLevel.ESTIMATED,
-      sourceLabel: food.displayName || food.canonicalName || food.source || 'catalog',
+      sourceLabel: (food.displayName || food.canonicalName || food.source || 'catalog').slice(0, 60),
     };
   }
 
@@ -488,8 +668,47 @@ export class NutritionService {
     };
   }
 
-  private todayISO(): string {
-    return new Date().toISOString().slice(0, 10);
+  async getUserLocalDate(userId: string): Promise<string> {
+    return this.todayISO(userId);
+  }
+
+  async getActiveTargets(userId: string): Promise<DailyIntakeDocument['targets'] | null> {
+    const profile = await this.profileModel
+      .findOne({ userId: new Types.ObjectId(userId), isActive: true })
+      .select('targets')
+      .lean()
+      .exec();
+
+    if (!profile?.targets) {
+      return null;
+    }
+
+    return {
+      kcal: profile.targets.kcal,
+      protein_g: profile.targets.protein_g,
+      carbs_g: profile.targets.carbs_g,
+      fat_g: profile.targets.fat_g,
+      fiber_g: profile.targets.fiber_g ?? 0,
+      water_ml: profile.targets.water_ml ?? 0,
+    };
+  }
+
+  private hasCompleteTargets(
+    targets: DailyIntakeDocument['targets'] | null | undefined,
+  ): targets is NonNullable<DailyIntakeDocument['targets']> {
+    return !!targets &&
+      targets.kcal > 0 &&
+      [targets.protein_g, targets.carbs_g, targets.fat_g, targets.fiber_g, targets.water_ml]
+        .every((value) => Number.isFinite(value));
+  }
+
+  private async todayISO(userId: string): Promise<string> {
+    const user = await this.userModel
+      .findById(userId)
+      .select('timezone country')
+      .lean();
+    const tz = resolveTimezone(user?.timezone, user?.country);
+    return localDateISO(tz);
   }
 }
 

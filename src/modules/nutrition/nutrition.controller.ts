@@ -16,6 +16,7 @@ import {
   UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
+import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { FoodItemService } from './food-item.service';
 import { UserCustomFoodService } from './user-custom-food.service';
@@ -36,7 +37,13 @@ import {
   UpdateLogEntryDto,
 } from './dto/log-entry.dto';
 import { AiEstimateDto } from './dto/ai-estimate.dto';
+import {
+  CreateHealthProfileDto,
+  UpdateWeightDto,
+  LogWaterDto,
+} from './dto/health-profile.dto';
 import { NutritionAiService } from './nutrition-ai.service';
+import { HealthProfileService } from './health-profile.service';
 import { isValidObjectId } from 'mongoose';
 
 
@@ -52,6 +59,7 @@ export class NutritionController {
     private readonly openFoodFacts: OpenFoodFactsProvider,
     private readonly hydraSearch: HydraSearchService,
     private readonly nutritionAi: NutritionAiService,
+    private readonly healthProfileService: HealthProfileService,
   ) {}
 
   private resolveUserId(req: any): string {
@@ -63,7 +71,8 @@ export class NutritionController {
 
 
   @Get('foods/search')
-  async searchFoods(@Query() query: FoodSearchQueryDto) {
+  async searchFoods(@Request() req: any, @Query() query: FoodSearchQueryDto) {
+    this.resolveUserId(req); // ensure authenticated user
     return this.hydraSearch.search(query.q ?? '', {
       limit: query.limit ?? 20,
       locale: query.locale,
@@ -152,14 +161,30 @@ export class NutritionController {
     const userId = this.resolveUserId(req);
     const daily = await this.nutritionService.getDaily(userId, query.date);
     if (!daily) {
+      const date = query.date ?? await this.nutritionService.getUserLocalDate(userId);
+      const targets = await this.nutritionService.getActiveTargets(userId);
       return {
-        date: query.date ?? new Date().toISOString().slice(0, 10),
+        date,
         entries: [],
         totals: { kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0 },
-        targets: null,
+        targets,
+        waterIntake: { total_ml: 0, entries: [] },
       };
     }
     return daily;
+  }
+
+  @Get('daily-history')
+  async getDailyHistory(
+    @Request() req: any,
+    @Query('month') month: string,
+  ) {
+    const userId = this.resolveUserId(req);
+    if (!month || !/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) {
+      throw new BadRequestException('month query param required in YYYY-MM format (01-12)');
+    }
+    const days = await this.nutritionService.getDailyHistory(userId, month);
+    return { days };
   }
 
 
@@ -192,11 +217,72 @@ export class NutritionController {
 
   @Post('ai-estimate')
   @HttpCode(HttpStatus.OK)
-  async aiEstimate(@Body() dto: AiEstimateDto) {
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  async aiEstimate(@Request() req: any, @Body() dto: AiEstimateDto) {
+    this.resolveUserId(req);
     return this.nutritionAi.estimateNutrition(
       dto.foodDescription,
       dto.servingLabel,
       dto.servingGrams,
     );
+  }
+
+  /* ─── Health Profile ────────────────────────────────── */
+
+  @Get('health-profile')
+  async getHealthProfile(@Request() req: any) {
+    const userId = this.resolveUserId(req);
+    const profile = await this.healthProfileService.getProfile(userId);
+    return { profile };
+  }
+
+  @Post('health-profile')
+  async createHealthProfile(
+    @Request() req: any,
+    @Body() dto: CreateHealthProfileDto,
+  ) {
+    const userId = this.resolveUserId(req);
+    const profile = await this.healthProfileService.createProfile(userId, dto);
+    return { profile };
+  }
+
+  @Patch('health-profile/weight')
+  async updateWeight(@Request() req: any, @Body() dto: UpdateWeightDto) {
+    const userId = this.resolveUserId(req);
+    const profile = await this.healthProfileService.updateWeight(userId, dto);
+    return { profile };
+  }
+
+  @Post('health-profile/water')
+  @HttpCode(HttpStatus.OK)
+  async logWater(@Request() req: any, @Body() dto: LogWaterDto) {
+    const userId = this.resolveUserId(req);
+    return this.healthProfileService.logWater(userId, dto);
+  }
+
+  @Get('health-profile/insights')
+  async getMonthlyInsights(@Request() req: any) {
+    const userId = this.resolveUserId(req);
+    const snapshots = await this.healthProfileService.getMonthlyInsights(userId);
+    return { snapshots };
+  }
+
+  @Post('health-profile/insights/generate')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  async generateMonthlySnapshot(@Request() req: any) {
+    const userId = this.resolveUserId(req);
+    const snapshot = await this.healthProfileService.generateMonthlySnapshot(userId);
+    return { snapshot };
+  }
+
+  @Get('health-profile/daily-recommendation')
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  async getDailyRecommendation(@Request() req: any) {
+    const userId = this.resolveUserId(req);
+    return this.healthProfileService.getDailyRecommendation(userId);
   }
 }

@@ -134,8 +134,48 @@ export class DayTargets {
 
   @Prop({ min: 0, default: 0 })
   fat_g: number;
+
+  @Prop({ min: 0, default: 0 })
+  fiber_g: number;
+
+  @Prop({ min: 0, default: 0 })
+  water_ml: number;
 }
 export const DayTargetsSchema = SchemaFactory.createForClass(DayTargets);
+
+@Schema({ _id: false })
+export class WaterEntry {
+  @Prop({ required: true, min: 0 })
+  ml: number;
+
+  @Prop({ required: true, default: () => new Date() })
+  at: Date;
+}
+export const WaterEntrySchema = SchemaFactory.createForClass(WaterEntry);
+
+@Schema({ _id: false })
+export class WaterIntake {
+  @Prop({ default: 0, min: 0 })
+  total_ml: number;
+
+  @Prop({ type: [WaterEntrySchema], default: [] })
+  entries: WaterEntry[];
+}
+export const WaterIntakeSchema = SchemaFactory.createForClass(WaterIntake);
+
+@Schema({ _id: false })
+export class DailyRecommendationCache {
+  @Prop({ type: [String], default: [] })
+  recommendations: string[];
+
+  @Prop({ type: String, default: '' })
+  cacheKey: string;
+
+  @Prop({ type: Date, default: null })
+  generatedAt?: Date | null;
+}
+export const DailyRecommendationCacheSchema =
+  SchemaFactory.createForClass(DailyRecommendationCache);
 
 @Schema({ timestamps: true })
 export class DailyIntakeEntry {
@@ -173,6 +213,12 @@ export class DailyIntake {
 
   @Prop({ type: DayTargetsSchema, default: null })
   targets?: DayTargets | null;
+
+  @Prop({ type: WaterIntakeSchema, default: () => ({ total_ml: 0, entries: [] }) })
+  waterIntake: WaterIntake;
+
+  @Prop({ type: DailyRecommendationCacheSchema, default: null })
+  dailyRecommendation?: DailyRecommendationCache | null;
 }
 
 export type DailyIntakeDocument = DailyIntake & Document;

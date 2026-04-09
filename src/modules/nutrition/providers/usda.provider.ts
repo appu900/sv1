@@ -75,6 +75,7 @@ export class UsdaProvider {
     try {
       const res = await fetch(url, {
         headers: { Accept: 'application/json' },
+        signal: AbortSignal.timeout(8_000),
       });
 
       if (!res.ok) {

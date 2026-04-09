@@ -112,7 +112,7 @@ export class CalorieNinjasProvider {
         sugar_g: this.round(item.sugar_g * scale),
         sodium_mg: this.round(item.sodium_mg * scale),
       },
-      source: FoodSource.IFCT, 
+      source: FoodSource.CALORIE_NINJAS,
       confidence: 0.85,
       verified: false,
       locale: 'in',

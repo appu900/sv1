@@ -5,6 +5,7 @@ export enum FoodSource {
   IFCT = 'ifct',
   USDA = 'usda',
   OPEN_FOOD_FACTS = 'openfoodfacts',
+  CALORIE_NINJAS = 'calorie_ninjas',
   AI = 'ai',
   USER_CONTRIBUTED = 'user_contributed',
   MANUAL = 'manual',

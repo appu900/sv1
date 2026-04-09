@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import OpenAI from 'openai';
 
 export interface AiNutritionEstimate {
@@ -21,15 +21,11 @@ export interface AiNutritionEstimate {
 @Injectable()
 export class NutritionAiService {
   private readonly logger = new Logger(NutritionAiService.name);
-  private readonly openai: OpenAI | null;
-
-  constructor() {
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (apiKey) {
-      this.openai = new OpenAI({ apiKey });
-    } else {
+  constructor(
+    @Inject('OPENAI_CLIENT') private readonly openai: OpenAI | null,
+  ) {
+    if (!this.openai) {
       this.logger.warn('OPENAI_API_KEY not set — AI nutrition estimation disabled');
-      this.openai = null;
     }
   }
 
@@ -39,7 +35,7 @@ export class NutritionAiService {
     servingGrams?: number,
   ): Promise<AiNutritionEstimate> {
     if (!this.openai) {
-      throw new Error('AI estimation is not available — OPENAI_API_KEY is not configured');
+      throw new ServiceUnavailableException('AI estimation is not available — OPENAI_API_KEY is not configured');
     }
 
     this.logger.log(`AI estimating nutrition for: "${foodDescription}"`);

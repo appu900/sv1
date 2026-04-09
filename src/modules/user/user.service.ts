@@ -82,6 +82,10 @@ export class UserService {
       updateData.country = dto.country;
     }
 
+    if (dto.timezone) {
+      updateData.timezone = dto.timezone;
+    }
+
     if (dto.pincode) {
       updateData.pincode = dto.pincode;
     }
@@ -107,6 +111,18 @@ export class UserService {
     if (!result) {
       throw new NotFoundException('User not found');
     }
+  }
+
+  async updateTimezone(userId: string, timezone: string) {
+    if (!Types.ObjectId.isValid(userId))
+      throw new BadRequestException('Invalid userId');
+    const result = await this.userModel.findByIdAndUpdate(
+      new Types.ObjectId(userId),
+      { $set: { timezone } },
+      { new: true },
+    );
+    if (!result) throw new NotFoundException('User not found');
+    return { ok: true };
   }
 
   async updateName(userId: string, name: string) {

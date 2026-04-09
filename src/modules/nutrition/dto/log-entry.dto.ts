@@ -57,19 +57,19 @@ export class EntryPortionDto {
 
   @ValidateIf((o) => o.mode === PortionMode.SERVING || o.mode === PortionMode.COUNT)
   @IsNumber()
-  @Min(0)
+  @Min(0.1)
   @Max(100)
   servings?: number;
 
   @ValidateIf((o) => o.mode === PortionMode.GRAMS)
   @IsNumber()
-  @Min(0)
+  @Min(0.1)
   @Max(5000)
   grams?: number;
 
   @ValidateIf((o) => o.mode === PortionMode.ML)
   @IsNumber()
-  @Min(0)
+  @Min(0.1)
   @Max(5000)
   ml?: number;
 }
@@ -101,8 +101,18 @@ export class CreateLogEntryDto {
 export class UpdateLogEntryDto {
   @IsOptional()
   @ValidateNested()
+  @Type(() => EntryRefDto)
+  ref?: EntryRefDto;
+
+  @IsOptional()
+  @ValidateNested()
   @Type(() => EntryPortionDto)
   portion?: EntryPortionDto;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => NutritionFactsDto)
+  freeformFacts?: NutritionFactsDto;
 
   @IsOptional()
   @IsEnum(MealSlot)

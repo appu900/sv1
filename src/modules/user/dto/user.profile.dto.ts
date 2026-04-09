@@ -29,6 +29,10 @@ export class UserProfileDto {
   @IsString()
   country?: string;
 
+  @IsOptional()
+  @IsString()
+  timezone?: string;
+
   @IsNumber()
   @IsOptional()
   noOfChildren?: number;

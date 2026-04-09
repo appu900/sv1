@@ -104,6 +104,44 @@ export class FoodItemService {
       .exec();
   }
 
+  async bulkUpsert(items: Partial<FoodItem>[]): Promise<FoodItemDocument[]> {
+    if (items.length === 0) return [];
+
+    const ops = items.map((partial) => {
+      const filter: Record<string, any> = partial.barcode
+        ? { barcode: partial.barcode }
+        : {
+            canonicalName: (partial.canonicalName ?? '').toLowerCase(),
+            brand: partial.brand ?? null,
+            locale: partial.locale ?? 'global',
+          };
+      return {
+        updateOne: {
+          filter,
+          update: { $set: partial },
+          upsert: true,
+        },
+      };
+    });
+
+    await this.foodModel.bulkWrite(ops, { ordered: false });
+
+    const filters = items.map((partial) =>
+      partial.barcode
+        ? { barcode: partial.barcode }
+        : {
+            canonicalName: (partial.canonicalName ?? '').toLowerCase(),
+            brand: partial.brand ?? null,
+            locale: partial.locale ?? 'global',
+          },
+    );
+
+    return this.foodModel
+      .find({ $or: filters })
+      .lean<FoodItemDocument[]>()
+      .exec();
+  }
+
   private rankByLocale(
     docs: FoodItemDocument[],
     locale: string,

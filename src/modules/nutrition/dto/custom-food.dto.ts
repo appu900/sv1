@@ -1,7 +1,6 @@
 import { Type } from 'class-transformer';
 import {
   IsEnum,
-  IsInt,
   IsNumber,
   IsOptional,
   IsString,
@@ -65,7 +64,7 @@ export class CreateCustomFoodDto {
 
   @IsOptional()
   @Type(() => Number)
-  @IsInt()
+  @IsNumber()
   @Min(1)
   @Max(5000)
   servingGrams?: number;
@@ -104,7 +103,7 @@ export class UpdateCustomFoodDto {
 
   @IsOptional()
   @Type(() => Number)
-  @IsInt()
+  @IsNumber()
   @Min(1)
   @Max(5000)
   servingGrams?: number;

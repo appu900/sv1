@@ -101,6 +101,7 @@ export class OpenFoodFactsProvider {
             'SavefulNutrition/1.0 (https://saveful.app; contact@saveful.app)',
           Accept: 'application/json',
         },
+        signal: AbortSignal.timeout(8_000),
       });
       if (!res.ok) {
         this.logger.warn(`OFF fetch ${res.status} ${url}`);
