@@ -5,4 +5,5 @@ export interface CookbookaiJobData {
   recipeId?: string;
   ingredients?: string[];
   preference?: string;
+  country?: string;
 }

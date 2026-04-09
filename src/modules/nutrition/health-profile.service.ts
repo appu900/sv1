@@ -18,7 +18,7 @@ import {
   DailyIntake,
   DailyIntakeDocument,
 } from '../../database/schemas/nutrition/daily-intake.schema';
-import { CreateHealthProfileDto, UpdateWeightDto, LogWaterDto } from './dto/health-profile.dto';
+import { CreateHealthProfileDto, UpdateHealthProfileDto, UpdateDailyTargetsDto, UpdateWeightDto, LogWaterDto } from './dto/health-profile.dto';
 import { User, UserDocument } from '../../database/schemas/user.auth.schema';
 import { resolveTimezone, localDateISO, localMonthISO } from '../../common/utils/timezone.util';
 
@@ -139,6 +139,183 @@ export class HealthProfileService {
     await this.syncDailyTargets(userId, targets);
 
     return profile.toObject() as HealthProfileDocument;
+  }
+
+  /**
+   * Update any fields of the active profile, recalculate targets,
+   * clear stale monthly snapshots, and sync daily targets.
+   */
+  async updateProfile(
+    userId: string,
+    dto: UpdateHealthProfileDto,
+  ): Promise<HealthProfileDocument> {
+    const profile = await this.profileModel
+      .findOne({ userId: new Types.ObjectId(userId), isActive: true })
+      .exec();
+    if (!profile) throw new NotFoundException('Health profile not found');
+
+    // Apply field updates
+    if (dto.gender !== undefined) profile.gender = dto.gender;
+    if (dto.age !== undefined) profile.age = dto.age;
+    if (dto.height !== undefined) profile.height = dto.height;
+    if (dto.weight !== undefined) profile.weight = dto.weight;
+    if (dto.bodyType !== undefined) profile.bodyType = dto.bodyType;
+    if (dto.activityLevel !== undefined) profile.activityLevel = dto.activityLevel;
+    if (dto.goal !== undefined) profile.goal = dto.goal;
+    if (dto.targetWeightKg !== undefined) profile.targetWeightKg = dto.targetWeightKg;
+    if (dto.healthCondition !== undefined) profile.healthCondition = dto.healthCondition as any;
+
+    // Recalculate targets from updated profile
+    const recalcDto: CreateHealthProfileDto = {
+      gender: profile.gender,
+      age: profile.age,
+      height: profile.height as any,
+      weight: profile.weight as any,
+      bodyType: profile.bodyType,
+      activityLevel: profile.activityLevel,
+      goal: profile.goal,
+      targetWeightKg: profile.targetWeightKg,
+      healthCondition: profile.healthCondition as any,
+    };
+
+    const { targets, rationale } = await this.generateTargets(recalcDto);
+    profile.targets = targets;
+    profile.aiRationale = rationale;
+
+    // Rebuild timeline
+    const tz = await this.getUserTz(userId);
+    profile.timeline = this.buildTimeline(recalcDto, { targets, rationale }, tz);
+
+
+    await this.dailyModel.deleteMany({
+      userId: new Types.ObjectId(userId),
+    }).exec();
+
+    profile.monthlySnapshots = [];
+    profile.markModified('monthlySnapshots');
+
+    await profile.save();
+
+    return profile.toObject() as HealthProfileDocument;
+  }
+
+
+  async updateDailyTargets(
+    userId: string,
+    date: string,
+    dto: UpdateDailyTargetsDto,
+  ): Promise<DailyIntakeDocument> {
+    const setFields: Record<string, number> = {};
+    if (dto.kcal !== undefined) setFields['targets.kcal'] = dto.kcal;
+    if (dto.protein_g !== undefined) setFields['targets.protein_g'] = dto.protein_g;
+    if (dto.carbs_g !== undefined) setFields['targets.carbs_g'] = dto.carbs_g;
+    if (dto.fat_g !== undefined) setFields['targets.fat_g'] = dto.fat_g;
+    if (dto.fiber_g !== undefined) setFields['targets.fiber_g'] = dto.fiber_g;
+    if (dto.water_ml !== undefined) setFields['targets.water_ml'] = dto.water_ml;
+
+    const daily = await this.dailyModel.findOneAndUpdate(
+      { userId: new Types.ObjectId(userId), date },
+      {
+        $set: setFields,
+        $setOnInsert: {
+          userId: new Types.ObjectId(userId),
+          date,
+          entries: [],
+          totals: { kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0 },
+        },
+      },
+      { new: true, upsert: true },
+    ).exec();
+
+    return daily as DailyIntakeDocument;
+  }
+
+  async resetDayEntries(userId: string, date: string): Promise<DailyIntakeDocument | null> {
+    const daily = await this.dailyModel.findOneAndUpdate(
+      { userId: new Types.ObjectId(userId), date },
+      {
+        $set: {
+          entries: [],
+          totals: { kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0 },
+        },
+      },
+      { new: true },
+    ).exec();
+    return daily;
+  }
+
+  
+  async resetDailyRecommendation(userId: string, date: string): Promise<{ date: string; cleared: boolean }> {
+    const result = await this.dailyModel.updateOne(
+      { userId: new Types.ObjectId(userId), date },
+      { $unset: { dailyRecommendation: 1 } },
+    ).exec();
+    return { date, cleared: result.modifiedCount > 0 };
+  }
+
+
+  async resetWaterIntake(userId: string, date: string): Promise<{ date: string; totalWater_ml: number }> {
+    await this.dailyModel.updateOne(
+      { userId: new Types.ObjectId(userId), date },
+      { $set: { 'waterIntake.total_ml': 0, 'waterIntake.entries': [] } },
+    ).exec();
+    return { date, totalWater_ml: 0 };
+  }
+
+  async deleteWaterEntry(userId: string, date: string, index: number): Promise<{ date: string; totalWater_ml: number }> {
+    const daily = await this.dailyModel
+      .findOne({ userId: new Types.ObjectId(userId), date })
+      .exec();
+    if (!daily || !daily.waterIntake?.entries) {
+      return { date, totalWater_ml: 0 };
+    }
+
+    const entries = daily.waterIntake.entries as any[];
+    if (index < 0 || index >= entries.length) {
+      throw new NotFoundException(`Water entry at index ${index} not found`);
+    }
+
+    const removedMl = entries[index]?.ml ?? 0;
+    entries.splice(index, 1);
+    daily.waterIntake.total_ml = Math.max(0, (daily.waterIntake.total_ml ?? 0) - removedMl);
+    daily.markModified('waterIntake');
+    await daily.save();
+
+    return { date, totalWater_ml: daily.waterIntake.total_ml };
+  }
+
+  async resetMonthlySnapshotForMonth(userId: string, month: string): Promise<MonthlySnapshot> {
+    const profile = await this.profileModel
+      .findOne({ userId: new Types.ObjectId(userId), isActive: true })
+      .exec();
+    if (!profile) throw new NotFoundException('Health profile not found');
+
+    const idx = profile.monthlySnapshots.findIndex(s => s.month === month);
+    if (idx >= 0) {
+      profile.monthlySnapshots[idx].cacheKey = '';
+      profile.monthlySnapshots[idx].aiRecommendations = [];
+      profile.markModified('monthlySnapshots');
+      await profile.save();
+    }
+
+    return this.generateMonthlySnapshotForMonth(profile, month);
+  }
+
+
+  async resetAllSnapshots(userId: string): Promise<MonthlySnapshot[]> {
+    const profile = await this.profileModel
+      .findOne({ userId: new Types.ObjectId(userId), isActive: true })
+      .exec();
+    if (!profile) throw new NotFoundException('Health profile not found');
+
+    for (const snap of profile.monthlySnapshots) {
+      snap.cacheKey = '';
+      snap.aiRecommendations = [];
+    }
+    profile.markModified('monthlySnapshots');
+    await profile.save();
+
+    return this.getMonthlyInsights(userId);
   }
 
   async logWater(userId: string, dto: LogWaterDto): Promise<{ date: string; totalWater_ml: number }> {

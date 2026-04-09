@@ -32,6 +32,7 @@ import { User, UserDocument } from '../../database/schemas/user.auth.schema';
 import { resolveTimezone, localDateISO } from '../../common/utils/timezone.util';
 import { FoodItemService } from './food-item.service';
 import { UserCustomFoodService } from './user-custom-food.service';
+import { RecipeNutritionService } from './recipe-nutrition.service';
 import {
   CreateLogEntryDto,
   EntryPortionDto,
@@ -64,6 +65,7 @@ export class NutritionService {
     private readonly userModel: Model<UserDocument>,
     private readonly foodItemService: FoodItemService,
     private readonly userCustomFoodService: UserCustomFoodService,
+    private readonly recipeNutritionService: RecipeNutritionService,
   ) {}
 
   async logEntry(
@@ -366,16 +368,45 @@ export class NutritionService {
         return this.resolveFromFreeform(ref.freeformText!, freeformFacts);
 
       case LogRefKind.RECIPE:
+        return this.resolveFromRecipe(ref.recipeId!, portion);
+
       case LogRefKind.USER_RECIPE:
-        throw new BadRequestException(
-          'Recipe logging is not yet supported. Coming in Step 7.',
-        );
+        return this.resolveFromRecipe(ref.userRecipeId ?? ref.recipeId!, portion);
 
       default:
         throw new BadRequestException(`Unknown ref kind: ${ref.kind}`);
     }
   }
 
+
+  private async resolveFromRecipe(
+    recipeId: string,
+    portion: EntryPortionDto,
+  ): Promise<ResolvedNutrition> {
+    const [nutrition, recipeTitle] = await Promise.all([
+      this.recipeNutritionService.getOrCompute(recipeId),
+      this.recipeNutritionService.getRecipeTitle(recipeId),
+    ]);
+    const ps = nutrition.perServing;
+    const servings = portion.mode === PortionMode.SERVING || portion.mode === PortionMode.COUNT
+      ? (portion.servings ?? 1)
+      : portion.mode === PortionMode.GRAMS && nutrition.servingGrams > 0
+        ? (portion.grams ?? nutrition.servingGrams) / nutrition.servingGrams
+        : 1;
+
+    return {
+      kcal: round(ps.kcal * servings),
+      protein_g: round(ps.protein_g * servings),
+      carbs_g: round(ps.carbs_g * servings),
+      fat_g: round(ps.fat_g * servings),
+      fiber_g: round(ps.fiber_g * servings),
+      resolvedGrams: round((nutrition.servingGrams ?? 0) * servings),
+      confidence: nutrition.confidence === 'high'
+        ? ConfidenceLevel.VERIFIED
+        : ConfidenceLevel.ESTIMATED,
+      sourceLabel: recipeTitle,
+    };
+  }
 
   private async resolveFromFoodItem(
     foodItemId: string,

@@ -54,6 +54,7 @@ export class CookbookaiProducer {
     ingredients: string[],
     preference: string | undefined,
     recipeId: string,
+    country?: string,
   ): Promise<string> {
     const jobData: CookbookaiJobData = {
       type: 'generate-from-ingredients',
@@ -62,6 +63,7 @@ export class CookbookaiProducer {
       recipeId,
       ingredients,
       preference,
+      country,
     };
 
     const job = await this.queue.add('generate-from-ingredients', jobData, {

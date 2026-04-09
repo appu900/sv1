@@ -20,6 +20,18 @@ import {
   HealthProfileSchema,
 } from '../../database/schemas/nutrition/health-profile.schema';
 import {
+  RecipeNutrition,
+  RecipeNutritionSchema,
+} from '../../database/schemas/nutrition/recipe-nutrition.schema';
+import {
+  Recipe,
+  RecipeSchema,
+} from '../../database/schemas/recipe.schema';
+import {
+  Ingredient,
+  IngredientSchema,
+} from '../../database/schemas/ingredient.schema';
+import {
   User,
   UserSchema,
 } from '../../database/schemas/user.auth.schema';
@@ -33,6 +45,7 @@ import { UsdaProvider } from './providers/usda.provider';
 import { CalorieNinjasProvider } from './providers/calorie-ninjas.provider';
 import { HydraSearchService } from './hydra-search.service';
 import { NutritionAiService } from './nutrition-ai.service';
+import { RecipeNutritionService } from './recipe-nutrition.service';
 import { UpcItemDbProvider } from './providers/upc-itemdb.provider';
 import { BarcodeLookupService } from './barcode-lookup.service';
 
@@ -45,6 +58,9 @@ import { BarcodeLookupService } from './barcode-lookup.service';
       { name: UserCustomFood.name, schema: UserCustomFoodSchema },
       { name: DailyIntake.name, schema: DailyIntakeSchema },
       { name: HealthProfile.name, schema: HealthProfileSchema },
+      { name: RecipeNutrition.name, schema: RecipeNutritionSchema },
+      { name: Recipe.name, schema: RecipeSchema },
+      { name: Ingredient.name, schema: IngredientSchema },
       { name: User.name, schema: UserSchema },
     ]),
   ],
@@ -68,6 +84,7 @@ import { BarcodeLookupService } from './barcode-lookup.service';
     BarcodeLookupService,
     HydraSearchService,
     NutritionAiService,
+    RecipeNutritionService,
   ],
   exports: [
     FoodItemService,

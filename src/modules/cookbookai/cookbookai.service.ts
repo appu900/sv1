@@ -4,6 +4,7 @@ import { Model, Types } from 'mongoose';
 import OpenAI from 'openai';
 import { YoutubeTranscript } from 'youtube-transcript';
 import { userRecipe, UserRecipeDocument } from 'src/database/schemas/user.schema';
+import { getCuisineContext } from 'src/common/utils/country-cuisine.util';
 
 const EXTRACT_PROMPT = `You are a recipe extraction assistant. The user will provide a URL or recipe description.
 You MUST use web search to look up the URL and extract the ACTUAL recipe from it.
@@ -139,18 +140,25 @@ COMPONENT STRUCTURE GUIDE:
 Each component's variantTags should include the recipe title. Each component[].includedInVariants should also include the recipe title.`.trim();
 
 
-const GENERATE_FROM_INGREDIENTS_PROMPT = `You are a creative Indian recipe generator for the Saveful India app.
+const GENERATE_FROM_INGREDIENTS_PROMPT = `You are a creative recipe generator for the Saveful app.
 The user has specific ingredients in their kitchen. Generate a COMPLETE, REALISTIC recipe using PRIMARILY those ingredients.
 
 RULES:
 1. Use AS MANY of the provided ingredients as possible.
 2. You may add a FEW basic pantry staples (salt, oil, water, common spices) if needed, but the core of the recipe must use the provided ingredients.
-3. If the user specifies a preference (e.g. "something spicy", "a quick snack", "South Indian"), respect that preference.
+3. If the user specifies a preference (e.g. "something spicy", "a quick snack"), respect that preference.
 4. The recipe must be practical, delicious, and achievable at home.
 5. Provide EXACT quantities, prep/cook times, and clear step-by-step instructions.
 6. Output the recipe as detailed plain text: title, description, ALL ingredients with exact quantities, ALL steps in detail, prep/cook time, portions, storage info.
-7. Focus on Indian cuisine unless the user's preference suggests otherwise.
+7. Generate a recipe appropriate to the user's cuisine context (provided below). If no context is given, choose the best cuisine for the ingredients.
 8. Be creative but realistic — don't suggest bizarre combinations.`.trim();
+
+function buildGenerateFromIngredientsPrompt(country?: string): string {
+  const ctx = getCuisineContext(country);
+  if (ctx.countryName === 'Global') return GENERATE_FROM_INGREDIENTS_PROMPT;
+  return GENERATE_FROM_INGREDIENTS_PROMPT +
+    `\n9. The user is in ${ctx.countryName}. Prefer ${ctx.cuisineFocus} styles and local ingredients when appropriate, but don't force it if the ingredients suggest a different cuisine.`;
+}
 
 @Injectable()
 export class CookbookaiService {
@@ -644,8 +652,9 @@ export class CookbookaiService {
     async generateRecipeFromIngredients(
         ingredients: string[],
         preference?: string,
+        country?: string,
     ): Promise<{ success: boolean; message: string; data?: any }> {
-        this.logger.log(`[generateFromIngredients] ingredients=${ingredients.length}, pref="${preference || 'none'}"`);
+        this.logger.log(`[generateFromIngredients] ingredients=${ingredients.length}, pref="${preference || 'none'}", country="${country || 'none'}"`);
 
         try {
             let userMessage = `My available ingredients: ${ingredients.join(', ')}`;
@@ -657,7 +666,7 @@ export class CookbookaiService {
             const completion = await this.openai.chat.completions.create({
                 model: 'gpt-4o-mini',
                 messages: [
-                    { role: 'system', content: GENERATE_FROM_INGREDIENTS_PROMPT },
+                    { role: 'system', content: buildGenerateFromIngredientsPrompt(country) },
                     { role: 'user', content: userMessage },
                 ],
                 max_tokens: 4096,

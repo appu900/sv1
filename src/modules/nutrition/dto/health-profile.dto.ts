@@ -117,6 +117,89 @@ export class UpdateWeightDto {
   lbs?: number;
 }
 
+export class UpdateHealthProfileDto {
+  @IsOptional()
+  @IsEnum(Gender)
+  gender?: Gender;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(10)
+  @Max(120)
+  age?: number;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => HeightDto)
+  height?: HeightDto;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => WeightDto)
+  weight?: WeightDto;
+
+  @IsOptional()
+  @IsEnum(BodyType)
+  bodyType?: BodyType;
+
+  @IsOptional()
+  @IsEnum(ActivityLevel)
+  activityLevel?: ActivityLevel;
+
+  @IsOptional()
+  @IsEnum(GoalType)
+  goal?: GoalType;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(20)
+  @Max(500)
+  targetWeightKg?: number;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => HealthConditionDto)
+  healthCondition?: HealthConditionDto;
+}
+
+export class UpdateDailyTargetsDto {
+  @IsOptional()
+  @IsNumber()
+  @Min(500)
+  @Max(10000)
+  kcal?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(10)
+  @Max(500)
+  protein_g?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(20)
+  @Max(800)
+  carbs_g?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(10)
+  @Max(300)
+  fat_g?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(5)
+  @Max(100)
+  fiber_g?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(500)
+  @Max(10000)
+  water_ml?: number;
+}
+
 export class LogWaterDto {
   @IsNumber()
   @Min(1)

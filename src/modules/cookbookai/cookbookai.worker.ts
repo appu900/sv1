@@ -23,10 +23,10 @@ export class CookbookaiWorker extends WorkerHost {
   }
 
   async process(job: Job<CookbookaiJobData>): Promise<void> {
-    const { type, userId, message, recipeId, ingredients, preference } = job.data;
+    const { type, userId, message, recipeId, ingredients, preference, country } = job.data;
 
     if (type === 'generate-from-ingredients') {
-      return this.processGenerateFromIngredients(job, userId, recipeId, ingredients || [], preference);
+      return this.processGenerateFromIngredients(job, userId, recipeId, ingredients || [], preference, country);
     }
 
     this.logger.log(
@@ -141,6 +141,7 @@ export class CookbookaiWorker extends WorkerHost {
     recipeId: string | undefined,
     ingredients: string[],
     preference: string | undefined,
+    country: string | undefined,
   ): Promise<void> {
     this.logger.log(
       `[job=${job.id}] Processing recipe from ingredients for user=${userId}, ingredients=${ingredients.length}`,
@@ -150,6 +151,7 @@ export class CookbookaiWorker extends WorkerHost {
       const aiResponse = await this.cookbookaiService.generateRecipeFromIngredients(
         ingredients,
         preference,
+        country,
       );
 
       if (!aiResponse.success) {

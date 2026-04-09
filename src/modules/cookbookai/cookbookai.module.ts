@@ -6,6 +6,7 @@ import { CookbookaiService } from './cookbookai.service';
 import { CookbookaiProducer } from './cookbookai.producer';
 import { CookbookaiWorker } from './cookbookai.worker';
 import { userRecipe, UserRecipeSchema } from 'src/database/schemas/user.schema';
+import { User, UserSchema } from 'src/database/schemas/user.auth.schema';
 import { RedisModule } from 'src/redis/redis.module';
 import { NotificationModule } from '../notification/notification.module';
 import { COOKBOOKAI_QUEUE_NAME } from './cookbookai.constants';
@@ -17,6 +18,7 @@ import { COOKBOOKAI_QUEUE_NAME } from './cookbookai.constants';
     }),
     MongooseModule.forFeature([
       { name: userRecipe.name, schema: UserRecipeSchema },
+      { name: User.name, schema: UserSchema },
     ]),
     RedisModule,
     NotificationModule,

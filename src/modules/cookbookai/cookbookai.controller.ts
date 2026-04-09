@@ -8,6 +8,9 @@ import { Request } from '@nestjs/common';
 import { RedisService } from 'src/redis/redis.service';
 import { AddRecipeDto } from './dto/add-recipe.dto';
 import { GenerateFromIngredientsDto } from './dto/generate-from-ingredients.dto';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { User, UserDocument } from 'src/database/schemas/user.auth.schema';
 
 @Controller('cookbookai')
 export class CookbookaiController {
@@ -15,6 +18,7 @@ export class CookbookaiController {
         private readonly cookbookaiService: CookbookaiService,
         private readonly cookbookaiProducer: CookbookaiProducer,
         private readonly redisService: RedisService,
+        @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
     ) { }
 
     private resolveUserId(req: any): string {
@@ -32,6 +36,11 @@ export class CookbookaiController {
     @UseGuards(JwtAuthGuard, RolesGuard)
     async getHello(@Request() req) {
      return { message: this.cookbookaiService.getHello(), user: req.user };
+    }
+
+    private async resolveUserCountry(userId: string): Promise<string | undefined> {
+        const user = await this.userModel.findById(userId).select('country').lean().exec();
+        return (user as any)?.country;
     }
 
     @Get(['/user-recipes', '/recipes'])
@@ -170,12 +179,16 @@ export class CookbookaiController {
             // Mark the pending recipe with source
             await this.cookbookaiService.updateRecipeSource(String(pendingRecipe._id), userId, 'ai_ingredients');
 
+            // Look up user's country for cuisine-aware generation
+            const country = await this.resolveUserCountry(userId);
+
             // Queue the recipe generation as a background job
             const jobId = await this.cookbookaiProducer.enqueueRecipeFromIngredients(
                 userId,
                 body.ingredients,
                 body.preference,
                 String(pendingRecipe._id),
+                country,
             );
 
             return {

@@ -40,12 +40,18 @@ import {
 import { AiEstimateDto } from './dto/ai-estimate.dto';
 import {
   CreateHealthProfileDto,
+  UpdateHealthProfileDto,
+  UpdateDailyTargetsDto,
   UpdateWeightDto,
   LogWaterDto,
 } from './dto/health-profile.dto';
 import { NutritionAiService } from './nutrition-ai.service';
+import { RecipeNutritionService } from './recipe-nutrition.service';
 import { HealthProfileService } from './health-profile.service';
 import { isValidObjectId } from 'mongoose';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { User, UserDocument } from '../../database/schemas/user.auth.schema';
 
 
 @Controller('nutrition')
@@ -60,8 +66,10 @@ export class NutritionController {
     private readonly openFoodFacts: OpenFoodFactsProvider,
     private readonly hydraSearch: HydraSearchService,
     private readonly nutritionAi: NutritionAiService,
+    private readonly recipeNutrition: RecipeNutritionService,
     private readonly healthProfileService: HealthProfileService,
     private readonly barcodeLookup: BarcodeLookupService,
+    @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
   ) {}
 
   private resolveUserId(req: any): string {
@@ -69,6 +77,11 @@ export class NutritionController {
     const id = u._id ?? u.userId ?? u.id ?? u.sub;
     if (!id) throw new UnauthorizedException();
     return String(id);
+  }
+
+  private async resolveUserCountry(userId: string): Promise<string | undefined> {
+    const user = await this.userModel.findById(userId).select('country').lean().exec();
+    return (user as any)?.country;
   }
 
 
@@ -215,12 +228,48 @@ export class NutritionController {
   @UseGuards(ThrottlerGuard)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   async aiEstimate(@Request() req: any, @Body() dto: AiEstimateDto) {
-    this.resolveUserId(req);
+    const userId = this.resolveUserId(req);
+    const country = await this.resolveUserCountry(userId);
     return this.nutritionAi.estimateNutrition(
       dto.foodDescription,
       dto.servingLabel,
       dto.servingGrams,
+      country,
     );
+  }
+
+  /* ─── Recipe Nutrition ────────────────────────────────── */
+
+  @Get('recipes/search')
+  async searchRecipes(
+    @Request() req: any,
+    @Query('q') q?: string,
+    @Query('limit') limit?: string,
+    @Query('country') country?: string,
+  ) {
+    this.resolveUserId(req);
+    const parsedLimit = limit ? parseInt(limit, 10) : 20;
+    const safeLimit = Number.isFinite(parsedLimit) ? parsedLimit : 20;
+    const recipes = await this.recipeNutrition.searchRecipes(
+      q ?? '',
+      safeLimit,
+      country,
+    );
+    return { items: recipes };
+  }
+
+  @Get('recipes/:id/nutrition')
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  async getRecipeNutrition(
+    @Request() req: any,
+    @Param('id') id: string,
+  ) {
+    this.resolveUserId(req);
+    if (!isValidObjectId(id)) {
+      throw new BadRequestException('Invalid recipe id');
+    }
+    return this.recipeNutrition.getOrCompute(id);
   }
 
   /* ─── Health Profile ────────────────────────────────── */
@@ -279,5 +328,111 @@ export class NutritionController {
   async getDailyRecommendation(@Request() req: any) {
     const userId = this.resolveUserId(req);
     return this.healthProfileService.getDailyRecommendation(userId);
+  }
+
+  /* ─── Edit & Reset ──────────────────────────────────── */
+
+  @Patch('health-profile')
+  async updateHealthProfile(
+    @Request() req: any,
+    @Body() dto: UpdateHealthProfileDto,
+  ) {
+    const userId = this.resolveUserId(req);
+    const profile = await this.healthProfileService.updateProfile(userId, dto);
+    return { profile };
+  }
+
+  @Delete('daily/:date/entries')
+  @HttpCode(HttpStatus.OK)
+  async resetDayEntries(
+    @Request() req: any,
+    @Param('date') date: string,
+  ) {
+    const userId = this.resolveUserId(req);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      throw new BadRequestException('date must be YYYY-MM-DD');
+    }
+    const daily = await this.healthProfileService.resetDayEntries(userId, date);
+    return { daily: daily ?? { date, entries: [], totals: { kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0 } } };
+  }
+
+  @Delete('daily/:date/recommendation')
+  @HttpCode(HttpStatus.OK)
+  async resetDailyRecommendation(
+    @Request() req: any,
+    @Param('date') date: string,
+  ) {
+    const userId = this.resolveUserId(req);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      throw new BadRequestException('date must be YYYY-MM-DD');
+    }
+    return this.healthProfileService.resetDailyRecommendation(userId, date);
+  }
+
+  @Patch('daily/:date/targets')
+  async updateDailyTargets(
+    @Request() req: any,
+    @Param('date') date: string,
+    @Body() dto: UpdateDailyTargetsDto,
+  ) {
+    const userId = this.resolveUserId(req);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      throw new BadRequestException('date must be YYYY-MM-DD');
+    }
+    const daily = await this.healthProfileService.updateDailyTargets(userId, date, dto);
+    return { daily };
+  }
+
+  @Delete('daily/:date/water')
+  @HttpCode(HttpStatus.OK)
+  async resetWaterIntake(
+    @Request() req: any,
+    @Param('date') date: string,
+  ) {
+    const userId = this.resolveUserId(req);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      throw new BadRequestException('date must be YYYY-MM-DD');
+    }
+    return this.healthProfileService.resetWaterIntake(userId, date);
+  }
+
+  @Delete('daily/:date/water/:index')
+  @HttpCode(HttpStatus.OK)
+  async deleteWaterEntry(
+    @Request() req: any,
+    @Param('date') date: string,
+    @Param('index') index: string,
+  ) {
+    const userId = this.resolveUserId(req);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      throw new BadRequestException('date must be YYYY-MM-DD');
+    }
+    const idx = parseInt(index, 10);
+    if (!Number.isFinite(idx) || idx < 0) {
+      throw new BadRequestException('index must be a non-negative integer');
+    }
+    return this.healthProfileService.deleteWaterEntry(userId, date, idx);
+  }
+
+  @Post('health-profile/insights/reset/:month')
+  @HttpCode(HttpStatus.OK)
+  async resetMonthlySnapshot(
+    @Request() req: any,
+    @Param('month') month: string,
+  ) {
+    const userId = this.resolveUserId(req);
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) {
+      throw new BadRequestException('month must be YYYY-MM format');
+    }
+    const snapshot = await this.healthProfileService.resetMonthlySnapshotForMonth(userId, month);
+    return { snapshot };
+  }
+
+  @Post('health-profile/insights/reset')
+  @HttpCode(HttpStatus.OK)
+  async resetAllSnapshots(@Request() req: any) {
+    const userId = this.resolveUserId(req);
+    const snapshots = await this.healthProfileService.resetAllSnapshots(userId);
+    return { snapshots };
   }
 }
