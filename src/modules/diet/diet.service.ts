@@ -25,17 +25,19 @@ export class DietService {
         this.dietCategoryModel.create({ name: diet.trim() }),
       ),
     );
-    await this.redisService.del(cachedKey);
+    await this.redisService.del(cachedKey).catch(() => {});
     return results;
   }
 
 
   async getAll(){
        const cachedKey = `diets:all`;
-       const cachedData = await this.redisService.get(cachedKey)
-       if(cachedData) return JSON.parse(cachedData)
+       try {
+         const cachedData = await this.redisService.get(cachedKey)
+         if(cachedData) return JSON.parse(cachedData)
+       } catch { /* corrupted cache or Redis down */ }
        const res = await this.dietCategoryModel.find()
-       await this.redisService.set(cachedKey,JSON.stringify(res),60 * 20)
+       try { await this.redisService.set(cachedKey,JSON.stringify(res),60 * 20) } catch { /* non-critical */ }
        return res
   }
 
@@ -49,7 +51,7 @@ export class DietService {
       { name: dto.name },
       { new: true }
     );
-    await this.redisService.del(cachedKey);
+    await this.redisService.del(cachedKey).catch(() => {});
     return result;
   }
 
@@ -59,7 +61,7 @@ export class DietService {
 
     const cachedKey = `diets:all`;
     await this.dietCategoryModel.findByIdAndDelete(id);
-    await this.redisService.del(cachedKey);
+    await this.redisService.del(cachedKey).catch(() => {});
     return { message: 'Diet category deleted successfully' };
   }
 }

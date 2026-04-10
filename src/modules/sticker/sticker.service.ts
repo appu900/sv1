@@ -32,17 +32,19 @@ export class StickerService {
             stickerData.description = dto.description;
          }
          const result = await this.stickerMode.create(stickerData)
-         await this.redisService.del(cachedKey);
+         try { await this.redisService.del(cachedKey); } catch { /* non-critical */ }
          return result
     }
 
 
     async fetchAllStickers(){
         const cachedKey = `sticker:all`
-        const cachedData = await this.redisService.get(cachedKey)
-        if(cachedData) return JSON.parse(cachedData)
+        try {
+            const cachedData = await this.redisService.get(cachedKey)
+            if(cachedData) return JSON.parse(cachedData)
+        } catch { /* corrupted cache or Redis down */ }
         const result = await this.stickerMode.find()
-        await this.redisService.set(cachedKey,JSON.stringify(result),60 * 20)
+        try { await this.redisService.set(cachedKey,JSON.stringify(result),60 * 20) } catch { /* non-critical */ }
         return result
     }
 
@@ -65,7 +67,7 @@ export class StickerService {
 
         const cachedKey = `sticker:all`;
         const result = await this.stickerMode.findByIdAndUpdate(id, updateData, { new: true });
-        await this.redisService.del(cachedKey);
+        try { await this.redisService.del(cachedKey); } catch { /* non-critical */ }
         return result;
     }
 
@@ -75,7 +77,7 @@ export class StickerService {
 
         const cachedKey = `sticker:all`;
         await this.stickerMode.findByIdAndDelete(id);
-        await this.redisService.del(cachedKey);
+        try { await this.redisService.del(cachedKey); } catch { /* non-critical */ }
         return { message: 'Sticker deleted successfully' };
     }
 }

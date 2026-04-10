@@ -52,7 +52,11 @@ export class HackService {
       iconImageUrl: iconImageUrl,
     });
     const cacheKey = `hacks:category:all`
-    await this.redisService.del(cacheKey)
+    try {
+      await this.redisService.del(cacheKey)
+    } catch {
+      // non-critical
+    }
     return {
       message: 'hacks category created successfully',
       result,
@@ -61,10 +65,18 @@ export class HackService {
 
   async getAllCategory() {
     const cacheKey = `hacks:category:all`
-    const cached = await this.redisService.get(cacheKey)
-    if(cached) return cached
+    try {
+      const cached = await this.redisService.get(cacheKey)
+      if(cached) return JSON.parse(cached)
+    } catch {
+      // corrupted cache or Redis down
+    }
     const categories = await this.hacksCategory.find().lean()
-    await this.redisService.set(cacheKey,categories,60 * 30)
+    try {
+      await this.redisService.set(cacheKey, JSON.stringify(categories), 60 * 30)
+    } catch {
+      // non-critical
+    }
     return categories
   }
 
@@ -74,9 +86,13 @@ export class HackService {
     }
 
     const cachedKey = `hacks:category:${hackId}`;
-    const cached = await this.redisService.get(cachedKey);
-    if (cached) {
-      return cached;
+    try {
+      const cached = await this.redisService.get(cachedKey);
+      if (cached) {
+        return JSON.parse(cached);
+      }
+    } catch {
+      // corrupted cache or Redis down
     }
     const hackCategory = await this.hacksCategory.findById(
       new Types.ObjectId(hackId),
@@ -96,7 +112,11 @@ export class HackService {
       },
       hacks,
     };
-    await this.redisService.set(cachedKey, response, 60 * 10);
+    try {
+      await this.redisService.set(cachedKey, JSON.stringify(response), 60 * 10);
+    } catch {
+      // non-critical
+    }
     return {
       response,
     };
@@ -353,11 +373,19 @@ export class HackService {
     if (!Types.ObjectId.isValid(hackId))
       throw new BadRequestException('Invalid hack id');
     const cacheKey = `hacks:single:${hackId}`;
-    const cached = await this.redisService.get(cacheKey);
-    if (cached) return cached;
+    try {
+      const cached = await this.redisService.get(cacheKey);
+      if (cached) return JSON.parse(cached);
+    } catch {
+      // corrupted cache or Redis down
+    }
     const hack = await this.hackModel.findById(hackId).populate('sponsorId').lean();
     if (!hack) throw new NotFoundException('Hack not found');
-    await this.redisService.set(cacheKey, hack, 60 * 10);
+    try {
+      await this.redisService.set(cacheKey, JSON.stringify(hack), 60 * 10);
+    } catch {
+      // non-critical
+    }
     return hack;
   }
 
@@ -448,10 +476,14 @@ export class HackService {
     );
 
     // Invalidate caches
-    await this.redisService.del(`hacks:single:${hackId}`);
-    await this.redisService.del(`hacks:category:${hack.categoryId}`);
-    if (dto.categoryId && dto.categoryId !== hack.categoryId.toString()) {
-      await this.redisService.del(`hacks:category:${dto.categoryId}`);
+    try {
+      await this.redisService.del(`hacks:single:${hackId}`);
+      await this.redisService.del(`hacks:category:${hack.categoryId}`);
+      if (dto.categoryId && dto.categoryId !== hack.categoryId.toString()) {
+        await this.redisService.del(`hacks:category:${dto.categoryId}`);
+      }
+    } catch {
+      // non-critical
     }
 
     return {
@@ -473,8 +505,12 @@ export class HackService {
     await this.hackModel.findByIdAndDelete(hackId);
 
     // Invalidate caches
-    await this.redisService.del(`hacks:single:${hackId}`);
-    await this.redisService.del(`hacks:category:${hack.categoryId}`);
+    try {
+      await this.redisService.del(`hacks:single:${hackId}`);
+      await this.redisService.del(`hacks:category:${hack.categoryId}`);
+    } catch {
+      // non-critical
+    }
 
     return {
       message: 'Hack deleted successfully',

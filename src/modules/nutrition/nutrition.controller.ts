@@ -15,10 +15,11 @@ import {
   Request,
   UnauthorizedException,
   UploadedFile,
+  UploadedFiles,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { FileInterceptor, FileFieldsInterceptor } from '@nestjs/platform-express';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { FoodItemService } from './food-item.service';
@@ -130,33 +131,73 @@ export class NutritionController {
   @UseGuards(ThrottlerGuard)
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @UseInterceptors(
-    FileInterceptor('image', {
-      limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB max
-      fileFilter: (_req, file, cb) => {
-        if (!file.mimetype.startsWith('image/')) {
-          cb(new BadRequestException('Only image files are allowed'), false);
-          return;
-        }
-        cb(null, true);
+    FileFieldsInterceptor(
+      [
+        { name: 'image', maxCount: 1 },       // legacy single-image
+        { name: 'barcode', maxCount: 1 },      // barcode close-up
+        { name: 'nutrition', maxCount: 1 },    // nutrition label
+        { name: 'front', maxCount: 1 },        // product front/name
+      ],
+      {
+        limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB max per file
+        fileFilter: (_req, file, cb) => {
+          if (!file.mimetype.startsWith('image/')) {
+            cb(new BadRequestException('Only image files are allowed'), false);
+            return;
+          }
+          cb(null, true);
+        },
       },
-    }),
+    ),
   )
   async analyzeProductImage(
     @Request() req: any,
-    @UploadedFile() file: Express.Multer.File,
+    @UploadedFiles() files: { image?: Express.Multer.File[]; barcode?: Express.Multer.File[]; nutrition?: Express.Multer.File[]; front?: Express.Multer.File[] },
   ) {
     this.resolveUserId(req);
 
-    if (!file || !file.buffer || file.buffer.length === 0) {
-      throw new BadRequestException('Image file is required');
+    const barcodeFile = files?.barcode?.[0];
+    const nutritionFile = files?.nutrition?.[0];
+    const frontFile = files?.front?.[0];
+    const legacyFile = files?.image?.[0];
+
+    // Multi-image mode: at least one of barcode/nutrition/front provided
+    const hasMultiImages = !!(barcodeFile || nutritionFile || frontFile);
+
+    if (!hasMultiImages && !legacyFile) {
+      throw new BadRequestException('At least one product image is required');
     }
 
-    // 1) Analyze image with AI Vision
-    const base64 = file.buffer.toString('base64');
-    const analysis = await this.productImageAnalysis.analyzeProductImage(
-      base64,
-      file.mimetype,
-    );
+    let analysis;
+
+    if (hasMultiImages) {
+      // New multi-image analysis
+      const images: {
+        barcode?: { base64: string; mimeType: string };
+        nutrition?: { base64: string; mimeType: string };
+        front?: { base64: string; mimeType: string };
+      } = {};
+
+      if (barcodeFile?.buffer?.length) {
+        images.barcode = { base64: barcodeFile.buffer.toString('base64'), mimeType: barcodeFile.mimetype };
+      }
+      if (nutritionFile?.buffer?.length) {
+        images.nutrition = { base64: nutritionFile.buffer.toString('base64'), mimeType: nutritionFile.mimetype };
+      }
+      if (frontFile?.buffer?.length) {
+        images.front = { base64: frontFile.buffer.toString('base64'), mimeType: frontFile.mimetype };
+      }
+
+      analysis = await this.productImageAnalysis.analyzeProductImage(images);
+    } else {
+      // Legacy single-image mode
+      const file = legacyFile!;
+      if (!file.buffer || file.buffer.length === 0) {
+        throw new BadRequestException('Image file is required');
+      }
+      const base64 = file.buffer.toString('base64');
+      analysis = await this.productImageAnalysis.analyzeProductImage(base64, file.mimetype);
+    }
 
     // 2) If AI found a barcode, check if product already exists in DB
     if (analysis.barcode) {
@@ -181,10 +222,13 @@ export class NutritionController {
       return { source: existingByName.source ?? 'catalog', item: existingByName, fromImage: true };
     }
 
-    // 4) Upload product image to S3
+    // 4) Upload product image to S3 (prefer front, then nutrition, then barcode, then legacy)
+    const uploadFile = frontFile || nutritionFile || barcodeFile || legacyFile;
     let imageUrl: string | null = null;
     try {
-      imageUrl = await this.imageUpload.uploadFile(file, 'product-images');
+      if (uploadFile) {
+        imageUrl = await this.imageUpload.uploadFile(uploadFile, 'product-images');
+      }
     } catch (err) {
       this.logger.warn(`Failed to upload product image: ${(err as Error).message}`);
       // Non-fatal — continue without the image URL

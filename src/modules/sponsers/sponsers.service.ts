@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import {
@@ -45,26 +45,46 @@ export class SponsersService {
       tagline: dto.tagline,
     });
     const cachedKey = `sponsers:all`;
-    await this.redisService.del(cachedKey);
+    try {
+      await this.redisService.del(cachedKey);
+    } catch (e) {
+      // non-critical — cache will expire naturally
+    }
     return result;
   }
 
   async fetchAll() {
     const cachedKey = `sponsers:all`;
-    const cachedData = await this.redisService.get(cachedKey);
-    if (cachedData) return JSON.parse(cachedData);
+    try {
+      const cachedData = await this.redisService.get(cachedKey);
+      if (cachedData) return JSON.parse(cachedData);
+    } catch {
+      // corrupted cache or Redis down — fall through to DB
+    }
     const result = await this.sponsersModel.find();
-    await this.redisService.set(cachedKey, JSON.stringify(result), 60 * 20);
+    try {
+      await this.redisService.set(cachedKey, JSON.stringify(result), 60 * 20);
+    } catch {
+      // non-critical
+    }
     return result;
   }
 
   async fetchById(id: string) {
     const cachedKey = `sponsers:single:${id}`;
-    const cachedData = await this.redisService.get(cachedKey);
-    if (cachedData) return JSON.parse(cachedData);
+    try {
+      const cachedData = await this.redisService.get(cachedKey);
+      if (cachedData) return JSON.parse(cachedData);
+    } catch {
+      // corrupted cache or Redis down — fall through to DB
+    }
     const result = await this.sponsersModel.findById(id);
-    if (!result) throw new Error('Sponsor not found');
-    await this.redisService.set(cachedKey, JSON.stringify(result), 60 * 20);
+    if (!result) throw new NotFoundException('Sponsor not found');
+    try {
+      await this.redisService.set(cachedKey, JSON.stringify(result), 60 * 20);
+    } catch {
+      // non-critical
+    }
     return result;
   }
 
@@ -77,7 +97,7 @@ export class SponsersService {
     },
   ) {
     const existing = await this.sponsersModel.findById(id);
-    if (!existing) throw new Error('Sponsor not found');
+    if (!existing) throw new NotFoundException('Sponsor not found');
 
     let logoUrl = existing.logo;
     let logoBWUrl = existing.logoBlackAndWhite;
@@ -110,18 +130,26 @@ export class SponsersService {
 
     const allKey = `sponsers:all`;
     const singleKey = `sponsers:single:${id}`;
-    await this.redisService.del(allKey);
-    await this.redisService.del(singleKey);
+    try {
+      await this.redisService.del(allKey);
+      await this.redisService.del(singleKey);
+    } catch {
+      // non-critical
+    }
     return updated;
   }
 
   async remove(id: string) {
     const deleted = await this.sponsersModel.findByIdAndDelete(id);
-    if (!deleted) throw new Error('Sponsor not found');
+    if (!deleted) throw new NotFoundException('Sponsor not found');
     const allKey = `sponsers:all`;
     const singleKey = `sponsers:single:${id}`;
-    await this.redisService.del(allKey);
-    await this.redisService.del(singleKey);
+    try {
+      await this.redisService.del(allKey);
+      await this.redisService.del(singleKey);
+    } catch {
+      // non-critical
+    }
     return { success: true };
   }
 }

@@ -31,12 +31,45 @@ export class ProductImageAnalysisService {
   ) {}
 
   /**
-   * Analyze a product image (photo of nutrition label / product packaging)
-   * using OpenAI Vision to extract product name, nutrition data, and barcode.
+   * Build image content parts for OpenAI Vision from provided images.
+   * Each image is labeled so the AI knows which photo is which.
+   */
+  private buildImageParts(
+    images: { label: string; base64: string; mimeType: string }[],
+  ): Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail: 'high' | 'low' } }> {
+    const parts: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail: 'high' | 'low' } }> = [];
+    for (const img of images) {
+      parts.push({ type: 'text', text: `[${img.label}]` });
+      parts.push({
+        type: 'image_url',
+        image_url: {
+          url: `data:${img.mimeType};base64,${img.base64}`,
+          detail: 'high',
+        },
+      });
+    }
+    return parts;
+  }
+
+  /**
+   * Analyze product images using OpenAI Vision.
+   * Accepts 1–3 specialized images for higher accuracy:
+   *  - barcode: close-up of the barcode
+   *  - nutrition: close-up of the nutrition facts label
+   *  - front: product front / name / packaging
+   *
+   * Falls back gracefully if fewer images are provided.
    */
   async analyzeProductImage(
     imageBase64: string,
     mimeType: string,
+  ): Promise<ProductImageAnalysis>;
+  async analyzeProductImage(
+    images: { barcode?: { base64: string; mimeType: string }; nutrition?: { base64: string; mimeType: string }; front?: { base64: string; mimeType: string } },
+  ): Promise<ProductImageAnalysis>;
+  async analyzeProductImage(
+    imageOrImages: string | { barcode?: { base64: string; mimeType: string }; nutrition?: { base64: string; mimeType: string }; front?: { base64: string; mimeType: string } },
+    mimeType?: string,
   ): Promise<ProductImageAnalysis> {
     if (!this.openai) {
       throw new ServiceUnavailableException(
@@ -44,7 +77,36 @@ export class ProductImageAnalysisService {
       );
     }
 
-    this.logger.log('Analyzing product image with AI Vision...');
+    // Normalize: single image (legacy) → multi-image format
+    let imageParts: Array<{ label: string; base64: string; mimeType: string }>;
+    let imageCount: number;
+
+    if (typeof imageOrImages === 'string') {
+      // Legacy single-image call
+      imageParts = [{ label: 'Product Photo', base64: imageOrImages, mimeType: mimeType! }];
+      imageCount = 1;
+    } else {
+      imageParts = [];
+      if (imageOrImages.barcode) {
+        imageParts.push({ label: 'Barcode (close-up)', ...imageOrImages.barcode });
+      }
+      if (imageOrImages.nutrition) {
+        imageParts.push({ label: 'Nutrition Facts Label', ...imageOrImages.nutrition });
+      }
+      if (imageOrImages.front) {
+        imageParts.push({ label: 'Product Front / Packaging', ...imageOrImages.front });
+      }
+      imageCount = imageParts.length;
+      if (imageCount === 0) {
+        throw new BadRequestException('At least one product image is required');
+      }
+    }
+
+    this.logger.log(`Analyzing product with ${imageCount} image(s) via AI Vision...`);
+
+    const multiImageHint = imageCount > 1
+      ? `You will receive ${imageCount} labeled photos of the SAME product, each showing a different aspect. Cross-reference all images to produce the most accurate result.`
+      : 'You will receive a single photo of a food product — it could be the packaging, nutrition label, or both.';
 
     const response = await this.openai.chat.completions.create({
       model: 'gpt-4.1',
@@ -52,23 +114,24 @@ export class ProductImageAnalysisService {
         {
           role: 'system',
           content: `You are a product nutrition analyzer for Saveful, a food tracking app.
-You will receive a photo of a food product — it could be a photo of the product packaging, nutrition label, or both.
+${multiImageHint}
 
 Your task:
-1. Identify the product name and brand from the image.
-2. Extract the nutrition information (per 100g). If the label shows per serving, convert to per 100g.
-3. If a barcode is visible, read and return it.
+1. Identify the product name and brand. Use the "Product Front / Packaging" image if available.
+2. Extract nutrition information (per 100g). Use the "Nutrition Facts Label" image if available. If the label shows per serving, convert to per 100g.
+3. Read the barcode digits from the "Barcode (close-up)" image if available.
 4. Determine the food category.
 
 RULES:
 - All nutrition values MUST be per 100g, not per serving.
-- If you can read values directly from the label, set confidence to "high".
+- If you can read values directly from a clear nutrition label image, set confidence to "high".
 - If you're estimating some values, set confidence to "medium".
-- If the image is unclear and you're mostly guessing, set confidence to "low".
+- If the images are unclear and you're mostly guessing, set confidence to "low".
 - If serving size is visible, include it.
 - For barcode: only return it if you can clearly read the digits. Otherwise null.
 - Category must be one of: fruit, vegetable, grain, legume, dairy, protein, fat_oil, beverage, snack, sweet, packaged, dish, condiment, other.
 - Be conservative: slightly overestimate calories rather than underestimate.
+- Cross-reference product name, brand, and nutrition across all provided images for consistency.
 
 Respond ONLY with valid JSON, no markdown, no explanation.`,
         },
@@ -77,7 +140,7 @@ Respond ONLY with valid JSON, no markdown, no explanation.`,
           content: [
             {
               type: 'text',
-              text: `Analyze this food product image. Extract the product name, brand, nutrition info (per 100g), barcode if visible, and category.
+              text: `Analyze this food product. Extract the product name, brand, nutrition info (per 100g), barcode if visible, and category.
 
 Return JSON:
 {
@@ -99,13 +162,7 @@ Return JSON:
   "category": "packaged"
 }`,
             },
-            {
-              type: 'image_url',
-              image_url: {
-                url: `data:${mimeType};base64,${imageBase64}`,
-                detail: 'high',
-              },
-            },
+            ...this.buildImageParts(imageParts),
           ],
         },
       ],

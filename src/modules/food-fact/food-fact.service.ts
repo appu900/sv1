@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { FoodFact, FoodFactDocument } from 'src/database/schemas/food-fact.schema';
@@ -25,37 +25,43 @@ export class FoodFactService {
     };
 
     if (dto.sponsor) {
+      if (!Types.ObjectId.isValid(dto.sponsor)) throw new BadRequestException('Invalid sponsor ID');
       foodFactData.sponsor = new Types.ObjectId(dto.sponsor);
     }
 
     if (dto.relatedIngredient) {
+      if (!Types.ObjectId.isValid(dto.relatedIngredient)) throw new BadRequestException('Invalid ingredient ID');
       foodFactData.relatedIngredient = new Types.ObjectId(dto.relatedIngredient);
     }
 
     const result = await this.foodFactModel.create(foodFactData);
     const cachedKey = `food-facts:all`;
-    await this.redisService.del(cachedKey);
+    try { await this.redisService.del(cachedKey); } catch { /* non-critical */ }
     return result;
   }
 
   async fetchAll() {
     const cachedKey = `food-facts:all`;
-    const cachedData = await this.redisService.get(cachedKey);
-    if (cachedData) return JSON.parse(cachedData);
+    try {
+      const cachedData = await this.redisService.get(cachedKey);
+      if (cachedData) return JSON.parse(cachedData);
+    } catch { /* corrupted cache or Redis down */ }
 
     const result = await this.foodFactModel
       .find()
       .populate('sponsor', 'title logo')
       .populate('relatedIngredient', 'name');
     
-    await this.redisService.set(cachedKey, JSON.stringify(result), 60 * 20);
+    try { await this.redisService.set(cachedKey, JSON.stringify(result), 60 * 20); } catch { /* non-critical */ }
     return result;
   }
 
   async fetchById(id: string) {
     const cachedKey = `food-facts:single:${id}`;
-    const cachedData = await this.redisService.get(cachedKey);
-    if (cachedData) return JSON.parse(cachedData);
+    try {
+      const cachedData = await this.redisService.get(cachedKey);
+      if (cachedData) return JSON.parse(cachedData);
+    } catch { /* corrupted cache or Redis down */ }
 
     const result = await this.foodFactModel
       .findById(id)
@@ -66,7 +72,7 @@ export class FoodFactService {
       throw new NotFoundException('Food fact not found');
     }
 
-    await this.redisService.set(cachedKey, JSON.stringify(result), 60 * 20);
+    try { await this.redisService.set(cachedKey, JSON.stringify(result), 60 * 20); } catch { /* non-critical */ }
     return result;
   }
 
@@ -83,8 +89,14 @@ export class FoodFactService {
 
     if (dto.title) updateData.title = dto.title;
     if (dto.factOrInsight !== undefined) updateData.factOrInsight = dto.factOrInsight;
-    if (dto.sponsor) updateData.sponsor = new Types.ObjectId(dto.sponsor);
-    if (dto.relatedIngredient) updateData.relatedIngredient = new Types.ObjectId(dto.relatedIngredient);
+    if (dto.sponsor) {
+      if (!Types.ObjectId.isValid(dto.sponsor)) throw new BadRequestException('Invalid sponsor ID');
+      updateData.sponsor = new Types.ObjectId(dto.sponsor);
+    }
+    if (dto.relatedIngredient) {
+      if (!Types.ObjectId.isValid(dto.relatedIngredient)) throw new BadRequestException('Invalid ingredient ID');
+      updateData.relatedIngredient = new Types.ObjectId(dto.relatedIngredient);
+    }
 
     const result = await this.foodFactModel.findByIdAndUpdate(
       id,
@@ -96,8 +108,7 @@ export class FoodFactService {
 
     const cachedKeyAll = `food-facts:all`;
     const cachedKeySingle = `food-facts:single:${id}`;
-    await this.redisService.del(cachedKeyAll);
-    await this.redisService.del(cachedKeySingle);
+    try { await this.redisService.del(cachedKeyAll); await this.redisService.del(cachedKeySingle); } catch { /* non-critical */ }
 
     return result;
   }
@@ -110,8 +121,7 @@ export class FoodFactService {
 
     const cachedKeyAll = `food-facts:all`;
     const cachedKeySingle = `food-facts:single:${id}`;
-    await this.redisService.del(cachedKeyAll);
-    await this.redisService.del(cachedKeySingle);
+    try { await this.redisService.del(cachedKeyAll); await this.redisService.del(cachedKeySingle); } catch { /* non-critical */ }
 
     return { message: 'Food fact deleted successfully', deletedId: id };
   }

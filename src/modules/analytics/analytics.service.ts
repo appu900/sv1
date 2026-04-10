@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
@@ -65,7 +65,7 @@ export class AnalyticsService {
 async saveFood(userId: string, ingredinatIds: string[] = [], frameworkId?: string, directIngredients?: { name: string; averageWeight: number }[]) {
   try {
     const user = await this.userModel.findOne({ _id: userId }).lean();
-    if (!user) throw new Error('User not found');
+    if (!user) throw new NotFoundException('User not found');
     const country = normalizeCountry(user.country || 'India') || 'India';
 
     let ingredinats: Array<{ name: string; averageWeight: number }>; 
