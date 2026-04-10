@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import OpenAI from 'openai';
 import { getCuisineContext } from '../../common/utils/country-cuisine.util';
 
@@ -111,7 +111,7 @@ Return JSON:
 
     const content = response.choices[0]?.message?.content;
     if (!content) {
-      throw new Error('AI returned empty response');
+      throw new ServiceUnavailableException('AI returned empty response');
     }
 
     let cleanContent = content.trim();
@@ -121,7 +121,13 @@ Return JSON:
         .replace(/\n?```$/, '');
     }
 
-    const parsed: AiNutritionEstimate = JSON.parse(cleanContent);
+    let parsed: AiNutritionEstimate;
+    try {
+      parsed = JSON.parse(cleanContent);
+    } catch {
+      this.logger.error(`AI returned malformed JSON for estimateNutrition: ${cleanContent.slice(0, 200)}`);
+      throw new ServiceUnavailableException('AI returned malformed response');
+    }
 
     parsed.perServing.kcal = Math.max(0, Math.min(5000, parsed.perServing.kcal));
     parsed.perServing.protein_g = Math.max(0, Math.min(500, parsed.perServing.protein_g));
@@ -202,7 +208,7 @@ Return JSON:
 
     const content = response.choices[0]?.message?.content;
     if (!content) {
-      throw new Error('AI returned empty response for food identification');
+      throw new ServiceUnavailableException('AI returned empty response for food identification');
     }
 
     let clean = content.trim();
@@ -210,7 +216,13 @@ Return JSON:
       clean = clean.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
     }
 
-    const parsed = JSON.parse(clean);
+    let parsed: any;
+    try {
+      parsed = JSON.parse(clean);
+    } catch {
+      this.logger.error(`AI returned malformed JSON for identifyFood: ${clean.slice(0, 200)}`);
+      throw new ServiceUnavailableException('AI returned malformed response');
+    }
 
     const foods: string[] = Array.isArray(parsed.foods)
       ? parsed.foods
@@ -273,14 +285,20 @@ Respond ONLY with a valid JSON array, no markdown, no explanation. The array mus
     });
 
     const content = response.choices[0]?.message?.content;
-    if (!content) throw new Error('AI returned empty response');
+    if (!content) throw new ServiceUnavailableException('AI returned empty response');
 
     let clean = content.trim();
     if (clean.startsWith('```')) {
       clean = clean.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
     }
 
-    const parsed: any[] = JSON.parse(clean);
+    let parsed: any[];
+    try {
+      parsed = JSON.parse(clean);
+    } catch {
+      this.logger.error(`AI returned malformed JSON for ingredientBreakdown: ${clean.slice(0, 200)}`);
+      throw new ServiceUnavailableException('AI returned malformed response');
+    }
 
     // Validate & clamp each entry
     return parsed.map((item) => ({
@@ -399,7 +417,7 @@ Return JSON:
 
     const content = response.choices[0]?.message?.content;
     if (!content) {
-      throw new Error('AI returned empty response for photo food analysis');
+      throw new ServiceUnavailableException('AI returned empty response for photo food analysis');
     }
 
     let clean = content.trim();
@@ -407,11 +425,17 @@ Return JSON:
       clean = clean.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
     }
 
-    const parsed = JSON.parse(clean);
+    let parsed: any;
+    try {
+      parsed = JSON.parse(clean);
+    } catch {
+      this.logger.error(`AI returned malformed JSON for photoAnalysis: ${clean.slice(0, 200)}`);
+      throw new ServiceUnavailableException('AI returned malformed response');
+    }
 
     // Validate foods array
     if (!Array.isArray(parsed.foods) || parsed.foods.length === 0) {
-      throw new Error('AI could not identify any food in the photo');
+      throw new BadRequestException('AI could not identify any food in the photo');
     }
 
     const foods = parsed.foods
@@ -425,7 +449,7 @@ Return JSON:
       }));
 
     if (foods.length === 0) {
-      throw new Error('AI could not identify any food in the photo');
+      throw new BadRequestException('AI could not identify any food in the photo');
     }
 
     // Recompute total from individual items for consistency

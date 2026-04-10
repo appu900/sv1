@@ -34,8 +34,13 @@ export class BarcodeLookupService {
     const offWorld = await this.openFoodFacts.fetchByBarcode(barcode);
     if (offWorld && offWorld.per100g.kcal > 0) {
       this.logger.log(`Barcode ${barcode} found on OFF world`);
-      const saved = await this.foodItemService.upsert(offWorld);
-      return { source: 'openfoodfacts', item: saved };
+      try {
+        const saved = await this.foodItemService.upsert(offWorld);
+        return { source: 'openfoodfacts', item: saved };
+      } catch (e) {
+        this.logger.warn(`Upsert failed for OFF world barcode ${barcode}: ${(e as Error).message}`);
+        return { source: 'openfoodfacts', item: offWorld };
+      }
     }
 
     // 3. Open Food Facts — India endpoint (separate DB, more Indian products)
@@ -43,8 +48,13 @@ export class BarcodeLookupService {
     const offIndia = await this.fetchFromOffIndia(barcode);
     if (offIndia && offIndia.per100g.kcal > 0) {
       this.logger.log(`Barcode ${barcode} found on OFF India`);
-      const saved = await this.foodItemService.upsert(offIndia);
-      return { source: 'openfoodfacts-india', item: saved };
+      try {
+        const saved = await this.foodItemService.upsert(offIndia);
+        return { source: 'openfoodfacts-india', item: saved };
+      } catch (e) {
+        this.logger.warn(`Upsert failed for OFF India barcode ${barcode}: ${(e as Error).message}`);
+        return { source: 'openfoodfacts-india', item: offIndia };
+      }
     }
 
     // 4. UPC Item DB — product identification only (no nutrition)
@@ -56,13 +66,23 @@ export class BarcodeLookupService {
       // Use AI to estimate nutrition for the identified product
       const enriched = await this.enrichWithAi(upcItem);
       if (enriched) {
-        const saved = await this.foodItemService.upsert(enriched);
-        return { source: 'upcitemdb+ai', item: saved };
+        try {
+          const saved = await this.foodItemService.upsert(enriched);
+          return { source: 'upcitemdb+ai', item: saved };
+        } catch (e) {
+          this.logger.warn(`Upsert failed for UPC+AI barcode ${barcode}: ${(e as Error).message}`);
+          return { source: 'upcitemdb+ai', item: enriched };
+        }
       }
 
       // If AI fails, still save the basic product info
-      const saved = await this.foodItemService.upsert(upcItem);
-      return { source: 'upcitemdb', item: saved };
+      try {
+        const saved = await this.foodItemService.upsert(upcItem);
+        return { source: 'upcitemdb', item: saved };
+      } catch (e) {
+        this.logger.warn(`Upsert failed for UPC barcode ${barcode}: ${(e as Error).message}`);
+        return { source: 'upcitemdb', item: upcItem };
+      }
     }
 
     this.logger.warn(`Barcode ${barcode} not found in any source`);

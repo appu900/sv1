@@ -197,10 +197,10 @@ export class InventoryService {
     const item = await this.inventoryModel.create({
       ...enrichedData,
       userId: new Types.ObjectId(userId),
-      ingredientId: dto.ingredientId
+      ingredientId: dto.ingredientId && Types.ObjectId.isValid(dto.ingredientId)
         ? new Types.ObjectId(dto.ingredientId)
         : undefined,
-      categoryId: enrichedData.categoryId
+      categoryId: enrichedData.categoryId && Types.ObjectId.isValid(enrichedData.categoryId)
         ? new Types.ObjectId(enrichedData.categoryId)
         : undefined,
       expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
@@ -209,7 +209,11 @@ export class InventoryService {
       countries: dto.country ? [dto.country] : [],
     });
 
-    await this.invalidateCache(userId);
+    try {
+      await this.invalidateCache(userId);
+    } catch (e) {
+      this.logger.warn(`Cache invalidation failed after addItem: ${(e as Error).message}`);
+    }
     this.logger.log(`Added inventory item "${item.name}" for user ${userId}`);
     return item;
   }
@@ -258,7 +262,11 @@ export class InventoryService {
       throw new NotFoundException('Inventory item not found');
     }
 
-    await this.invalidateCache(userId);
+    try {
+      await this.invalidateCache(userId);
+    } catch (e) {
+      this.logger.warn(`Cache invalidation failed after updateItem: ${(e as Error).message}`);
+    }
     this.logger.log(`Updated inventory item ${itemId} for user ${userId}`);
     return item;
   }
@@ -280,7 +288,11 @@ export class InventoryService {
       throw new NotFoundException('Inventory item not found');
     }
 
-    await this.invalidateCache(userId);
+    try {
+      await this.invalidateCache(userId);
+    } catch (e) {
+      this.logger.warn(`Cache invalidation failed after deleteItem: ${(e as Error).message}`);
+    }
     this.logger.log(`Deleted inventory item ${itemId} for user ${userId}`);
   }
 
@@ -337,7 +349,11 @@ export class InventoryService {
         await this.addToShoppingList(userId, item);
       }
 
-      await this.invalidateCache(userId);
+      try {
+        await this.invalidateCache(userId);
+      } catch (e) {
+        this.logger.warn(`Cache invalidation failed after partial discard: ${(e as Error).message}`);
+      }
       this.logger.log(
         `Partially discarded ${dto.discardedQuantity} ${item.unit} of "${item.name}" for user ${userId}`,
       );
@@ -356,7 +372,11 @@ export class InventoryService {
       await this.addToShoppingList(userId, item);
     }
 
-    await this.invalidateCache(userId);
+    try {
+      await this.invalidateCache(userId);
+    } catch (e) {
+      this.logger.warn(`Cache invalidation failed after full discard: ${(e as Error).message}`);
+    }
     this.logger.log(
       `Fully discarded "${item.name}" (${dto.reason}, ${dto.wasteType}) for user ${userId}`,
     );
@@ -410,7 +430,11 @@ export class InventoryService {
     }
 
     if (consumedItems.length > 0) {
-      await this.invalidateCache(userId);
+      try {
+        await this.invalidateCache(userId);
+      } catch (e) {
+        this.logger.warn(`Cache invalidation failed after consume: ${(e as Error).message}`);
+      }
       this.logger.log(
         `Consumed ${consumedItems.length} inventory items for user ${userId} (recipe: ${dto.recipeId || 'unknown'})`,
       );
@@ -771,6 +795,8 @@ export class InventoryService {
     if (!item) {
       throw new NotFoundException('Inventory item not found');
     }
-    await this.invalidateCache(item.userId.toString());
+    await this.invalidateCache(item.userId.toString()).catch((e) =>
+      this.logger.warn(`Cache invalidation failed after adminDelete: ${(e as Error).message}`),
+    );
   }
 }

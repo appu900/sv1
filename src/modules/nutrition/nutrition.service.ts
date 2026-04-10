@@ -114,20 +114,17 @@ export class NutritionService {
       { userId: new Types.ObjectId(userId), date },
       {
         $push: { entries: entry },
+        $inc: {
+          'totals.kcal': round(computed.kcal ?? 0),
+          'totals.protein_g': round(computed.protein_g ?? 0),
+          'totals.carbs_g': round(computed.carbs_g ?? 0),
+          'totals.fat_g': round(computed.fat_g ?? 0),
+          'totals.fiber_g': round(computed.fiber_g ?? 0),
+        },
         $setOnInsert: setOnInsertData,
       },
       { new: true, upsert: true },
     ).exec();
-
-    const prev = daily.totals ?? { kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0 };
-    daily.totals = {
-      kcal: round(prev.kcal + (computed.kcal ?? 0)),
-      protein_g: round(prev.protein_g + (computed.protein_g ?? 0)),
-      carbs_g: round(prev.carbs_g + (computed.carbs_g ?? 0)),
-      fat_g: round(prev.fat_g + (computed.fat_g ?? 0)),
-      fiber_g: round(prev.fiber_g + (computed.fiber_g ?? 0)),
-    };
-    await daily.save();
 
     const dailyObj = daily.toObject() as DailyIntakeDocument;
 
@@ -256,6 +253,10 @@ export class NutritionService {
     userId: string,
     entryId: string,
   ): Promise<DailyIntakeDocument> {
+    if (!Types.ObjectId.isValid(entryId)) {
+      throw new BadRequestException('Invalid entry ID');
+    }
+
     const daily = await this.dailyModel
       .findOne({
         userId: new Types.ObjectId(userId),
@@ -270,25 +271,43 @@ export class NutritionService {
     const entryToRemove = (daily.entries as any[]).find(
       (e: any) => String(e._id) === entryId,
     );
-    daily.entries = (daily.entries as any[]).filter(
-      (e: any) => String(e._id) !== entryId,
-    );
     const rc = entryToRemove?.computed;
-    if (rc) {
-      const prev = daily.totals ?? { kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0 };
-      daily.totals = {
-        kcal: round(Math.max(0, prev.kcal - (rc.kcal ?? 0))),
-        protein_g: round(Math.max(0, prev.protein_g - (rc.protein_g ?? 0))),
-        carbs_g: round(Math.max(0, prev.carbs_g - (rc.carbs_g ?? 0))),
-        fat_g: round(Math.max(0, prev.fat_g - (rc.fat_g ?? 0))),
-        fiber_g: round(Math.max(0, prev.fiber_g - (rc.fiber_g ?? 0))),
-      };
-    } else {
-      daily.totals = this.recomputeTotals(daily.entries);
-    }
-    await daily.save();
 
-    return daily.toObject() as DailyIntakeDocument;
+    const update: any = {
+      $pull: { entries: { _id: new Types.ObjectId(entryId) } },
+    };
+
+    if (rc) {
+      update.$inc = {
+        'totals.kcal': -round(rc.kcal ?? 0),
+        'totals.protein_g': -round(rc.protein_g ?? 0),
+        'totals.carbs_g': -round(rc.carbs_g ?? 0),
+        'totals.fat_g': -round(rc.fat_g ?? 0),
+        'totals.fiber_g': -round(rc.fiber_g ?? 0),
+      };
+    }
+
+    const updated = await this.dailyModel.findOneAndUpdate(
+      {
+        _id: daily._id,
+        'entries._id': new Types.ObjectId(entryId),
+      },
+      update,
+      { new: true },
+    ).exec();
+
+    if (!updated) {
+      throw new NotFoundException('Entry not found');
+    }
+
+    // Clamp totals to zero floor
+    const t = updated.totals ?? { kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0 };
+    if (t.kcal < 0 || t.protein_g < 0 || t.carbs_g < 0 || t.fat_g < 0 || t.fiber_g < 0) {
+      updated.totals = this.recomputeTotals(updated.entries);
+      await updated.save();
+    }
+
+    return updated.toObject() as DailyIntakeDocument;
   }
 
   async updateEntry(
@@ -679,12 +698,20 @@ export class NutritionService {
   }
 
   private buildRef(dto: EntryRefDto): any {
+    const safeObjectId = (id: string | undefined | null): Types.ObjectId | null => {
+      if (!id) return null;
+      if (!Types.ObjectId.isValid(id)) {
+        throw new BadRequestException(`Invalid ObjectId: ${id}`);
+      }
+      return new Types.ObjectId(id);
+    };
+
     return {
       kind: dto.kind,
-      foodItemId: dto.foodItemId ? new Types.ObjectId(dto.foodItemId) : null,
-      customFoodId: dto.customFoodId ? new Types.ObjectId(dto.customFoodId) : null,
-      recipeId: dto.recipeId ? new Types.ObjectId(dto.recipeId) : null,
-      userRecipeId: dto.userRecipeId ? new Types.ObjectId(dto.userRecipeId) : null,
+      foodItemId: safeObjectId(dto.foodItemId),
+      customFoodId: safeObjectId(dto.customFoodId),
+      recipeId: safeObjectId(dto.recipeId),
+      userRecipeId: safeObjectId(dto.userRecipeId),
       freeformText: dto.freeformText ?? null,
     };
   }

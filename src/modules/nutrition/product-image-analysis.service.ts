@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
+import { Inject, Injectable, Logger, BadRequestException, ServiceUnavailableException } from '@nestjs/common';
 import OpenAI from 'openai';
 import { FoodSource } from '../../database/schemas/nutrition/food-item.schema';
 import { NormalizedFood } from './providers/open-food-facts.provider';
@@ -115,7 +115,7 @@ Return JSON:
 
     const content = response.choices[0]?.message?.content;
     if (!content) {
-      throw new Error('AI returned empty response for product image analysis');
+      throw new ServiceUnavailableException('AI returned empty response for product image analysis');
     }
 
     let cleanContent = content.trim();
@@ -125,7 +125,13 @@ Return JSON:
         .replace(/\n?```$/, '');
     }
 
-    const parsed: ProductImageAnalysis = JSON.parse(cleanContent);
+    let parsed: ProductImageAnalysis;
+    try {
+      parsed = JSON.parse(cleanContent);
+    } catch {
+      this.logger.error(`AI returned malformed JSON for product image: ${cleanContent.slice(0, 200)}`);
+      throw new ServiceUnavailableException('AI returned malformed response');
+    }
 
     // Clamp & sanitize nutrition values
     parsed.per100g.kcal = this.clamp(parsed.per100g.kcal, 0, 9000);
@@ -145,7 +151,7 @@ Return JSON:
 
     // Sanitize product name
     if (!parsed.productName || parsed.productName.trim().length === 0) {
-      throw new Error('AI could not identify the product name from the image');
+      throw new BadRequestException('AI could not identify the product name from the image');
     }
     parsed.productName = parsed.productName.trim();
 
