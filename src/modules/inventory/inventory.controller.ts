@@ -206,6 +206,37 @@ export class InventoryController {
     return this.inventoryService.addBatch(userId, itemsWithSource as any);
   }
 
+  @Post('from-shopping-list')
+  @HttpCode(HttpStatus.CREATED)
+  async addFromShoppingList(
+    @Request() req,
+    @Body() dto: { items: { name: string; quantity?: string; unit?: string; ingredientId?: string }[] },
+    @Query('country') country?: string,
+  ) {
+    const userId = req.user._id || req.user.userId;
+
+    const transcript = dto.items
+      .map((i) => `${i.quantity || '1'} ${i.unit || ''} ${i.name}`.trim().replace(/\s+/g, ' '))
+      .join(', ');
+
+    this.logger.log(
+      `Adding ${dto.items.length} shopping-list items to inventory for user ${userId} via AI: "${transcript}"`,
+    );
+
+    const parsedItems = await this.inventoryAiService.parseVoiceTranscript(transcript, country);
+
+    // Merge back the original ingredientId hint if the AI didn't resolve it
+    const itemsWithSource = {
+      items: parsedItems.map((parsed, idx) => ({
+        ...parsed,
+        ingredientId: parsed.ingredientId ?? dto.items[idx]?.ingredientId,
+        expiresAt: new Date(Date.now() + parsed.expiryDays * 24 * 60 * 60 * 1000).toISOString(),
+        source: InventoryItemSource.SHOPPING_LIST,
+      })),
+    };
+
+    return this.inventoryService.addBatch(userId, itemsWithSource as any);
+  }
 
   @Post('consume')
   @HttpCode(HttpStatus.OK)

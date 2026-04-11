@@ -25,5 +25,6 @@ import { COOKBOOKAI_QUEUE_NAME } from './cookbookai.constants';
   ],
   controllers: [CookbookaiController],
   providers: [CookbookaiService, CookbookaiProducer, CookbookaiWorker],
+  exports: [CookbookaiProducer, CookbookaiService],
 })
 export class CookbookaiModule {}

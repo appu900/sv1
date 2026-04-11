@@ -127,7 +127,20 @@ export function getCuisineContext(
   country?: string,
 ): CountryCuisineContext {
   if (!country) return DEFAULT_CONTEXT;
-  return COUNTRY_CUISINE_MAP[country.toUpperCase()] ?? DEFAULT_CONTEXT;
+
+  // 1. Try the value as an ISO-2 code first (e.g. "IN", "US", "GB")
+  const byCode = COUNTRY_CUISINE_MAP[country.toUpperCase()];
+  if (byCode) return byCode;
+
+  // 2. Fall back to a case-insensitive match against full countryName values
+  //    (e.g. "India" → IN, "United States" → US)
+  const lc = country.toLowerCase();
+  const byName = Object.values(COUNTRY_CUISINE_MAP).find(
+    (ctx) => ctx.countryName.toLowerCase() === lc,
+  );
+  if (byName) return byName;
+
+  return DEFAULT_CONTEXT;
 }
 
 export function getCountryName(country?: string): string {
