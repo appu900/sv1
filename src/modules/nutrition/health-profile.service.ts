@@ -21,6 +21,7 @@ import {
 import { CreateHealthProfileDto, UpdateHealthProfileDto, UpdateDailyTargetsDto, UpdateWeightDto, LogWaterDto } from './dto/health-profile.dto';
 import { User, UserDocument } from '../../database/schemas/user.auth.schema';
 import { resolveTimezone, localDateISO, localMonthISO } from '../../common/utils/timezone.util';
+import { getCuisineContext } from '../../common/utils/country-cuisine.util';
 
 interface AiGoalResponse {
   kcal: number;
@@ -58,6 +59,14 @@ export class HealthProfileService {
       .select('timezone country')
       .lean();
     return resolveTimezone(user?.timezone, user?.country);
+  }
+
+  private async getUserCountry(userId: string): Promise<string | undefined> {
+    const user = await this.userModel
+      .findById(userId)
+      .select('country')
+      .lean();
+    return user?.country ?? undefined;
   }
 
   async getProfile(userId: string): Promise<HealthProfileDocument | null> {
@@ -675,18 +684,24 @@ export class HealthProfileService {
     try {
       const targets = profile.targets;
       const goalText = this.goalDisplayText(profile.goal);
+      const country = await this.getUserCountry(profile.userId.toString());
+      const cuisine = getCuisineContext(country);
 
       const response = await this.openai.chat.completions.create({
         model: 'gpt-4.1-mini',
         messages: [
           {
             role: 'system',
-            content: `You are a certified nutritionist AI for Saveful India, a health tracking app.
+            content: `You are a certified nutritionist AI for Saveful, a global health tracking app.
 Analyze the user's monthly performance data and provide 4-6 specific, actionable recommendations.
+
+User's country: ${cuisine.countryName}
+Cuisine context: ${cuisine.cuisineFocus} — suggest foods the user is likely familiar with (e.g., ${cuisine.exampleDishes}).
+Cooking context: ${cuisine.cookingContext}
 
 RULES:
 1. Be specific — reference actual numbers (e.g., "You averaged 1400 kcal but your target is 1800").
-2. Suggestions must be practical and India-friendly (mention Indian foods like dal, paneer, roti, rice, etc.).
+2. Suggestions must be practical and tailored to the user's local cuisine and familiar ingredients.
 3. Keep each recommendation to 1-2 sentences max.
 4. Focus on the biggest gaps first (calories, then protein, then water, then other macros).
 5. If performance is good, acknowledge it and suggest optimization tips.
@@ -700,6 +715,7 @@ Respond ONLY with a JSON array of strings. No markdown, no explanation.`,
 - Gender: ${profile.gender}, Age: ${profile.age}, Weight: ${profile.weight.kg}kg
 - Goal: ${goalText}
 - Activity: ${profile.activityLevel}
+- Country: ${cuisine.countryName}
 
 Daily Targets:
 - Calories: ${targets?.kcal ?? 'N/A'} kcal
@@ -772,6 +788,8 @@ Return a JSON array of 4-6 recommendation strings.`,
 
     try {
       const goalText = this.goalDisplayText(profile.goal);
+      const country = await this.getUserCountry(profile.userId.toString());
+      const cuisine = getCuisineContext(country);
       const todayText = todaySummary
         ? `Today's intake so far: ${todaySummary.kcal} kcal, ${todaySummary.protein_g}g protein, ${todaySummary.carbs_g}g carbs, ${todaySummary.fat_g}g fat, ${todaySummary.water_ml}ml water`
         : 'No meals logged yet today';
@@ -784,13 +802,17 @@ Return a JSON array of 4-6 recommendation strings.`,
         messages: [
           {
             role: 'system',
-            content: `You are a certified nutritionist AI for Saveful India.
+            content: `You are a certified nutritionist AI for Saveful, a global health tracking app.
 Give 3-5 specific daily recommendations based on today's intake and recent trends.
+
+User's country: ${cuisine.countryName}
+Cuisine context: ${cuisine.cuisineFocus} — suggest foods the user is likely familiar with (e.g., ${cuisine.exampleDishes}).
+Cooking context: ${cuisine.cookingContext}
 
 RULES:
 1. If the user has eaten today, suggest what to eat for remaining meals to hit targets.
 2. If the user hasn't eaten yet, suggest a meal plan for the day.
-3. Reference specific Indian foods (dal, paneer, roti, rice, curd, fruits, etc.).
+3. Suggest foods that are practical and familiar for someone in ${cuisine.countryName}.
 4. Be encouraging and practical.
 5. Keep each recommendation to 1-2 sentences.
 6. Consider the 7-day trend — if they've been consistently over/under, address that.
@@ -800,7 +822,7 @@ Respond ONLY with a JSON array of strings.`,
           },
           {
             role: 'user',
-            content: `User: ${profile.gender}, ${profile.age}y, ${profile.weight.kg}kg, Goal: ${goalText}
+            content: `User: ${profile.gender}, ${profile.age}y, ${profile.weight.kg}kg, Goal: ${goalText}, Country: ${cuisine.countryName}
 
 Date: ${todayIso}
 
