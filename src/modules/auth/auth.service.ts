@@ -25,6 +25,9 @@ import { ResetPasswordDto } from './dto/reset-password.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 
+import { UserEventService } from '../user-events/user-event.service';
+import { UserEventType } from '../../database/schemas/user-event.schema';
+
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
@@ -34,6 +37,7 @@ export class AuthService {
     private readonly userService: UserService,
     private readonly emailQueue: EmailQueueService,
     private readonly config: ConfigService,
+    private readonly userEventService: UserEventService,
   ) {}
 
   private generateAccessToken(userId: string, role: string, sessionId: string) {
@@ -265,6 +269,13 @@ export class AuthService {
     // ** create user foodanalytics profile
 
     const userFoodProfileId = await this.userService.createUserFoodAnalyticsProfile(user._id)
+
+    // Record funnel event: signup_complete (idempotent)
+    void this.userEventService.recordFirst(
+      user._id.toString(),
+      UserEventType.SIGNUP_COMPLETE,
+      { role: user.role, country: user.country },
+    );
 
     return {
       success: true,

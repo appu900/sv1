@@ -25,6 +25,9 @@ import { FoodSavedEvent } from './analytics.service';
 import { OnEvent } from '@nestjs/event-emitter';
 import { Types } from 'mongoose';
 import { RedisService } from 'src/redis/redis.service';
+import { UserEventService } from '../user-events/user-event.service';
+import { RecipeViewService } from '../user-events/recipe-view.service';
+import { UserEventType } from 'src/database/schemas/user-event.schema';
 
 @Injectable()
 export class AnalyticsListner {
@@ -41,10 +44,20 @@ export class AnalyticsListner {
     @InjectModel(CommunityChallengeParticipant.name)
     private readonly challengeParticipantModel: Model<CommunityChallengeParticipantDocument>,
     private readonly redisService: RedisService,
+    private readonly userEventService: UserEventService,
+    private readonly recipeViewService: RecipeViewService,
   ) {}
 
   @OnEvent('food.saved', { async: true })
   async updateUserProfile(event: FoodSavedEvent) {
+    // Funnel event: first_recipe_cooked (idempotent) + per-recipe cook counter.
+    void this.userEventService.recordFirst(
+      event.userId,
+      UserEventType.FIRST_RECIPE_COOKED,
+      { frameworkId: event.frameworkId },
+    );
+    void this.recipeViewService.incrementCookCount(event.frameworkId);
+
     try {
       // Prepare update operation
       const updateOperation: any = {

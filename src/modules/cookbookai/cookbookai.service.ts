@@ -253,7 +253,6 @@ export class CookbookaiService {
             tool_choice: 'required',
             max_output_tokens: 4096,
         });
-        // Read text from Responses API output
         const text = typeof response?.output_text === 'string'
             ? response.output_text
             : (response?.output ?? [])
@@ -266,7 +265,6 @@ export class CookbookaiService {
         return text;
     }
 
-    // ── Stage 2: JSON structuring via Chat Completions API (guaranteed JSON) ──
 
     private async structureAsJson(recipeText: string, model: 'gpt-4o-mini' | 'gpt-4o'): Promise<any> {
         this.logger.log(`[stage2] Structuring JSON with ${model} (${recipeText.length} chars input)`);
@@ -467,9 +465,28 @@ export class CookbookaiService {
         return { success: true, message: 'Recipe deleted successfully.' };
     }
 
-    async createPendingRecipe(userId: string, sourceMessage: string) {
+    private detectImportSource(sourceMessage: string): string {
+        const trimmed = String(sourceMessage || '').trim();
+        try {
+            const url = new URL(trimmed);
+            const host = url.hostname.replace(/^www\./i, '').toLowerCase();
+            if (/youtube\.com|youtu\.be/.test(host)) return 'youtube';
+            if (/instagram\.com/.test(host)) return 'instagram';
+            if (/tiktok\.com/.test(host)) return 'tiktok';
+            if (/facebook\.com|fb\.com|fb\.watch/.test(host)) return 'facebook';
+            if (/twitter\.com|x\.com/.test(host)) return 'twitter';
+            if (/pinterest\.com/.test(host)) return 'pinterest';
+            if (/reddit\.com/.test(host)) return 'reddit';
+            return host || 'link';
+        } catch {
+            return 'manual';
+        }
+    }
+
+    async createPendingRecipe(userId: string, sourceMessage: string, importSource?: string) {
         const trimmed = String(sourceMessage || '').trim();
         const title = trimmed.length > 100 ? `${trimmed.substring(0, 97)}...` : (trimmed || 'Generating recipe...');
+        const resolvedImportSource = importSource || this.detectImportSource(trimmed);
         return await this.userRecipeModel.create({
             userid: userId,
             status: 'pending',
@@ -486,6 +503,7 @@ export class CookbookaiService {
             components: [],
             isActive: true,
             countries: [],
+            importSource: resolvedImportSource,
         });
     }
 

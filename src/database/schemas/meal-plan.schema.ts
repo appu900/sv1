@@ -4,6 +4,16 @@ import { Document, Types } from 'mongoose';
 export enum MealPlanStatus {
   ACTIVE = 'active',
   ARCHIVED = 'archived',
+  CREATED = 'created',
+  STARTED = 'started',
+  COMPLETED = 'completed',
+}
+
+export enum MealPlanDuration {
+  THREE = '3',
+  FIVE = '5',
+  SEVEN = '7',
+  CUSTOM = 'custom',
 }
 
 export enum MealSlotType {
@@ -83,6 +93,27 @@ export class PlanDay {
   daySummary: MealNutritionEstimate;
 }
 
+@Schema({ _id: false })
+export class MealPlanRecipe {
+  @Prop({ type: Types.ObjectId, ref: 'Recipe', required: true })
+  recipeId: Types.ObjectId;
+
+  @Prop({ type: Number, required: true, min: 0 })
+  dayIndex: number;
+
+  @Prop({ type: String, required: true })
+  mealSlot: string;
+
+  @Prop({ type: Boolean, default: false })
+  isCooked: boolean;
+
+  @Prop({ type: Boolean, default: false })
+  isSwapped: boolean;
+
+  @Prop({ type: Date })
+  cookedAt?: Date;
+}
+
 @Schema({ timestamps: true })
 export class MealPlan {
   @Prop({ type: Types.ObjectId, ref: 'User', required: true, index: true })
@@ -116,7 +147,33 @@ export class MealPlan {
 
   @Prop({ type: Object, default: {} })
   dietarySnapshot: Record<string, any>;
+
+  @Prop({
+    type: String,
+    enum: Object.values(MealPlanDuration),
+    index: true,
+  })
+  duration?: MealPlanDuration;
+
+  @Prop({ type: Number, min: 1, max: 60 })
+  customDurationDays?: number;
+
+  @Prop({ type: String, default: 'unspecified', index: true })
+  planType: string;
+
+  @Prop({ type: [MealPlanRecipe], default: [] })
+  recipes: MealPlanRecipe[];
+
+  @Prop({ type: Date })
+  startedAt?: Date;
+
+  @Prop({ type: Date })
+  completedAt?: Date;
 }
 
 export type MealPlanDocument = MealPlan & Document;
 export const MealPlanSchema = SchemaFactory.createForClass(MealPlan);
+
+MealPlanSchema.index({ userId: 1, createdAt: -1 });
+MealPlanSchema.index({ planType: 1, createdAt: -1 });
+MealPlanSchema.index({ status: 1, createdAt: -1 });

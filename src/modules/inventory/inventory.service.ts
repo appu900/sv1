@@ -36,6 +36,8 @@ import { DiscardInventoryItemDto } from './dto/discard-inventory-item.dto';
 import { ConsumeInventoryItemsDto } from './dto/consume-inventory-items.dto';
 import { GetInventoryQueryDto } from './dto/get-inventory-query.dto';
 import { RedisService } from '../../redis/redis.service';
+import { UserEventService } from '../user-events/user-event.service';
+import { UserEventType } from '../../database/schemas/user-event.schema';
 
 @Injectable()
 export class InventoryService {
@@ -53,6 +55,7 @@ export class InventoryService {
     @InjectModel(User.name)
     private userModel: Model<UserDocument>,
     private readonly redisService: RedisService,
+    private readonly userEventService: UserEventService,
   ) {}
 
 
@@ -215,6 +218,14 @@ export class InventoryService {
       this.logger.warn(`Cache invalidation failed after addItem: ${(e as Error).message}`);
     }
     this.logger.log(`Added inventory item "${item.name}" for user ${userId}`);
+
+    // Funnel event: first time this user added any ingredient (idempotent)
+    void this.userEventService.recordFirst(
+      userId,
+      UserEventType.FIRST_INGREDIENT_ADDED,
+      { ingredientName: item.name, source: item.source },
+    );
+
     return item;
   }
 

@@ -191,6 +191,15 @@ export class userRecipe {
 
   @Prop({ type: String, enum: ['link', 'ai_ingredients'], default: 'link' })
   source: string;
+
+  @Prop({ type: String, default: 'manual', index: true })
+  importSource: string;
+
+  @Prop({ type: Number, default: 0, index: true })
+  viewCount: number;
+
+  @Prop({ type: Number, default: 0, index: true })
+  cookCount: number;
 }
 
 export type UserRecipeDocument = userRecipe & Document;

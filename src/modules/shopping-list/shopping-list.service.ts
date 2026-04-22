@@ -17,6 +17,9 @@ import { AddShoppingListItemDto } from './dto/add-shopping-list-item.dto';
 import { UpdateShoppingListItemDto } from './dto/update-shopping-list-item.dto';
 import { AddIngredientsFromRecipeDto } from './dto/add-ingredients-from-recipe.dto';
 
+import { UserEventService } from '../user-events/user-event.service';
+import { UserEventType } from '../../database/schemas/user-event.schema';
+
 @Injectable()
 export class ShoppingListService {
   private readonly logger = new Logger(ShoppingListService.name);
@@ -24,6 +27,7 @@ export class ShoppingListService {
   constructor(
     @InjectModel(ShoppingList.name)
     private shoppingListModel: Model<ShoppingListDocument>,
+    private readonly userEventService: UserEventService,
   ) {}
 
   async getCurrentList(userId: string): Promise<ShoppingListDocument> {
@@ -98,6 +102,13 @@ export class ShoppingListService {
     list.updatedAt = new Date();
     await list.save();
 
+    // Funnel event: first time this user added any shopping-list item.
+    void this.userEventService.recordFirst(
+      userId,
+      UserEventType.FIRST_SHOPPING_LIST_CREATED,
+      { source: newItem.source },
+    );
+
     this.logger.log(`Added item to shopping list for user ${userId}`);
     return list;
   }
@@ -135,6 +146,13 @@ export class ShoppingListService {
       await list.save();
       
       // Populate ingredient and recipe details
+      // Funnel event: first time this user added any shopping-list item.
+      void this.userEventService.recordFirst(
+        userId,
+        UserEventType.FIRST_SHOPPING_LIST_CREATED,
+        { source: 'recipe', recipeId: dto.recipeId },
+      );
+
       await list.populate('items.ingredientId');
       await list.populate('items.recipeId');
 

@@ -170,19 +170,16 @@ export class CookbookaiController {
                 };
             }
 
-            // Create a pending row immediately so the app shows a loading card
             const pendingRecipe = await this.cookbookaiService.createPendingRecipe(
                 userId,
                 `AI Recipe from: ${body.ingredients.slice(0, 5).join(', ')}${body.ingredients.length > 5 ? '...' : ''}`,
+                'ai_ingredients',
             );
 
-            // Mark the pending recipe with source
             await this.cookbookaiService.updateRecipeSource(String(pendingRecipe._id), userId, 'ai_ingredients');
 
-            // Look up user's country for cuisine-aware generation
             const country = await this.resolveUserCountry(userId);
 
-            // Queue the recipe generation as a background job
             const jobId = await this.cookbookaiProducer.enqueueRecipeFromIngredients(
                 userId,
                 body.ingredients,

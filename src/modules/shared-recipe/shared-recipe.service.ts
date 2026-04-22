@@ -410,6 +410,7 @@ export class SharedRecipeService {
       isActive: true,
       countries: sourceRecipe.countries || [],
       source: 'link',
+      importSource: 'shared',
     };
 
     const newRecipe = await this.userRecipeModel.create(cloneData);

@@ -10,6 +10,7 @@ import {
   MealPlan,
   MealPlanDocument,
   MealPlanStatus,
+  MealPlanDuration,
 } from '../../database/schemas/meal-plan.schema';
 import {
   HealthProfile,
@@ -25,6 +26,8 @@ import { userRecipe, UserRecipeDocument } from '../../database/schemas/user.sche
 import { MealPlanAiService } from './meal-plan-ai.service';
 import { CookbookaiProducer } from '../cookbookai/cookbookai.producer';
 import { GenerateMealPlanDto, GenerateRecipeFromPlanDto } from './dto/meal-plan.dto';
+import { UserEventService } from '../user-events/user-event.service';
+import { UserEventType } from '../../database/schemas/user-event.schema';
 
 @Injectable()
 export class MealPlanService {
@@ -41,6 +44,7 @@ export class MealPlanService {
     private readonly userModel: Model<UserDocument>,
     @InjectModel(userRecipe.name)
     private readonly userRecipeModel: Model<UserRecipeDocument>,
+    private readonly userEventService: UserEventService,
     private readonly mealPlanAi: MealPlanAiService,
     private readonly cookbookProducer: CookbookaiProducer,
   ) {}
@@ -117,11 +121,41 @@ export class MealPlanService {
       country: (user as any).country ?? '',
       status: MealPlanStatus.ACTIVE,
       targetKcal: healthProfile?.targets?.kcal,
-      dietarySnapshot: dietary,
+      // Analytics fields
+      duration: this.bucketDuration(aiResult.totalDays ?? dto.days),
+      customDurationDays:
+        this.bucketDuration(aiResult.totalDays ?? dto.days) ===
+        MealPlanDuration.CUSTOM
+          ? aiResult.totalDays ?? dto.days
+          : undefined,
+      planType:
+        (dto as any)?.preference ||
+        healthProfile?.goal ||
+        'unspecified',
+      recipes: [],
     });
 
     this.logger.log(`Meal plan generated: planId=${plan._id}, userId=${userId}, days=${aiResult.totalDays}`);
+
+    // Funnel event: first meal plan created by this user.
+    void this.userEventService.recordFirst(
+      userId,
+      UserEventType.FIRST_MEAL_PLAN_CREATED,
+      {
+        planId: plan._id.toString(),
+        duration: plan.duration,
+        planType: plan.planType,
+      },
+    );
+
     return plan;
+  }
+
+  private bucketDuration(days: number | undefined): MealPlanDuration {
+    if (days === 3) return MealPlanDuration.THREE;
+    if (days === 5) return MealPlanDuration.FIVE;
+    if (days === 7) return MealPlanDuration.SEVEN;
+    return MealPlanDuration.CUSTOM;
   }
 
   async getActivePlan(userId: string): Promise<MealPlanDocument | null> {
@@ -195,6 +229,7 @@ export class MealPlanService {
       components: [],
       isActive: true,
       source: 'ai_ingredients',
+      importSource: 'mealplan',
     });
 
     const recipeId = String(pendingRecipe._id);

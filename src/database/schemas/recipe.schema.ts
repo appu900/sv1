@@ -168,14 +168,19 @@ export class Recipe {
 
   @Prop({ type: [String], default: [] })
   countries: string[];
+
+  @Prop({ type: Number, default: 0, index: true })
+  viewCount: number;
+
+  @Prop({ type: Number, default: 0, index: true })
+  cookCount: number;
 }
 
 export type RecipeDocument = Recipe & Document;
 export const RecipeSchema = SchemaFactory.createForClass(Recipe);
 
-// Indexes for optimized queries
 RecipeSchema.index({ title: 1 });
 RecipeSchema.index({ frameworkCategories: 1 });
-RecipeSchema.index({ isActive: 1, order: 1 });          // covers findAll sort
-RecipeSchema.index({ isActive: 1, countries: 1, order: 1 }); // covers country-filtered findAll
-RecipeSchema.index({ frameworkCategories: 1, isActive: 1, countries: 1, order: 1 }); // covers category queries
+RecipeSchema.index({ isActive: 1, order: 1 });        
+RecipeSchema.index({ isActive: 1, countries: 1, order: 1 }); 
+RecipeSchema.index({ frameworkCategories: 1, isActive: 1, countries: 1, order: 1 }); 
