@@ -171,6 +171,7 @@ export class InventoryController {
     const parsedItems = await this.inventoryAiService.parseVoiceTranscript(
       dto.transcript,
       country,
+      userId,
     );
 
     return {
@@ -223,7 +224,7 @@ export class InventoryController {
       `Adding ${dto.items.length} shopping-list items to inventory for user ${userId} via AI: "${transcript}"`,
     );
 
-    const parsedItems = await this.inventoryAiService.parseVoiceTranscript(transcript, country);
+    const parsedItems = await this.inventoryAiService.parseVoiceTranscript(transcript, country, userId);
 
     // Merge back the original ingredientId hint if the AI didn't resolve it
     const itemsWithSource = {
@@ -356,16 +357,19 @@ export class InventoryController {
 
   @Post('waste-classify')
   @HttpCode(HttpStatus.OK)
-  async classifyWaste(@Body() dto: WasteClassifyDto) {
+  async classifyWaste(@Request() req, @Body() dto: WasteClassifyDto) {
+    const userId = req.user._id || req.user.userId;
     return this.inventoryAiService.classifyWaste(
       dto.ingredientName,
       dto.packaging,
+      userId,
     );
   }
 
   @Post('leftover/shelf-life')
   @HttpCode(HttpStatus.OK)
-  async estimateShelfLife(@Body() dto: EstimateShelfLifeDto) {
+  async estimateShelfLife(@Request() req, @Body() dto: EstimateShelfLifeDto) {
+    const userId = req.user._id || req.user.userId;
     this.logger.log(
       `Estimating shelf life for "${dto.dishName}" in ${dto.storageLocation}`,
     );
@@ -373,17 +377,20 @@ export class InventoryController {
       dto.dishName,
       dto.storageLocation,
       dto.dishCategory,
+      userId,
     );
   }
 
   @Post('leftover/makeover-ideas')
   @HttpCode(HttpStatus.OK)
-  async getLeftoverMakeoverIdeas(@Body() dto: LeftoverMakeoverDto) {
+  async getLeftoverMakeoverIdeas(@Request() req, @Body() dto: LeftoverMakeoverDto) {
+    const userId = req.user._id || req.user.userId;
     this.logger.log(`Generating makeover ideas for "${dto.dishName}"`);
     return this.inventoryAiService.getLeftoverMakeoverIdeas(
       dto.dishName,
       dto.storageLocation,
       dto.country,
+      userId,
     );
   }
 }

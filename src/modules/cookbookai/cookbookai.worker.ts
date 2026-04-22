@@ -36,7 +36,7 @@ export class CookbookaiWorker extends WorkerHost {
     try {
       // Step 1: Run AI extraction
       const aiResponse =
-        await this.cookbookaiService.extractRecipeWithAI(message);
+        await this.cookbookaiService.extractRecipeWithAI(message, userId);
 
       if (!aiResponse.success) {
         this.logger.warn(
@@ -58,7 +58,7 @@ export class CookbookaiWorker extends WorkerHost {
       }
 
       // Step 2: Save/update the recipe
-      const recipeData = { ...aiResponse.data, userid: userId };
+      const recipeData = { ...aiResponse.data, userid: userId, aiEventId: (aiResponse as any).aiEventId };
       const createResponse = recipeId
         ? await this.cookbookaiService.updatePendingRecipe(recipeId, userId, recipeData)
         : await this.cookbookaiService.createRecipe(recipeData);
@@ -152,6 +152,7 @@ export class CookbookaiWorker extends WorkerHost {
         ingredients,
         preference,
         country,
+        userId,
       );
 
       if (!aiResponse.success) {
@@ -171,7 +172,7 @@ export class CookbookaiWorker extends WorkerHost {
         return;
       }
 
-      const recipeData = { ...aiResponse.data, userid: userId, source: 'ai_ingredients' };
+      const recipeData = { ...aiResponse.data, userid: userId, source: 'ai_ingredients', aiEventId: (aiResponse as any).aiEventId };
       const createResponse = recipeId
         ? await this.cookbookaiService.updatePendingRecipe(recipeId, userId, recipeData)
         : await this.cookbookaiService.createRecipe(recipeData);

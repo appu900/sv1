@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import OpenAI from 'openai';
@@ -14,6 +14,11 @@ import {
 } from '../../database/schemas/user-inventory.schema';
 import { Recipe, RecipeDocument } from '../../database/schemas/recipe.schema';
 import { RedisService } from '../../redis/redis.service';
+import { AIInteractionService } from '../ai-interaction/ai-interaction.service';
+import {
+  AIFeatureKey,
+  AIResultType,
+} from '../../database/schemas/ai-interaction-event.schema';
 
 
 export interface ParsedVoiceItem {
@@ -57,12 +62,14 @@ export class InventoryAiService {
     @InjectModel(Recipe.name)
     private recipeModel: Model<RecipeDocument>,
     private readonly redisService: RedisService,
+    @Optional() private readonly aiTracker?: AIInteractionService,
   ) {}
 
 
   async parseVoiceTranscript(
     transcript: string,
     country?: string,
+    userId?: string,
   ): Promise<ParsedVoiceItem[]> {
     this.logger.log(`Parsing voice transcript: "${transcript}"`);
 
@@ -78,6 +85,8 @@ export class InventoryAiService {
 
     const ingredientNames = ingredients.map((i) => i.name);
 
+    const startedAt = Date.now();
+    let voiceResponse: any = null;
     try {
       const response = await this.openai.chat.completions.create({
         model: 'gpt-4.1',
@@ -126,6 +135,7 @@ Return JSON:
         temperature: 0.1,
         max_tokens: 2000,
       });
+      voiceResponse = response;
 
       const content = response.choices[0]?.message?.content;
       if (!content) {
@@ -202,12 +212,46 @@ Return JSON:
       this.logger.log(
         `Parsed ${results.length} items from voice transcript`,
       );
+      if (this.aiTracker) {
+        await this.aiTracker.logFromResponse(
+          {
+            userId: userId ?? null,
+            feature: AIFeatureKey.INVENTORY_QUERY,
+            resultType:
+              results.length > 0 ? AIResultType.RECIPE_GENERATED : AIResultType.NO_RESULT,
+            latencyMs: Date.now() - startedAt,
+            metadata: {
+              action: 'voice_parse',
+              transcriptLength: transcript.length,
+              parsedCount: results.length,
+              country,
+            },
+          },
+          voiceResponse,
+        );
+      }
       return results;
     } catch (error) {
       this.logger.error(
         `Voice parsing failed: ${error.message}`,
         error.stack,
       );
+      if (this.aiTracker) {
+        await this.aiTracker.logFromResponse(
+          {
+            userId: userId ?? null,
+            feature: AIFeatureKey.INVENTORY_QUERY,
+            resultType: AIResultType.ERROR,
+            latencyMs: Date.now() - startedAt,
+            metadata: {
+              action: 'voice_parse',
+              transcriptLength: transcript.length,
+              error: error?.message,
+            },
+          },
+          voiceResponse,
+        );
+      }
       throw error;
     }
   }
@@ -465,6 +509,7 @@ Return JSON:
           suggestions,
           inventoryNames,
           expiringNames,
+          userId,
         );
         return aiEnriched;
       } catch (e) {
@@ -544,7 +589,9 @@ Return JSON:
     suggestions: MealSuggestion[],
     inventoryNames: string[],
     expiringNames: string[],
+    userId?: string,
   ): Promise<MealSuggestion[]> {
+    const startedAt = Date.now();
     const response = await this.openai.chat.completions.create({
       model: 'gpt-4.1',
       messages: [
@@ -576,11 +623,38 @@ Return JSON array of reasons:
           .replace(/\n?```$/, '');
       }
       const parsed = JSON.parse(content);
+      if (this.aiTracker) {
+        await this.aiTracker.logFromResponse(
+          {
+            userId: userId ?? null,
+            feature: AIFeatureKey.INVENTORY_QUERY,
+            resultType: AIResultType.RECIPE_GENERATED,
+            latencyMs: Date.now() - startedAt,
+            metadata: {
+              action: 'enrich_meal_suggestions',
+              suggestionCount: suggestions.length,
+            },
+          },
+          response,
+        );
+      }
       return suggestions.map((s, i) => ({
         ...s,
         aiReason: parsed.reasons?.[i] || undefined,
       }));
     } catch {
+      if (this.aiTracker) {
+        await this.aiTracker.logFromResponse(
+          {
+            userId: userId ?? null,
+            feature: AIFeatureKey.INVENTORY_QUERY,
+            resultType: AIResultType.PARTIAL,
+            latencyMs: Date.now() - startedAt,
+            metadata: { action: 'enrich_meal_suggestions', parseFailure: true },
+          },
+          response,
+        );
+      }
       return suggestions;
     }
   }
@@ -589,10 +663,13 @@ Return JSON array of reasons:
   async classifyWaste(
     ingredientName: string,
     packaging?: string,
+    userId?: string,
   ): Promise<WasteClassification> {
     const rulesResult = this.classifyByRules(ingredientName, packaging);
     if (rulesResult) return rulesResult;
 
+    const startedAt = Date.now();
+    let wasteResponse: any = null;
     try {
       const response = await this.openai.chat.completions.create({
         model: 'gpt-4.1',
@@ -620,6 +697,7 @@ Respond in JSON only: { "wasteType": "...", "confidence": 0.95, "disposalTip": "
         temperature: 0.1,
         max_tokens: 200,
       });
+      wasteResponse = response;
 
       let content = response.choices[0]?.message?.content?.trim() || '';
       if (content.startsWith('```')) {
@@ -627,9 +705,34 @@ Respond in JSON only: { "wasteType": "...", "confidence": 0.95, "disposalTip": "
           .replace(/^```(?:json)?\n?/, '')
           .replace(/\n?```$/, '');
       }
-      return JSON.parse(content);
+      const parsed = JSON.parse(content);
+      if (this.aiTracker) {
+        await this.aiTracker.logFromResponse(
+          {
+            userId: userId ?? null,
+            feature: AIFeatureKey.INVENTORY_QUERY,
+            resultType: AIResultType.RECIPE_GENERATED,
+            latencyMs: Date.now() - startedAt,
+            metadata: { action: 'classify_waste', ingredientName, packaging },
+          },
+          wasteResponse,
+        );
+      }
+      return parsed;
     } catch (error) {
       this.logger.error(`Waste classification failed: ${error.message}`);
+      if (this.aiTracker) {
+        await this.aiTracker.logFromResponse(
+          {
+            userId: userId ?? null,
+            feature: AIFeatureKey.INVENTORY_QUERY,
+            resultType: AIResultType.ERROR,
+            latencyMs: Date.now() - startedAt,
+            metadata: { action: 'classify_waste', ingredientName, error: error?.message },
+          },
+          wasteResponse,
+        );
+      }
       return {
         wasteType: WasteType.WET,
         confidence: 0.3,
@@ -745,6 +848,7 @@ Respond in JSON only: { "wasteType": "...", "confidence": 0.95, "disposalTip": "
     dishName: string,
     storageLocation: string,
     dishCategory?: string,
+    userId?: string,
   ): Promise<{
     shelfLifeDays: number;
     useByDate: string;
@@ -756,7 +860,25 @@ Respond in JSON only: { "wasteType": "...", "confidence": 0.95, "disposalTip": "
 
     try {
       const cached = await this.redisService.get(cacheKey);
-      if (cached) return JSON.parse(cached);
+      if (cached) {
+        if (this.aiTracker) {
+          await this.aiTracker.log({
+            userId: userId ?? null,
+            feature: AIFeatureKey.INVENTORY_QUERY,
+            model: 'cache',
+            promptTokens: 0,
+            completionTokens: 0,
+            resultType: AIResultType.RECIPE_GENERATED,
+            metadata: {
+              action: 'estimate_shelf_life',
+              cacheHit: true,
+              dishName,
+              storageLocation,
+            },
+          });
+        }
+        return JSON.parse(cached);
+      }
     } catch {}
 
     const defaultDays: Record<string, number> = {
@@ -765,6 +887,8 @@ Respond in JSON only: { "wasteType": "...", "confidence": 0.95, "disposalTip": "
       freezer: 90,
     };
 
+    const startedAt = Date.now();
+    let shelfResponse: any = null;
     try {
       const response = await this.openai.chat.completions.create({
         model: 'gpt-4.1',
@@ -799,6 +923,7 @@ How many days will this last?`,
         temperature: 0.2,
         max_tokens: 300,
       });
+      shelfResponse = response;
 
       let content = response.choices[0]?.message?.content?.trim() || '';
       if (content.startsWith('```')) {
@@ -825,9 +950,42 @@ How many days will this last?`,
         await this.redisService.set(cacheKey, JSON.stringify(result), 7 * 24 * 60 * 60);
       } catch {}
 
+      if (this.aiTracker) {
+        await this.aiTracker.logFromResponse(
+          {
+            userId: userId ?? null,
+            feature: AIFeatureKey.INVENTORY_QUERY,
+            resultType: AIResultType.RECIPE_GENERATED,
+            latencyMs: Date.now() - startedAt,
+            metadata: {
+              action: 'estimate_shelf_life',
+              dishName,
+              storageLocation,
+            },
+          },
+          shelfResponse,
+        );
+      }
+
       return result;
     } catch (error) {
       this.logger.error(`Shelf-life estimation failed for "${dishName}": ${error.message}`);
+      if (this.aiTracker) {
+        await this.aiTracker.logFromResponse(
+          {
+            userId: userId ?? null,
+            feature: AIFeatureKey.INVENTORY_QUERY,
+            resultType: AIResultType.ERROR,
+            latencyMs: Date.now() - startedAt,
+            metadata: {
+              action: 'estimate_shelf_life',
+              dishName,
+              error: error?.message,
+            },
+          },
+          shelfResponse,
+        );
+      }
       const days = defaultDays[storageLocation] || 3;
       return {
         shelfLifeDays: days,
@@ -842,7 +1000,9 @@ How many days will this last?`,
     dishName: string,
     storageLocation?: string,
     country?: string,
+    userId?: string,
   ): Promise<{
+    aiEventId?: string;
     ideas: Array<{
       title: string;
       description: string;
@@ -854,9 +1014,30 @@ How many days will this last?`,
 
     try {
       const cached = await this.redisService.get(cacheKey);
-      if (cached) return JSON.parse(cached);
+      if (cached) {
+        const parsedCached = JSON.parse(cached);
+        // Still log the interaction so repeat-usage shows up in analytics,
+        // but mark it as a cache hit with zero tokens/cost.
+        let cachedEventId: string | undefined;
+        if (this.aiTracker) {
+          const id = await this.aiTracker.log({
+            userId: userId ?? null,
+            feature: AIFeatureKey.LEFTOVER_TRANSFORM,
+            model: 'cache',
+            promptTokens: 0,
+            completionTokens: 0,
+            resultType: AIResultType.RECIPE_GENERATED,
+            latencyMs: 0,
+            metadata: { action: 'makeover_ideas', cacheHit: true, dishName },
+          });
+          cachedEventId = id ?? undefined;
+        }
+        return { ...parsedCached, aiEventId: cachedEventId };
+      }
     } catch {}
 
+    const startedAt = Date.now();
+    let makeoverResponse: any = null;
     try {
       const response = await this.openai.chat.completions.create({
         model: 'gpt-4.1',
@@ -895,6 +1076,7 @@ Respond ONLY with valid JSON:
         temperature: 0.7,
         max_tokens: 600,
       });
+      makeoverResponse = response;
 
       let content = response.choices[0]?.message?.content?.trim() || '';
       if (content.startsWith('```')) {
@@ -916,9 +1098,49 @@ Respond ONLY with valid JSON:
         await this.redisService.set(cacheKey, JSON.stringify(result), 3 * 24 * 60 * 60);
       } catch {}
 
-      return result;
+      let aiEventId: string | undefined;
+      if (this.aiTracker) {
+        const id = await this.aiTracker.logFromResponse(
+          {
+            userId: userId ?? null,
+            feature: AIFeatureKey.LEFTOVER_TRANSFORM,
+            resultType:
+              result.ideas.length > 0
+                ? AIResultType.RECIPE_GENERATED
+                : AIResultType.NO_RESULT,
+            latencyMs: Date.now() - startedAt,
+            metadata: {
+              action: 'makeover_ideas',
+              dishName,
+              storageLocation,
+              country,
+              ideaCount: result.ideas.length,
+            },
+          },
+          makeoverResponse,
+        );
+        aiEventId = id ?? undefined;
+      }
+
+      return { ...result, aiEventId };
     } catch (error) {
       this.logger.error(`Makeover ideas generation failed for "${dishName}": ${error.message}`);
+      if (this.aiTracker) {
+        await this.aiTracker.logFromResponse(
+          {
+            userId: userId ?? null,
+            feature: AIFeatureKey.LEFTOVER_TRANSFORM,
+            resultType: AIResultType.ERROR,
+            latencyMs: Date.now() - startedAt,
+            metadata: {
+              action: 'makeover_ideas',
+              dishName,
+              error: error?.message,
+            },
+          },
+          makeoverResponse,
+        );
+      }
       return {
         ideas: [
           {

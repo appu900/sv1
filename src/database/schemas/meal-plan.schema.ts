@@ -169,6 +169,9 @@ export class MealPlan {
 
   @Prop({ type: Date })
   completedAt?: Date;
+
+  @Prop({ type: Types.ObjectId, ref: 'AIInteractionEvent', default: null })
+  aiEventId?: Types.ObjectId | null;
 }
 
 export type MealPlanDocument = MealPlan & Document;

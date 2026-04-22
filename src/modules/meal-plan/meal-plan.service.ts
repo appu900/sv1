@@ -105,7 +105,7 @@ export class MealPlanService {
       inventory: inventoryForAi,
     };
 
-    const aiResult = await this.mealPlanAi.generateMealPlan(context);
+    const aiResult = await this.mealPlanAi.generateMealPlan(context, userId);
 
     await this.mealPlanModel.updateMany(
       {
@@ -136,6 +136,9 @@ export class MealPlanService {
         healthProfile?.goal ||
         'unspecified',
       recipes: [],
+      aiEventId: aiResult.aiEventId
+        ? new Types.ObjectId(aiResult.aiEventId)
+        : null,
     });
 
     this.logger.log(`Meal plan generated: planId=${plan._id}, userId=${userId}, days=${aiResult.totalDays}`);

@@ -1,10 +1,16 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import OpenAI from 'openai';
 import { YoutubeTranscript } from 'youtube-transcript';
 import { userRecipe, UserRecipeDocument } from 'src/database/schemas/user.schema';
 import { getCuisineContext } from 'src/common/utils/country-cuisine.util';
+import { AIInteractionService } from '../ai-interaction/ai-interaction.service';
+import {
+  AIFeatureKey,
+  AIResultType,
+} from '../../database/schemas/ai-interaction-event.schema';
+import { AggregatedCall, extractUsage } from '../ai-interaction/ai-pricing.util';
 
 const EXTRACT_PROMPT = `You are a recipe extraction assistant. The user will provide a URL or recipe description.
 You MUST use web search to look up the URL and extract the ACTUAL recipe from it.
@@ -170,6 +176,7 @@ export class CookbookaiService {
     constructor(
         @InjectModel(userRecipe.name)
         private readonly userRecipeModel: Model<UserRecipeDocument>,
+        @Optional() private readonly aiTracker?: AIInteractionService,
     ) {}
 
     getHello(): string {
@@ -177,19 +184,52 @@ export class CookbookaiService {
     }
 
 
-    async extractRecipeWithAI(message: string) {
+    async extractRecipeWithAI(message: string, userId?: string) {
         this.logger.log(`[extractRecipe] Starting for: ${message.substring(0, 120)}…`);
+        const startedAt = Date.now();
+        const pipeline: AggregatedCall[] = [];
 
         try {
-            const result = await this.callAI(message);
+            const result = await this.callAI(message, pipeline);
             if (result.success) {
                 this.logger.log(`[extractRecipe] ✓ "${result.data?.title}"`);
             } else {
                 this.logger.error(`[extractRecipe] ✗ ${result.message}`);
             }
+            if (this.aiTracker) {
+                const aiEventId = await this.aiTracker.logAggregated(
+                    {
+                        userId: userId ?? null,
+                        feature: AIFeatureKey.COOKBOOK_IMPORT,
+                        resultType: result.success
+                            ? AIResultType.RECIPE_GENERATED
+                            : AIResultType.NO_RESULT,
+                        latencyMs: Date.now() - startedAt,
+                        metadata: {
+                            action: 'extract_recipe',
+                            hasUrl: this.hasUrl(message),
+                            recipeTitle: result.data?.title,
+                        },
+                    },
+                    pipeline,
+                );
+                return { ...result, aiEventId };
+            }
             return result;
         } catch (err: any) {
             this.logger.error(`[extractRecipe] Unexpected error:`, err?.message);
+            if (this.aiTracker) {
+                await this.aiTracker.logAggregated(
+                    {
+                        userId: userId ?? null,
+                        feature: AIFeatureKey.COOKBOOK_IMPORT,
+                        resultType: AIResultType.ERROR,
+                        latencyMs: Date.now() - startedAt,
+                        metadata: { action: 'extract_recipe', error: err?.message },
+                    },
+                    pipeline,
+                );
+            }
             return {
                 success: false,
                 message: `Failed to extract recipe. ${err?.message || 'Please try again.'}`,
@@ -243,7 +283,7 @@ export class CookbookaiService {
     }
 
 
-    private async fetchRecipeContent(url: string, model: 'gpt-4o-mini' | 'gpt-4o'): Promise<string> {
+    private async fetchRecipeContent(url: string, model: 'gpt-4o-mini' | 'gpt-4o', pipeline?: AggregatedCall[]): Promise<string> {
         this.logger.log(`[stage1] Fetching recipe content with ${model} for ${url.substring(0, 80)}`);
         const response: any = await this.openai.responses.create({
             model,
@@ -253,6 +293,10 @@ export class CookbookaiService {
             tool_choice: 'required',
             max_output_tokens: 4096,
         });
+        if (pipeline) {
+            const { promptTokens, completionTokens } = extractUsage(response);
+            pipeline.push({ model, promptTokens, completionTokens });
+        }
         const text = typeof response?.output_text === 'string'
             ? response.output_text
             : (response?.output ?? [])
@@ -266,7 +310,7 @@ export class CookbookaiService {
     }
 
 
-    private async structureAsJson(recipeText: string, model: 'gpt-4o-mini' | 'gpt-4o'): Promise<any> {
+    private async structureAsJson(recipeText: string, model: 'gpt-4o-mini' | 'gpt-4o', pipeline?: AggregatedCall[]): Promise<any> {
         this.logger.log(`[stage2] Structuring JSON with ${model} (${recipeText.length} chars input)`);
         const completion = await this.openai.chat.completions.create({
             model,
@@ -278,6 +322,10 @@ export class CookbookaiService {
             max_tokens: 16384,
             temperature: 0.3,
         });
+        if (pipeline) {
+            const { promptTokens, completionTokens } = extractUsage(completion);
+            pipeline.push({ model, promptTokens, completionTokens });
+        }
         const raw = completion.choices?.[0]?.message?.content ?? '';
         this.logger.log(`[stage2] Got ${raw.length} chars JSON from ${model}`);
         const parsed = JSON.parse(raw); 
@@ -361,6 +409,7 @@ export class CookbookaiService {
 
     private async callAI(
         message: string,
+        pipeline?: AggregatedCall[],
     ): Promise<{ success: boolean; message: string; data?: any }> {
         try {
             const primaryUrl = this.extractPrimaryUrl(message);
@@ -373,7 +422,7 @@ export class CookbookaiService {
             if (isYoutube && youtubeVideoId) {
                 const [transcript, webContent] = await Promise.allSettled([
                     this.fetchYoutubeTranscript(youtubeVideoId),
-                    this.fetchRecipeContent(primaryUrl, 'gpt-4o-mini'),
+                    this.fetchRecipeContent(primaryUrl, 'gpt-4o-mini', pipeline),
                 ]);
 
                 const transcriptText = transcript.status === 'fulfilled' ? transcript.value : '';
@@ -398,10 +447,10 @@ export class CookbookaiService {
                 }
             } else if (isUrl) {
                 try {
-                    recipeContent = await this.fetchRecipeContent(primaryUrl, 'gpt-4o-mini');
+                    recipeContent = await this.fetchRecipeContent(primaryUrl, 'gpt-4o-mini', pipeline);
                 } catch (miniErr: any) {
                     this.logger.warn(`[callAI] gpt-4o-mini web search failed: ${miniErr?.message}`);
-                    recipeContent = await this.fetchRecipeContent(primaryUrl, 'gpt-4o');
+                    recipeContent = await this.fetchRecipeContent(primaryUrl, 'gpt-4o', pipeline);
                 }
             } else {
                 recipeContent = String(message || '').trim();
@@ -413,10 +462,10 @@ export class CookbookaiService {
 
             let recipe: any;
             try {
-                recipe = await this.structureAsJson(recipeContent, 'gpt-4o-mini');
+                recipe = await this.structureAsJson(recipeContent, 'gpt-4o-mini', pipeline);
             } catch (miniErr: any) {
                 this.logger.warn(`[callAI] stage2 gpt-4o-mini failed: ${miniErr?.message}`);
-                recipe = await this.structureAsJson(recipeContent, 'gpt-4o');
+                recipe = await this.structureAsJson(recipeContent, 'gpt-4o', pipeline);
             }
 
             if (youtubeVideoId && !recipe.youtubeId) {
@@ -671,8 +720,11 @@ export class CookbookaiService {
         ingredients: string[],
         preference?: string,
         country?: string,
-    ): Promise<{ success: boolean; message: string; data?: any }> {
+        userId?: string,
+    ): Promise<{ success: boolean; message: string; data?: any; aiEventId?: string }> {
         this.logger.log(`[generateFromIngredients] ingredients=${ingredients.length}, pref="${preference || 'none'}", country="${country || 'none'}"`);
+        const startedAt = Date.now();
+        const pipeline: AggregatedCall[] = [];
 
         try {
             let userMessage = `My available ingredients: ${ingredients.join(', ')}`;
@@ -690,24 +742,72 @@ export class CookbookaiService {
                 max_tokens: 4096,
                 temperature: 0.7,
             });
+            {
+                const { promptTokens, completionTokens } = extractUsage(completion);
+                pipeline.push({ model: 'gpt-4o-mini', promptTokens, completionTokens });
+            }
 
             const recipeContent = completion.choices?.[0]?.message?.content ?? '';
             if (!recipeContent.trim()) {
+                if (this.aiTracker) {
+                    await this.aiTracker.logAggregated(
+                        {
+                            userId: userId ?? null,
+                            feature: AIFeatureKey.RECIPE_GEN,
+                            resultType: AIResultType.NO_RESULT,
+                            latencyMs: Date.now() - startedAt,
+                            metadata: { action: 'generate_from_ingredients', ingredientCount: ingredients.length },
+                        },
+                        pipeline,
+                    );
+                }
                 return { success: false, message: 'AI did not generate a recipe. Please try again.' };
             }
 
             let recipe: any;
             try {
-                recipe = await this.structureAsJson(recipeContent, 'gpt-4o-mini');
+                recipe = await this.structureAsJson(recipeContent, 'gpt-4o-mini', pipeline);
             } catch (miniErr: any) {
                 this.logger.warn(`[generateFromIngredients] stage2 gpt-4o-mini failed: ${miniErr?.message}`);
-                recipe = await this.structureAsJson(recipeContent, 'gpt-4o');
+                recipe = await this.structureAsJson(recipeContent, 'gpt-4o', pipeline);
             }
 
             const normalized = this.normalizeRecipeShape(recipe);
-            return { success: true, message: 'Recipe generated successfully.', data: normalized };
+            let aiEventId: string | undefined;
+            if (this.aiTracker) {
+                const id = await this.aiTracker.logAggregated(
+                    {
+                        userId: userId ?? null,
+                        feature: AIFeatureKey.RECIPE_GEN,
+                        resultType: AIResultType.RECIPE_GENERATED,
+                        latencyMs: Date.now() - startedAt,
+                        metadata: {
+                            action: 'generate_from_ingredients',
+                            ingredientCount: ingredients.length,
+                            preference,
+                            country,
+                            recipeTitle: normalized?.title,
+                        },
+                    },
+                    pipeline,
+                );
+                aiEventId = id ?? undefined;
+            }
+            return { success: true, message: 'Recipe generated successfully.', data: normalized, aiEventId };
         } catch (err: any) {
             this.logger.error(`[generateFromIngredients] Error: ${err?.message}`, err?.stack);
+            if (this.aiTracker) {
+                await this.aiTracker.logAggregated(
+                    {
+                        userId: userId ?? null,
+                        feature: AIFeatureKey.RECIPE_GEN,
+                        resultType: AIResultType.ERROR,
+                        latencyMs: Date.now() - startedAt,
+                        metadata: { action: 'generate_from_ingredients', error: err?.message },
+                    },
+                    pipeline,
+                );
+            }
             return { success: false, message: `Failed to generate recipe. ${err?.message || 'Please try again.'}` };
         }
     }

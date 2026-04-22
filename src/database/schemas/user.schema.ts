@@ -200,6 +200,9 @@ export class userRecipe {
 
   @Prop({ type: Number, default: 0, index: true })
   cookCount: number;
+
+  @Prop({ type: Types.ObjectId, ref: 'AIInteractionEvent', default: null })
+  aiEventId?: Types.ObjectId | null;
 }
 
 export type UserRecipeDocument = userRecipe & Document;

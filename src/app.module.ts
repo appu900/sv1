@@ -39,6 +39,7 @@ import { SharedRecipeModule } from './modules/shared-recipe/shared-recipe.module
 import { NutritionModule } from './modules/nutrition/nutrition.module';
 import { MealPlanModule } from './modules/meal-plan/meal-plan.module';
 import { UserEventsModule } from './modules/user-events/user-events.module';
+import { AIInteractionModule } from './modules/ai-interaction/ai-interaction.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
@@ -112,6 +113,7 @@ import { UserEventsModule } from './modules/user-events/user-events.module';
     NutritionModule,
     MealPlanModule,
     UserEventsModule,
+    AIInteractionModule,
   ],
   controllers: [AppController],
   providers: [AppService],

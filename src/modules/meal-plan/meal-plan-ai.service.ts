@@ -1,7 +1,12 @@
-import { Inject, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional, ServiceUnavailableException } from '@nestjs/common';
 import OpenAI from 'openai';
 import { getCuisineContext } from '../../common/utils/country-cuisine.util';
 import { MealSlotType } from '../../database/schemas/meal-plan.schema';
+import { AIInteractionService } from '../ai-interaction/ai-interaction.service';
+import {
+  AIFeatureKey,
+  AIResultType,
+} from '../../database/schemas/ai-interaction-event.schema';
 
 export interface AiMealNutrition {
   kcal: number;
@@ -66,13 +71,17 @@ export class MealPlanAiService {
 
   constructor(
     @Inject('OPENAI_CLIENT') private readonly openai: OpenAI | null,
+    @Optional() private readonly aiTracker?: AIInteractionService,
   ) {
     if (!this.openai) {
       this.logger.warn('OPENAI_API_KEY not set — AI meal planning disabled');
     }
   }
 
-  async generateMealPlan(ctx: MealPlanGenerationContext): Promise<AiMealPlanResult> {
+  async generateMealPlan(
+    ctx: MealPlanGenerationContext,
+    userId?: string,
+  ): Promise<AiMealPlanResult & { aiEventId?: string }> {
     if (!this.openai) {
       throw new ServiceUnavailableException('AI meal planning is not available — OPENAI_API_KEY is not configured');
     }
@@ -168,6 +177,7 @@ Respond ONLY with valid JSON, no markdown, no explanation:
 }
 `.trim();
 
+    const startedAt = Date.now();
     const response = await this.openai.chat.completions.create({
       model: 'gpt-4.1',
       messages: [
@@ -185,13 +195,56 @@ Respond ONLY with valid JSON, no markdown, no explanation:
       parsed = JSON.parse(raw) as AiMealPlanResult;
     } catch {
       this.logger.error('AI meal plan JSON parse error', raw.slice(0, 400));
+      if (this.aiTracker) {
+        await this.aiTracker.logFromResponse(
+          {
+            userId: userId ?? null,
+            feature: AIFeatureKey.RECIPE_GEN,
+            resultType: AIResultType.ERROR,
+            latencyMs: Date.now() - startedAt,
+            metadata: { action: 'generate_meal_plan', parseFailure: true },
+          },
+          response,
+        );
+      }
       throw new ServiceUnavailableException('AI returned invalid meal plan — please try again');
     }
 
     if (!Array.isArray(parsed.days) || parsed.days.length === 0) {
+      if (this.aiTracker) {
+        await this.aiTracker.logFromResponse(
+          {
+            userId: userId ?? null,
+            feature: AIFeatureKey.RECIPE_GEN,
+            resultType: AIResultType.NO_RESULT,
+            latencyMs: Date.now() - startedAt,
+            metadata: { action: 'generate_meal_plan', emptyPlan: true },
+          },
+          response,
+        );
+      }
       throw new ServiceUnavailableException('AI returned empty meal plan — please try again');
     }
 
-    return parsed;
+    let aiEventId: string | undefined;
+    if (this.aiTracker) {
+      const id = await this.aiTracker.logFromResponse(
+        {
+          userId: userId ?? null,
+          feature: AIFeatureKey.RECIPE_GEN,
+          resultType: AIResultType.RECIPE_GENERATED,
+          latencyMs: Date.now() - startedAt,
+          metadata: {
+            action: 'generate_meal_plan',
+            totalDays: parsed.totalDays,
+            country: ctx.country,
+          },
+        },
+        response,
+      );
+      aiEventId = id ?? undefined;
+    }
+
+    return { ...parsed, aiEventId };
   }
 }
