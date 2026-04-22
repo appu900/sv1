@@ -7,6 +7,8 @@ import { Hacks } from 'src/database/schemas/hacks.schema';
 import { Sponsers } from 'src/database/schemas/sponsers.schema';
 import { FoodFact } from 'src/database/schemas/food-fact.schema';
 import { Stickers } from 'src/database/schemas/stcikers.schema';
+import { QantasFFN, QantasFFNDocument } from 'src/database/schemas/qantas-ffn.schema';
+import { TrackSurvey, TrackSurveyDocument } from 'src/database/schemas/track-survey.schema';
 import { CreateChefDto } from './dto/create-chef.dto';
 import * as bcrypt from 'bcrypt';
 
@@ -19,7 +21,48 @@ export class AdminService {
     @InjectModel(Sponsers.name) private readonly sponsorModel: Model<Sponsers>,
     @InjectModel(FoodFact.name) private readonly foodFactModel: Model<FoodFact>,
     @InjectModel(Stickers.name) private readonly stickerModel: Model<Stickers>,
+    @InjectModel(QantasFFN.name) private readonly qantasFFNModel: Model<QantasFFNDocument>,
+    @InjectModel(TrackSurvey.name) private readonly trackSurveyModel: Model<TrackSurveyDocument>,
   ) {}
+
+  private mapQantasFFN(ffn: any | null) {
+    if (!ffn) return null;
+    return {
+      memberId: ffn.memberId,
+      isLinked: Boolean(ffn.isLinked),
+      linkedAt: ffn.linkedAt ?? null,
+      linkStatus: ffn.linkStatus,
+    };
+  }
+
+  private mapTrackSurvey(survey: any) {
+    return {
+      id: String(survey._id),
+      completedAt: survey.completedAt,
+      surveyWeek: survey.surveyWeek,
+      surveyDay: survey.surveyDay,
+      isBaseline: survey.isBaseline,
+      cookingFrequency: survey.cookingFrequency,
+      scraps: survey.scraps,
+      uneatenLeftovers: survey.uneatenLeftovers,
+      preferredIngredients: survey.preferredIngredients || [],
+      calculatedSavings: survey.calculatedSavings,
+    };
+  }
+
+  private async getQantasFFNForUser(userId: Types.ObjectId) {
+    return this.qantasFFNModel
+      .findOne({ userId, isDeleted: { $ne: true } })
+      .sort({ isLinked: -1, updatedAt: -1 })
+      .lean();
+  }
+
+  private async getTrackSurveysForUser(userId: Types.ObjectId) {
+    return this.trackSurveyModel
+      .find({ userId })
+      .sort({ completedAt: -1 })
+      .lean();
+  }
 
   async createChef(dto: CreateChefDto) {
     const existingChef = await this.userModel.findOne({ email: dto.email });
@@ -140,40 +183,69 @@ export class AdminService {
       this.userModel.countDocuments(query),
     ]);
 
+    const userIds = users.map((u) => u._id as Types.ObjectId);
+
+    const [qantasProfiles, surveyCounts] = await Promise.all([
+      this.qantasFFNModel
+        .find({ userId: { $in: userIds }, isDeleted: { $ne: true } })
+        .sort({ isLinked: -1, updatedAt: -1 })
+        .lean(),
+      this.trackSurveyModel.aggregate([
+        { $match: { userId: { $in: userIds } } },
+        { $group: { _id: '$userId', count: { $sum: 1 } } },
+      ]),
+    ]);
+
+    const qantasByUser = new Map<string, any>();
+    for (const profile of qantasProfiles) {
+      const key = String(profile.userId);
+      // First entry wins (sorted by isLinked desc, updatedAt desc)
+      if (!qantasByUser.has(key)) qantasByUser.set(key, profile);
+    }
+    const surveyCountByUser = new Map<string, number>(
+      surveyCounts.map((entry: any) => [String(entry._id), entry.count]),
+    );
+
     return {
       total,
       page,
       limit,
       totalPages: Math.ceil(total / limit),
-      users: users.map((user) => ({
-        id: user._id,
-        email: user.email,
-        name: user.name,
-        role: user.role,
-        country: user.country,
-        stateCode: user.stateCode,
-        dietaryProfile: user.dietaryProfile ? {
-          vegType: user.dietaryProfile.vegType,
-          dairyFree: user.dietaryProfile.dairyFree,
-          nutFree: user.dietaryProfile.nutFree,
-          glutenFree: user.dietaryProfile.glutenFree,
-          hasDiabetes: user.dietaryProfile.hasDiabetes,
-          otherAllergies: user.dietaryProfile.otherAllergies || [],
-        } : null,
-        onboarding: user.country ? {
-          noOfAdults: user.dietaryProfile?.noOfAdults || 1,
-          noOfChildren: user.dietaryProfile?.noOfChildren || 0,
+      users: users.map((user) => {
+        const userIdStr = String(user._id);
+        const qantasFFN = this.mapQantasFFN(qantasByUser.get(userIdStr));
+        return {
+          id: user._id,
+          email: user.email,
+          name: user.name,
+          role: user.role,
           country: user.country,
           stateCode: user.stateCode,
-          pincode: (user as any).pincode || null,
-        } : null,
-        createdAt: user['createdAt'],
-        updatedAt: user['updatedAt'],
-        _count: {
-          cookedRecipes: 0, 
-          bookmarkedRecipes: 0, 
-        },
-      })),
+          dietaryProfile: user.dietaryProfile ? {
+            vegType: user.dietaryProfile.vegType,
+            dairyFree: user.dietaryProfile.dairyFree,
+            nutFree: user.dietaryProfile.nutFree,
+            glutenFree: user.dietaryProfile.glutenFree,
+            hasDiabetes: user.dietaryProfile.hasDiabetes,
+            otherAllergies: user.dietaryProfile.otherAllergies || [],
+          } : null,
+          onboarding: user.country ? {
+            noOfAdults: user.dietaryProfile?.noOfAdults || 1,
+            noOfChildren: user.dietaryProfile?.noOfChildren || 0,
+            country: user.country,
+            stateCode: user.stateCode,
+            pincode: (user as any).pincode || null,
+          } : null,
+          createdAt: user['createdAt'],
+          updatedAt: user['updatedAt'],
+          qantasFFN,
+          _count: {
+            cookedRecipes: 0,
+            bookmarkedRecipes: 0,
+            surveys: surveyCountByUser.get(userIdStr) || 0,
+          },
+        };
+      }),
     };
   }
 
@@ -182,14 +254,22 @@ export class AdminService {
       throw new BadRequestException('Invalid user ID');
     }
 
+    const userObjectId = new Types.ObjectId(id);
     const user = await this.userModel
-      .findOne({ _id: new Types.ObjectId(id), role: UserRole.USER })
+      .findOne({ _id: userObjectId, role: UserRole.USER })
       .select('-passwordHash')
       .lean();
 
     if (!user) {
       throw new NotFoundException('User not found');
     }
+
+    const [qantasProfile, trackSurveys] = await Promise.all([
+      this.getQantasFFNForUser(userObjectId),
+      this.getTrackSurveysForUser(userObjectId),
+    ]);
+
+    const mappedSurveys = trackSurveys.map((s) => this.mapTrackSurvey(s));
 
     return {
       user: {
@@ -216,9 +296,12 @@ export class AdminService {
         } : null,
         createdAt: user['createdAt'],
         updatedAt: user['updatedAt'],
+        qantasFFN: this.mapQantasFFN(qantasProfile),
+        trackSurveys: mappedSurveys,
         _count: {
           cookedRecipes: 0, // TODO: implement actual count from recipes
           bookmarkedRecipes: 0, // TODO: implement actual count from bookmarks
+          surveys: mappedSurveys.length,
         },
       },
     };

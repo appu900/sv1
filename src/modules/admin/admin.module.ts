@@ -8,6 +8,8 @@ import { Hacks, HackSchema } from 'src/database/schemas/hacks.schema';
 import { Sponsers, SponsersSchema } from 'src/database/schemas/sponsers.schema';
 import { FoodFact, FoodFactSchema } from 'src/database/schemas/food-fact.schema';
 import { Stickers, StickerSchema } from 'src/database/schemas/stcikers.schema';
+import { QantasFFN, QantasFFNSchema } from 'src/database/schemas/qantas-ffn.schema';
+import { TrackSurvey, TrackSurveySchema } from 'src/database/schemas/track-survey.schema';
 
 @Module({
   imports: [
@@ -18,6 +20,8 @@ import { Stickers, StickerSchema } from 'src/database/schemas/stcikers.schema';
       { name: Sponsers.name, schema: SponsersSchema },
       { name: FoodFact.name, schema: FoodFactSchema },
       { name: Stickers.name, schema: StickerSchema },
+      { name: QantasFFN.name, schema: QantasFFNSchema },
+      { name: TrackSurvey.name, schema: TrackSurveySchema },
     ]),
   ],
   controllers: [AdminController],
