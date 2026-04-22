@@ -6,6 +6,7 @@ import {
   HttpCode,
   HttpStatus,
   Param,
+  Patch,
   Post,
   Request,
   UseGuards,
@@ -14,7 +15,11 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/role.decorators';
 import { MealPlanService } from './meal-plan.service';
-import { GenerateMealPlanDto, GenerateRecipeFromPlanDto } from './dto/meal-plan.dto';
+import {
+  GenerateMealPlanDto,
+  GenerateRecipeFromPlanDto,
+  MarkPlanRecipeDto,
+} from './dto/meal-plan.dto';
 
 @Controller('meal-plan')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -82,5 +87,36 @@ export class MealPlanController {
     const userId = this.resolveUserId(req);
     const result = await this.mealPlanService.generateRecipeFromMeal(userId, dto);
     return { success: true, data: result };
+  }
+
+  /** Transition plan to STARTED (idempotent) */
+  @Post(':planId/start')
+  @HttpCode(HttpStatus.OK)
+  async start(@Request() req, @Param('planId') planId: string) {
+    const userId = this.resolveUserId(req);
+    const plan = await this.mealPlanService.startPlan(userId, planId);
+    return { success: true, data: plan };
+  }
+
+  /** Transition plan to COMPLETED (idempotent) */
+  @Post(':planId/complete')
+  @HttpCode(HttpStatus.OK)
+  async complete(@Request() req, @Param('planId') planId: string) {
+    const userId = this.resolveUserId(req);
+    const plan = await this.mealPlanService.completePlan(userId, planId);
+    return { success: true, data: plan };
+  }
+
+  /** Mark a meal in the plan as cooked / swapped */
+  @Patch(':planId/recipes')
+  @HttpCode(HttpStatus.OK)
+  async markRecipe(
+    @Request() req,
+    @Param('planId') planId: string,
+    @Body() dto: MarkPlanRecipeDto,
+  ) {
+    const userId = this.resolveUserId(req);
+    const plan = await this.mealPlanService.markPlanRecipe(userId, planId, dto);
+    return { success: true, data: plan };
   }
 }

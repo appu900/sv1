@@ -1,5 +1,7 @@
 import {
+  IsBoolean,
   IsInt,
+  IsMongoId,
   IsOptional,
   IsString,
   Max,
@@ -28,4 +30,25 @@ export class GenerateRecipeFromPlanDto {
 
   @IsString()
   slot: string;
+}
+
+export class MarkPlanRecipeDto {
+  @IsInt()
+  @Min(0)
+  dayIndex: number;
+
+  @IsString()
+  mealSlot: string;
+
+  @IsOptional()
+  @IsMongoId()
+  recipeId?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isCooked?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  isSwapped?: boolean;
 }

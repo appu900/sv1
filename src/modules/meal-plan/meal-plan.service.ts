@@ -108,7 +108,10 @@ export class MealPlanService {
     const aiResult = await this.mealPlanAi.generateMealPlan(context);
 
     await this.mealPlanModel.updateMany(
-      { userId: new Types.ObjectId(userId), status: MealPlanStatus.ACTIVE },
+      {
+        userId: new Types.ObjectId(userId),
+        status: { $in: [MealPlanStatus.ACTIVE, MealPlanStatus.CREATED, MealPlanStatus.STARTED] },
+      },
       { status: MealPlanStatus.ARCHIVED },
     );
 
@@ -119,7 +122,7 @@ export class MealPlanService {
       days: aiResult.days,
       healthGoal: aiResult.healthGoal,
       country: (user as any).country ?? '',
-      status: MealPlanStatus.ACTIVE,
+      status: MealPlanStatus.CREATED,
       targetKcal: healthProfile?.targets?.kcal,
       // Analytics fields
       duration: this.bucketDuration(aiResult.totalDays ?? dto.days),
@@ -160,7 +163,17 @@ export class MealPlanService {
 
   async getActivePlan(userId: string): Promise<MealPlanDocument | null> {
     return this.mealPlanModel
-      .findOne({ userId: new Types.ObjectId(userId), status: MealPlanStatus.ACTIVE })
+      .findOne({
+        userId: new Types.ObjectId(userId),
+        status: {
+          $in: [
+            MealPlanStatus.ACTIVE,
+            MealPlanStatus.CREATED,
+            MealPlanStatus.STARTED,
+          ],
+        },
+      })
+      .sort({ createdAt: -1 })
       .lean<MealPlanDocument>()
       .exec();
   }
@@ -274,5 +287,156 @@ export class MealPlanService {
 
     this.logger.log(`Recipe queued: planId=${dto.planId}, day=${dto.dayNumber}, slot=${dto.slot}, recipeId=${recipeId}`);
     return { recipeId };
+  }
+
+  /** Mark a plan as STARTED (idempotent). Returns the updated plan. */
+  async startPlan(userId: string, planId: string): Promise<MealPlanDocument> {
+    if (!Types.ObjectId.isValid(planId)) {
+      throw new BadRequestException('Invalid plan ID');
+    }
+    const filter = {
+      _id: new Types.ObjectId(planId),
+      userId: new Types.ObjectId(userId),
+    };
+    const existing = await this.mealPlanModel.findOne(filter).lean();
+    if (!existing) throw new NotFoundException('Meal plan not found');
+
+    if (existing.status === MealPlanStatus.STARTED) return existing as MealPlanDocument;
+    if (existing.status === MealPlanStatus.COMPLETED) {
+      return existing as MealPlanDocument;
+    }
+
+    const updated = await this.mealPlanModel
+      .findOneAndUpdate(
+        filter,
+        {
+          $set: { status: MealPlanStatus.STARTED },
+          ...(existing.startedAt ? {} : { $setOnInsert: { startedAt: new Date() } }),
+        },
+        { new: true },
+      )
+      .lean<MealPlanDocument>();
+
+    if (updated && !updated.startedAt) {
+      await this.mealPlanModel.updateOne(filter, { $set: { startedAt: new Date() } });
+      (updated as any).startedAt = new Date();
+    }
+    return updated!;
+  }
+
+  /** Mark a plan as COMPLETED (idempotent). */
+  async completePlan(userId: string, planId: string): Promise<MealPlanDocument> {
+    if (!Types.ObjectId.isValid(planId)) {
+      throw new BadRequestException('Invalid plan ID');
+    }
+    const filter = {
+      _id: new Types.ObjectId(planId),
+      userId: new Types.ObjectId(userId),
+    };
+    const existing = await this.mealPlanModel.findOne(filter).lean();
+    if (!existing) throw new NotFoundException('Meal plan not found');
+
+    if (existing.status === MealPlanStatus.COMPLETED) {
+      return existing as MealPlanDocument;
+    }
+
+    const updated = await this.mealPlanModel
+      .findOneAndUpdate(
+        filter,
+        {
+          $set: {
+            status: MealPlanStatus.COMPLETED,
+            completedAt: new Date(),
+            ...(existing.startedAt ? {} : { startedAt: new Date() }),
+          },
+        },
+        { new: true },
+      )
+      .lean<MealPlanDocument>();
+
+    return updated!;
+  }
+
+  /**
+   * Upsert a recipe entry in `plan.recipes[]` keyed by (dayIndex, mealSlot).
+   * Used when user marks a meal as cooked or swapped from the meal plan UI.
+   * Auto-completes the plan when every slot in `days[].meals[]` is cooked.
+   */
+  async markPlanRecipe(
+    userId: string,
+    planId: string,
+    params: {
+      dayIndex: number;
+      mealSlot: string;
+      recipeId?: string;
+      isCooked?: boolean;
+      isSwapped?: boolean;
+    },
+  ): Promise<MealPlanDocument> {
+    if (!Types.ObjectId.isValid(planId)) {
+      throw new BadRequestException('Invalid plan ID');
+    }
+    if (!Number.isInteger(params.dayIndex) || params.dayIndex < 0) {
+      throw new BadRequestException('Invalid dayIndex');
+    }
+    if (!params.mealSlot || typeof params.mealSlot !== 'string') {
+      throw new BadRequestException('Invalid mealSlot');
+    }
+
+    const filter = {
+      _id: new Types.ObjectId(planId),
+      userId: new Types.ObjectId(userId),
+    };
+    const plan = await this.mealPlanModel.findOne(filter);
+    if (!plan) throw new NotFoundException('Meal plan not found');
+
+    const recipeObjectId =
+      params.recipeId && Types.ObjectId.isValid(params.recipeId)
+        ? new Types.ObjectId(params.recipeId)
+        : undefined;
+
+    const entry = plan.recipes.find(
+      (r) => r.dayIndex === params.dayIndex && r.mealSlot === params.mealSlot,
+    );
+
+    if (entry) {
+      if (recipeObjectId) entry.recipeId = recipeObjectId;
+      if (typeof params.isCooked === 'boolean') {
+        entry.isCooked = params.isCooked;
+        if (params.isCooked && !entry.cookedAt) entry.cookedAt = new Date();
+        if (!params.isCooked) entry.cookedAt = undefined;
+      }
+      if (typeof params.isSwapped === 'boolean') entry.isSwapped = params.isSwapped;
+    } else {
+      if (!recipeObjectId) {
+        throw new BadRequestException('recipeId is required when adding a new entry');
+      }
+      plan.recipes.push({
+        recipeId: recipeObjectId,
+        dayIndex: params.dayIndex,
+        mealSlot: params.mealSlot,
+        isCooked: !!params.isCooked,
+        isSwapped: !!params.isSwapped,
+        cookedAt: params.isCooked ? new Date() : undefined,
+      } as any);
+    }
+
+    if (plan.status === MealPlanStatus.CREATED) {
+      plan.status = MealPlanStatus.STARTED;
+      if (!plan.startedAt) plan.startedAt = new Date();
+    }
+
+    const totalSlots = (plan.days || []).reduce(
+      (sum, d) => sum + (d.meals?.length || 0),
+      0,
+    );
+    const cookedSlots = plan.recipes.filter((r) => r.isCooked).length;
+    if (totalSlots > 0 && cookedSlots >= totalSlots && plan.status !== MealPlanStatus.COMPLETED) {
+      plan.status = MealPlanStatus.COMPLETED;
+      plan.completedAt = new Date();
+    }
+
+    await plan.save();
+    return plan.toObject() as MealPlanDocument;
   }
 }
