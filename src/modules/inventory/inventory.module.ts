@@ -5,6 +5,7 @@ import { InventoryController } from './inventory.controller';
 import { InventoryService } from './inventory.service';
 import { InventoryAiService } from './inventory-ai.service';
 import { InventoryExpiryCronService } from './inventory-expiry-cron.service';
+import { KitchenScanUsageService } from './kitchen-scan-usage.service';
 import {
   UserInventoryItem,
   UserInventoryItemSchema,
@@ -25,6 +26,10 @@ import {
   User,
   UserSchema,
 } from '../../database/schemas/user.auth.schema';
+import {
+  KitchenScanUsage,
+  KitchenScanUsageSchema,
+} from '../../database/schemas/kitchen-scan-usage.schema';
 import { RedisModule } from '../../redis/redis.module';
 import { NotificationModule } from '../notification/notification.module';
 
@@ -37,12 +42,18 @@ import { NotificationModule } from '../notification/notification.module';
       { name: Recipe.name, schema: RecipeSchema },
       { name: ShoppingList.name, schema: ShoppingListSchema },
       { name: User.name, schema: UserSchema },
+      { name: KitchenScanUsage.name, schema: KitchenScanUsageSchema },
     ]),
     RedisModule,
     NotificationModule,
   ],
   controllers: [InventoryController],
-  providers: [InventoryService, InventoryAiService, InventoryExpiryCronService],
+  providers: [
+    InventoryService,
+    InventoryAiService,
+    InventoryExpiryCronService,
+    KitchenScanUsageService,
+  ],
   exports: [InventoryService, InventoryAiService],
 })
 export class InventoryModule {}

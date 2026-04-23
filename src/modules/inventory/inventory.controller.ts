@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Controller,
   Get,
   Post,
@@ -7,20 +8,29 @@ import {
   Body,
   Param,
   Query,
+  UploadedFiles,
   UseGuards,
+  UseInterceptors,
   Request,
   HttpCode,
   HttpStatus,
   Logger,
 } from '@nestjs/common';
+import { FilesInterceptor } from '@nestjs/platform-express';
+import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import { InventoryService } from './inventory.service';
 import { InventoryAiService } from './inventory-ai.service';
+import {
+  KitchenScanUsageService,
+  KITCHEN_SCAN_LIFETIME_LIMIT,
+} from './kitchen-scan-usage.service';
 import { AddInventoryItemDto } from './dto/add-inventory-item.dto';
 import { BatchAddInventoryItemsDto } from './dto/batch-add-inventory-items.dto';
 import { UpdateInventoryItemDto } from './dto/update-inventory-item.dto';
 import { DiscardInventoryItemDto } from './dto/discard-inventory-item.dto';
 import { ConsumeInventoryItemsDto } from './dto/consume-inventory-items.dto';
 import { VoiceAddInventoryDto } from './dto/voice-add-inventory.dto';
+import { ScanShoppingListDto } from './dto/scan-shopping-list.dto';
 import {
   GetInventoryQueryDto,
   WasteClassifyDto,
@@ -40,6 +50,7 @@ export class InventoryController {
   constructor(
     private readonly inventoryService: InventoryService,
     private readonly inventoryAiService: InventoryAiService,
+    private readonly kitchenScanUsage: KitchenScanUsageService,
   ) {}
 
 
@@ -205,6 +216,99 @@ export class InventoryController {
     };
 
     return this.inventoryService.addBatch(userId, itemsWithSource as any);
+  }
+
+  @Get('photos/scan-usage')
+  async getShoppingListScanUsage(@Request() req) {
+    const userId = req.user._id || req.user.userId;
+    return this.kitchenScanUsage.getUsage(userId);
+  }
+
+  @Post('photos/scan-shopping-list')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 3, ttl: 60_000 } })
+  @UseInterceptors(
+    FilesInterceptor('images', 3, {
+      limits: { fileSize: 8 * 1024 * 1024 },
+      fileFilter: (_req, file, cb) => {
+        if (!file.mimetype?.startsWith('image/')) {
+          cb(new BadRequestException('Only image files are allowed'), false);
+          return;
+        }
+        cb(null, true);
+      },
+    }),
+  )
+  async scanShoppingListPhotos(
+    @Request() req,
+    @UploadedFiles() files: Express.Multer.File[] | undefined,
+    @Body() dto: ScanShoppingListDto,
+  ) {
+    const userId = req.user._id || req.user.userId;
+    const images = (files || []).filter(
+      (f) => f && f.buffer && f.buffer.length > 0,
+    );
+    if (images.length === 0) {
+      throw new BadRequestException(
+        'Please attach 1-3 photos of your shopping.',
+      );
+    }
+    if (images.length > 3) {
+      throw new BadRequestException(
+        'You can scan up to 3 photos per request.',
+      );
+    }
+
+    const reservation = await this.kitchenScanUsage.reserve(userId);
+    this.logger.log(
+      `Scanning ${images.length} shopping-list photo(s) for user ${userId} (usage ${reservation.count}/${KITCHEN_SCAN_LIFETIME_LIMIT})`,
+    );
+
+    let parsedItems;
+    try {
+      parsedItems = await this.inventoryAiService.parseShoppingListPhotos(
+        images.map((f) => ({ buffer: f.buffer, mimeType: f.mimetype })),
+        dto.country,
+        userId,
+      );
+    } catch (error: any) {
+      // AI failed — refund the slot so the user's quota isn't burnt.
+      await this.kitchenScanUsage.rollback(userId);
+      this.logger.error(
+        `scanShoppingListPhotos failed for user ${userId}: ${error?.message}`,
+      );
+      throw new BadRequestException(
+        'We could not read your photos. Please try again with clearer pictures.',
+      );
+    }
+
+    // If AI found nothing usable, refund the slot — no value was delivered.
+    if (parsedItems.length === 0) {
+      await this.kitchenScanUsage.rollback(userId);
+      return {
+        parsedItems: [],
+        imagesProcessed: images.length,
+        usage: await this.kitchenScanUsage.getUsage(userId),
+      };
+    }
+
+    const now = Date.now();
+    return {
+      parsedItems: parsedItems.map((item) => ({
+        ...item,
+        expiresAt: new Date(
+          now + item.expiryDays * 24 * 60 * 60 * 1000,
+        ).toISOString(),
+        source: InventoryItemSource.SHOPPING_LIST_PHOTO,
+      })),
+      imagesProcessed: images.length,
+      usage: {
+        count: reservation.count,
+        remaining: reservation.remaining,
+        limit: reservation.limit,
+      },
+    };
   }
 
   @Post('from-shopping-list')

@@ -19,6 +19,70 @@ export class InventoryExpiryCronService {
     private readonly notificationService: NotificationService,
   ) {}
 
+  private buildDailyInventoryReminder(params: {
+    expiredCount: number;
+    expiringCount: number;
+    firstExpiringItemName?: string;
+  }): {
+    title: string;
+    body: string;
+    data: Record<string, string>;
+  } {
+    const { expiredCount, expiringCount, firstExpiringItemName } = params;
+    const itemName = firstExpiringItemName?.trim() || 'items';
+
+    if (expiredCount > 0 && expiringCount > 0) {
+      const expiredPart =
+        expiredCount === 1
+          ? '1 item in your pantry has expired'
+          : `${expiredCount} items in your pantry have expired`;
+      const expiringPart =
+        expiringCount === 1
+          ? `${itemName} is expiring soon`
+          : `${expiringCount} more items are expiring soon, including ${itemName}`;
+
+      return {
+        title: '🍽️ Pantry Update',
+        body: `${expiredPart}, and ${expiringPart}. Check your kitchen and use what you can first.`,
+        data: {
+          type: 'inventory_expiry_summary',
+          expiredCount: String(expiredCount),
+          expiringCount: String(expiringCount),
+        },
+      };
+    }
+
+    if (expiringCount > 0) {
+      return {
+        title: '⏰ Items Expiring Soon',
+        body:
+          expiringCount === 1
+            ? `Your ${itemName} is expiring soon! Use it before it goes to waste.`
+            : `${expiringCount} items are expiring soon — ${itemName} and ${expiringCount - 1} more. Cook something delicious!`,
+        data: {
+          type: 'expiry_warning',
+          count: String(expiringCount),
+          expiredCount: String(expiredCount),
+          expiringCount: String(expiringCount),
+        },
+      };
+    }
+
+    return {
+      title: '🚨 Expired Items',
+      body:
+        expiredCount === 1
+          ? `1 item in your pantry has expired. Discard it or check if it's still usable.`
+          : `${expiredCount} items in your pantry have expired. Time to clean up!`,
+      data: {
+        type: 'expired_items',
+        count: String(expiredCount),
+        expiredCount: String(expiredCount),
+        expiringCount: String(expiringCount),
+      },
+    };
+  }
+
   @Cron('0 30 2 * * *', { name: 'inventory-expiry-check', timeZone: 'Asia/Kolkata' })
   async handleExpiryCron() {
     this.logger.log('Running daily inventory expiry check...');
@@ -65,91 +129,93 @@ export class InventoryExpiryCronService {
         `Marked ${freshResult.modifiedCount} items as FRESH`,
       );
 
-      const usersWithExpiring = await this.inventoryModel.aggregate([
-        {
-          $match: {
-            isDiscarded: false,
-            expiresAt: { $gte: now, $lte: threeDaysFromNow },
-          },
-        },
-        {
-          $group: {
-            _id: '$userId',
-            expiringItems: {
-              $push: {
-                name: '$name',
-                expiresAt: '$expiresAt',
-                quantity: '$quantity',
-                unit: '$unit',
-              },
+      const [usersWithExpiring, usersWithExpired] = await Promise.all([
+        this.inventoryModel.aggregate([
+          {
+            $match: {
+              isDiscarded: false,
+              expiresAt: { $gte: now, $lte: threeDaysFromNow },
             },
-            count: { $sum: 1 },
           },
-        },
+          {
+            $group: {
+              _id: '$userId',
+              expiringItems: {
+                $push: {
+                  name: '$name',
+                  expiresAt: '$expiresAt',
+                  quantity: '$quantity',
+                  unit: '$unit',
+                },
+              },
+              count: { $sum: 1 },
+            },
+          },
+        ]),
+        this.inventoryModel.aggregate([
+          {
+            $match: {
+              isDiscarded: false,
+              expiresAt: { $lt: now },
+              freshnessStatus: FreshnessStatus.EXPIRED,
+            },
+          },
+          {
+            $group: {
+              _id: '$userId',
+              count: { $sum: 1 },
+            },
+          },
+        ]),
       ]);
 
+      const expiringByUser = new Map<
+        string,
+        { count: number; firstExpiringItemName?: string }
+      >();
       for (const userGroup of usersWithExpiring) {
-        const userId = userGroup._id.toString();
-        const count = userGroup.count;
-        const firstItem = userGroup.expiringItems[0];
-
-        try {
-          const itemName = firstItem?.name ?? 'items';
-          const body =
-            count === 1
-              ? `Your ${itemName} is expiring soon! Use it before it goes to waste.`
-              : `${count} items are expiring soon — ${itemName} and ${count - 1} more. Cook something delicious!`;
-
-          await this.notificationService.sendToUser(
-            userId,
-            '⏰ Items Expiring Soon',
-            body,
-            { type: 'expiry_warning', count: String(count) },
-            'inventory',
-          );
-        } catch (err) {
-          this.logger.warn(
-            `Failed to send expiry notification to user ${userId}: ${err.message}`,
-          );
-        }
+        expiringByUser.set(userGroup._id.toString(), {
+          count: userGroup.count,
+          firstExpiringItemName: userGroup.expiringItems?.[0]?.name,
+        });
       }
 
-      const usersWithExpired = await this.inventoryModel.aggregate([
-        {
-          $match: {
-            isDiscarded: false,
-            expiresAt: { $lt: now },
-            freshnessStatus: FreshnessStatus.EXPIRED,
-          },
-        },
-        {
-          $group: {
-            _id: '$userId',
-            count: { $sum: 1 },
-          },
-        },
+      const expiredByUser = new Map<string, number>();
+      for (const userGroup of usersWithExpired) {
+        expiredByUser.set(userGroup._id.toString(), userGroup.count);
+      }
+
+      const notifiedUserIds = new Set<string>([
+        ...expiringByUser.keys(),
+        ...expiredByUser.keys(),
       ]);
 
-      for (const userGroup of usersWithExpired) {
-        const userId = userGroup._id.toString();
-        const count = userGroup.count;
+      for (const userId of notifiedUserIds) {
+        const expiring = expiringByUser.get(userId);
+        const expiringCount = expiring?.count ?? 0;
+        const expiredCount = expiredByUser.get(userId) ?? 0;
+
+        if (expiringCount === 0 && expiredCount === 0) {
+          continue;
+        }
 
         try {
-          const body =
-            count === 1
-              ? `1 item in your pantry has expired. Discard it or check if it's still usable.`
-              : `${count} items in your pantry have expired. Time to clean up!`;
+          const reminder = this.buildDailyInventoryReminder({
+            expiredCount,
+            expiringCount,
+            firstExpiringItemName: expiring?.firstExpiringItemName,
+          });
 
           await this.notificationService.sendToUser(
             userId,
-            '🚨 Expired Items',
-            body,
-            { type: 'expired_items', count: String(count) },
+            reminder.title,
+            reminder.body,
+            reminder.data,
             'inventory',
           );
-        } catch (err) {
+        } catch (err: any) {
           this.logger.warn(
-            `Failed to send expired notification to user ${userId}: ${err.message}`,
+            `Failed to send inventory reminder to user ${userId}: ${err?.message}`,
           );
         }
       }

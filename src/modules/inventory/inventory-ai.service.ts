@@ -231,10 +231,10 @@ Return JSON:
         );
       }
       return results;
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(
-        `Voice parsing failed: ${error.message}`,
-        error.stack,
+        `Voice parsing failed: ${error?.message}`,
+        error?.stack,
       );
       if (this.aiTracker) {
         await this.aiTracker.logFromResponse(
@@ -256,12 +256,249 @@ Return JSON:
     }
   }
 
+  async parseShoppingListPhotos(
+    images: { buffer: Buffer; mimeType: string }[],
+    country?: string,
+    userId?: string,
+  ): Promise<ParsedVoiceItem[]> {
+    if (!images.length) {
+      throw new Error('At least one image is required');
+    }
+    this.logger.log(
+      `Parsing shopping-list photos for user ${userId ?? 'anon'} (images=${images.length}, country=${country ?? 'n/a'})`,
+    );
 
-  /**
-   * Core ingredient-to-recipe matching logic (pure DB, no AI).
-   * Used by both quick suggestions and full suggestions.
-   * Supports optional ingredientId filter to search recipes by a specific ingredient.
-   */
+    const ingredientFilter: any = {};
+    if (country) ingredientFilter.countries = { $in: [country] };
+    const ingredients = await this.ingredientModel
+      .find(ingredientFilter)
+      .select('name aliases isPantryItem categoryId')
+      .lean()
+      .exec();
+    const ingredientNames = ingredients.map((i) => i.name);
+
+    const imageParts = images.map((img) => ({
+      type: 'image_url' as const,
+      image_url: {
+        url: `data:${img.mimeType};base64,${img.buffer.toString('base64')}`,
+        detail: 'high' as const,
+      },
+    }));
+
+    const startedAt = Date.now();
+    let aiResponse: any = null;
+    try {
+      const response = await this.openai.chat.completions.create({
+        model: 'gpt-4.1',
+        messages: [
+          {
+            role: 'system',
+            content: `You are a kitchen inventory assistant for Saveful, a food tracking app${country ? ` (user located in ${country})` : ''}.
+The user uploads 1-3 photos of their shopping — these may be grocery bags, items laid out on a counter, fridge/pantry shelves, printed/handwritten shopping lists, or shop receipts.
+
+Your job: extract EVERY FOOD / COOKING INGREDIENT visible across ALL the photos and convert them into structured inventory entries.
+
+STRICT RULES:
+1. ONLY include edible food items, beverages, cooking oils, spices, condiments, dairy, meat, seafood, eggs, grains, legumes, produce, baked goods, and packaged food/drink products. IGNORE non-food items entirely (toiletries, cleaning supplies, pet food, plasticware, cutlery, flowers, medicines, packaging waste, hands, people, backgrounds, branding-only text, etc.).
+2. If the same item appears in multiple photos (clearly the same physical unit), COUNT IT ONCE. If photos clearly show distinct packages of the same item, SUM the quantities.
+3. For each item extract: quantity (number), unit (kg, g, l, ml, piece, pack, bunch, dozen, bottle, can, loaf). If the package label shows net weight/volume, use that. If no quantity is visible or inferable, default quantity=1 unit="piece" for produce / "pack" for packaged goods.
+4. For receipts: read the line items — quantity is usually written as a count or weight. Skip totals, taxes, and non-food lines.
+5. Match each item to the CLOSEST name from the provided ingredient database list. Translate regional/Hindi terms to English (e.g., "aloo"→"Potato", "dhaniya"→"Coriander"). If nothing matches, keep the original English name.
+6. Determine storageLocation: "pantry" for dry goods, grains, oils, spices, canned goods, unopened packaged foods; "fridge" for fresh produce, dairy, eggs, opened condiments, deli items, fresh meat/seafood; "freezer" for frozen items; "other" only if genuinely unclear.
+7. Estimate expiryDays from the item type and storage location (e.g. leafy greens 5, root veg 14, rice 365, milk 7, frozen meat 90).
+8. confidence: 0-1, how sure you are about the identification + quantity.
+9. Do NOT invent items. If a photo is too blurry / unclear, skip it or return an empty array.
+10. Max 40 items total.
+
+KNOWN INGREDIENTS IN DATABASE (match to these when possible):
+${ingredientNames.join(', ')}
+
+Respond ONLY with valid JSON, no markdown, no explanation.`,
+          },
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: `Extract food/grocery items from these ${images.length} photo(s).
+
+Return JSON EXACTLY in this shape:
+{
+  "items": [
+    {
+      "matchedName": "exact name from database or best guess",
+      "originalMention": "what you saw (e.g. 'red Amul butter 500g pack')",
+      "quantity": 2,
+      "unit": "pack",
+      "storageLocation": "fridge",
+      "expiryDays": 30,
+      "confidence": 0.9
+    }
+  ]
+}`,
+              },
+              ...imageParts,
+            ],
+          },
+        ],
+        temperature: 0.1,
+        max_tokens: 2500,
+      });
+      aiResponse = response;
+
+      const content = response.choices[0]?.message?.content;
+      if (!content) throw new Error('AI returned empty response');
+
+      let clean = content.trim();
+      if (clean.startsWith('```')) {
+        clean = clean.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+      }
+
+      let parsed: any;
+      try {
+        parsed = JSON.parse(clean);
+      } catch {
+        this.logger.error(
+          `AI returned malformed JSON for photo parse: ${clean.slice(0, 200)}`,
+        );
+        throw new Error('AI returned malformed response');
+      }
+
+      const rawItems: any[] = Array.isArray(parsed?.items) ? parsed.items : [];
+      const results: ParsedVoiceItem[] = [];
+      const seen = new Set<string>();
+
+      for (const item of rawItems.slice(0, 40)) {
+        const rawName = String(item?.matchedName ?? item?.originalMention ?? '').trim();
+        if (!rawName) continue;
+        const matchedNameLower = rawName.toLowerCase();
+
+        // 1. exact name match
+        let matchedIngredient = ingredients.find(
+          (i) => i.name.toLowerCase() === matchedNameLower,
+        );
+        // 2. alias match
+        if (!matchedIngredient) {
+          matchedIngredient = ingredients.find((i) =>
+            ((i as any).aliases ?? []).some(
+              (alias: string) => alias.toLowerCase() === matchedNameLower,
+            ),
+          );
+        }
+        // 3. fuzzy substring match
+        if (!matchedIngredient) {
+          matchedIngredient = ingredients.find((i) => {
+            const n = i.name.toLowerCase();
+            if (n.includes(matchedNameLower) || matchedNameLower.includes(n))
+              return true;
+            return ((i as any).aliases ?? []).some((alias: string) => {
+              const a = alias.toLowerCase();
+              return a.includes(matchedNameLower) || matchedNameLower.includes(a);
+            });
+          });
+        }
+
+        let ingredientId: string | undefined;
+        let finalName = rawName;
+        if (matchedIngredient) {
+          ingredientId = (matchedIngredient as any)._id.toString();
+          finalName = matchedIngredient.name;
+        }
+
+        // Dedupe by matched-ingredient or lowercase name (case photos overlap)
+        const dedupeKey = ingredientId
+          ? `id:${ingredientId}`
+          : `nm:${finalName.toLowerCase()}`;
+        if (seen.has(dedupeKey)) {
+          // merge by adding quantities if units match
+          const existing = results.find((r) =>
+            r.ingredientId
+              ? `id:${r.ingredientId}` === dedupeKey
+              : `nm:${r.name.toLowerCase()}` === dedupeKey,
+          );
+          if (existing && existing.unit === (item?.unit || 'piece')) {
+            existing.quantity += Number(item?.quantity) || 1;
+          }
+          continue;
+        }
+        seen.add(dedupeKey);
+
+        const qty = Number(item?.quantity);
+        const storage = [
+          StorageLocation.PANTRY,
+          StorageLocation.FRIDGE,
+          StorageLocation.FREEZER,
+          StorageLocation.OTHER,
+        ].includes(item?.storageLocation)
+          ? (item.storageLocation as StorageLocation)
+          : StorageLocation.PANTRY;
+
+        results.push({
+          ingredientId,
+          name: finalName,
+          quantity: Number.isFinite(qty) && qty > 0 ? qty : 1,
+          unit: typeof item?.unit === 'string' && item.unit.trim() ? item.unit.trim().slice(0, 20) : 'piece',
+          storageLocation: storage,
+          expiryDays: Number.isFinite(Number(item?.expiryDays))
+            ? Math.max(1, Math.min(1825, Math.floor(Number(item.expiryDays))))
+            : 7,
+          confidence: Math.max(
+            0,
+            Math.min(1, Number(item?.confidence) || 0.5),
+          ),
+        });
+      }
+
+      this.logger.log(
+        `Shopping-list photo parse: extracted ${results.length} item(s) from ${images.length} image(s)`,
+      );
+
+      if (this.aiTracker) {
+        await this.aiTracker.logFromResponse(
+          {
+            userId: userId ?? null,
+            feature: AIFeatureKey.INVENTORY_QUERY,
+            resultType:
+              results.length > 0
+                ? AIResultType.RECIPE_GENERATED
+                : AIResultType.NO_RESULT,
+            latencyMs: Date.now() - startedAt,
+            metadata: {
+              action: 'shopping_list_photo_parse',
+              imageCount: images.length,
+              parsedCount: results.length,
+              country,
+            },
+          },
+          aiResponse,
+        );
+      }
+      return results;
+    } catch (error: any) {
+      this.logger.error(
+        `Shopping-list photo parsing failed: ${error?.message}`,
+        error?.stack,
+      );
+      if (this.aiTracker) {
+        await this.aiTracker.logFromResponse(
+          {
+            userId: userId ?? null,
+            feature: AIFeatureKey.INVENTORY_QUERY,
+            resultType: AIResultType.ERROR,
+            latencyMs: Date.now() - startedAt,
+            metadata: {
+              action: 'shopping_list_photo_parse',
+              imageCount: images.length,
+              error: error?.message,
+            },
+          },
+          aiResponse,
+        );
+      }
+      throw error;
+    }
+  }
+
   private async matchRecipesToInventory(
     userId: string,
     country?: string,
@@ -315,7 +552,6 @@ Return JSON:
     if (country) {
       recipeFilter.countries = { $in: [country] };
     }
-    // If filtering by a specific ingredient, use MongoDB $or to find recipes containing it
     if (filterIngredientId && Types.ObjectId.isValid(filterIngredientId)) {
       const oid = new Types.ObjectId(filterIngredientId);
       recipeFilter.$or = [
@@ -341,10 +577,8 @@ Return JSON:
     const scoredRecipes: MealSuggestion[] = [];
 
     for (const recipe of recipes) {
-      // Each "slot" is one required-ingredient position.
-      // A slot is satisfied if EITHER the recommended ingredient OR any of its
-      // alternatives is present in the user's inventory.
-      const totalSlots: number[] = [];   // 1 per required ingredient slot
+   
+      const totalSlots: number[] = [];   
       const matchedSlotIds: string[] = [];
       const missingSlotNames: string[] = [];
       const matchedIngredientNames: string[] = [];
@@ -399,9 +633,7 @@ Return JSON:
 
       const matchPercentage = (matchedSlotIds.length / totalSlots.length) * 100;
 
-      // Require at least 1 matched ingredient — the sort order handles relevance.
-      // When filtering by a specific ingredient we drop even the 1-match floor and
-      // show everything (MongoDB already guarantees the recipe uses that ingredient).
+  
       const minMatch = filterIngredientId ? 0 : 1;
       if (matchedSlotIds.length < minMatch) continue;
 
@@ -444,12 +676,6 @@ Return JSON:
     };
   }
 
-
-  /**
-   * Quick meal suggestions — pure DB matching with Redis cache, no AI calls.
-   * Supports optional ingredientId filter for searching recipes by ingredient.
-   * Cache is keyed per user + ingredient count hash so new ingredients auto-invalidate.
-   */
   async getMealSuggestionsQuick(
     userId: string,
     country?: string,
@@ -462,14 +688,13 @@ Return JSON:
       : '';
     const cacheKey = `${this.CACHE_PREFIX}:suggestions:quick:${userId}${cacheKeySuffix}`;
 
-    // Check Redis cache (short TTL: 3 minutes)
     try {
       const cached = await this.redisService.get(cacheKey);
       if (cached) {
         this.logger.log(`Quick suggestions cache hit for user ${userId}`);
         return JSON.parse(cached);
       }
-    } catch (e) {
+    } catch (e: any) {
       this.logger.warn('Quick suggestions cache read failed:', e?.message);
     }
 
@@ -479,11 +704,10 @@ Return JSON:
       limit,
       filterIngredientId,
     );
-
-    // Cache for 3 minutes
+ 
     try {
       await this.redisService.set(cacheKey, JSON.stringify(suggestions), 180);
-    } catch (e) {
+    } catch (e: any) {
       this.logger.warn('Quick suggestions cache write failed:', e?.message);
     }
 
@@ -491,10 +715,7 @@ Return JSON:
   }
 
 
-  /**
-   * Full meal suggestions with optional AI enrichment.
-   * Calls the shared matching logic, then enriches with AI if ≤5 results.
-   */
+
   async getMealSuggestions(
     userId: string,
     country?: string,
@@ -558,7 +779,7 @@ Return JSON:
         JSON.stringify(currentRecipeIds),
         86400,
       );
-    } catch (e) {
+    } catch (e: any) {
       this.logger.warn('Failed to cache previous recipe IDs:', e?.message);
     }
 
@@ -719,8 +940,8 @@ Respond in JSON only: { "wasteType": "...", "confidence": 0.95, "disposalTip": "
         );
       }
       return parsed;
-    } catch (error) {
-      this.logger.error(`Waste classification failed: ${error.message}`);
+    } catch (error: any) {
+      this.logger.error(`Waste classification failed: ${error?.message}`);
       if (this.aiTracker) {
         await this.aiTracker.logFromResponse(
           {
@@ -968,8 +1189,8 @@ How many days will this last?`,
       }
 
       return result;
-    } catch (error) {
-      this.logger.error(`Shelf-life estimation failed for "${dishName}": ${error.message}`);
+    } catch (error: any) {
+      this.logger.error(`Shelf-life estimation failed for "${dishName}": ${error?.message}`);
       if (this.aiTracker) {
         await this.aiTracker.logFromResponse(
           {
@@ -1123,8 +1344,8 @@ Respond ONLY with valid JSON:
       }
 
       return { ...result, aiEventId };
-    } catch (error) {
-      this.logger.error(`Makeover ideas generation failed for "${dishName}": ${error.message}`);
+    } catch (error: any) {
+      this.logger.error(`Makeover ideas generation failed for "${dishName}": ${error?.message}`);
       if (this.aiTracker) {
         await this.aiTracker.logFromResponse(
           {

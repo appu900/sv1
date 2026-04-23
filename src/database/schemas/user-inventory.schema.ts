@@ -33,6 +33,7 @@ export enum InventoryItemSource {
   MANUAL = 'manual',
   VOICE = 'voice',
   SHOPPING_LIST = 'shopping_list',
+  SHOPPING_LIST_PHOTO = 'shopping_list_photo',
   RECIPE = 'recipe',
 }
 
