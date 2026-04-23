@@ -15,3 +15,9 @@ export class LeaderboardProfile {
 
 export type LeaderboardProfileDocument = LeaderboardProfile & Document;
 export const LeaderboardProfileSchema = SchemaFactory.createForClass(LeaderboardProfile);
+
+
+LeaderboardProfileSchema.index(
+  { isActive: 1, userId: 1 },
+  { partialFilterExpression: { isActive: true } },
+);

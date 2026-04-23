@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import {
   UserFoodAnalyticalProfileDocument,
   UserFoodAnalyticsProfile,
@@ -23,11 +23,11 @@ import {
 } from 'src/database/schemas/challenge.members.schema';
 import { FoodSavedEvent } from './analytics.service';
 import { OnEvent } from '@nestjs/event-emitter';
-import { Types } from 'mongoose';
 import { RedisService } from 'src/redis/redis.service';
 import { UserEventService } from '../user-events/user-event.service';
 import { RecipeViewService } from '../user-events/recipe-view.service';
 import { UserEventType } from 'src/database/schemas/user-event.schema';
+import { MetricsService } from './metrics.service';
 
 @Injectable()
 export class AnalyticsListner {
@@ -46,11 +46,26 @@ export class AnalyticsListner {
     private readonly redisService: RedisService,
     private readonly userEventService: UserEventService,
     private readonly recipeViewService: RecipeViewService,
+    private readonly metricsService: MetricsService,
   ) {}
 
   @OnEvent('food.saved', { async: true })
   async updateUserProfile(event: FoodSavedEvent) {
-    // Funnel event: first_recipe_cooked (idempotent) + per-recipe cook counter.
+    // Persist per-event log. The unique partial index on
+    // (userId, idempotencyKey) makes concurrent duplicate writes a
+    // key-violation that `logFoodSaved` silently swallows, so a
+    // retried `food.saved` event can't double-write the log.
+    void this.metricsService.logFoodSaved({
+      userId: event.userId,
+      frameworkId: event.frameworkId ?? null,
+      ingredientIds: event.ingredinatIds ?? [],
+      foodSavedInGrams: event.foodSavedInGrams,
+      moneySaved: event.totalPriceInLocalCurrency ?? 0,
+      co2SavedInGrams: event.totalCo2SavedInGrams ?? 0,
+      country: event.country ?? null,
+      idempotencyKey: event.idempotencyKey ?? null,
+    });
+
     void this.userEventService.recordFirst(
       event.userId,
       UserEventType.FIRST_RECIPE_COOKED,
@@ -59,7 +74,6 @@ export class AnalyticsListner {
     void this.recipeViewService.incrementCookCount(event.frameworkId);
 
     try {
-      // Prepare update operation
       const updateOperation: any = {
         $inc: {
           foodSavedInGrams: event.foodSavedInGrams,
@@ -69,26 +83,24 @@ export class AnalyticsListner {
         },
       };
 
-      // Add framework_id to cookedRecipes if provided
       if (event.frameworkId) {
         updateOperation.$addToSet = {
           cookedRecipes: event.frameworkId,
         };
       }
 
-      // Update user analytics profile
-      const result = await this.profileModel.findOneAndUpdate(
+      await this.profileModel.findOneAndUpdate(
         { userId: new Types.ObjectId(event.userId) },
         updateOperation,
         { upsert: true, new: true },
       );
 
-      // Update all community groups the user is a member of
-      await this.updateCommunityGroups(event);
-
-      // Update all active challenges the user is participating in
-      await this.updateChallenges(event);
-    } catch (error) {
+      await Promise.all([
+        this.updateCommunityGroups(event),
+        this.updateChallenges(event),
+        this.invalidateAggregateCaches(),
+      ]);
+    } catch (error: any) {
       this.logger.error(
         `Failed to update profile: ${error.message}`,
         error.stack,
@@ -96,41 +108,41 @@ export class AnalyticsListner {
     }
   }
 
+  private async invalidateAggregateCaches(): Promise<void> {
+    try {
+      await Promise.all([
+        this.redisService.delByPattern('analytics:leaderboard:v2:*'),
+        this.redisService.delByPattern('analytics:trending:v2:*'),
+      ]);
+    } catch (err: any) {
+      this.logger.warn(`aggregate cache invalidation failed: ${err?.message}`);
+    }
+  }
+
   private async updateCommunityGroups(event: FoodSavedEvent) {
     try {
-      // Find all groups where user is an active member
       const userMemberships = await this.communityGroupMemberModel
         .find({
           userId: new Types.ObjectId(event.userId),
           isActive: true,
         })
+        .select('groupId')
         .lean();
 
-      if (userMemberships.length === 0) {
-        return;
-      }
-
+      if (userMemberships.length === 0) return;
       const groupIds = userMemberships.map((m) => m.groupId);
 
-      // Update totalFoodSaved for all groups
       await this.communityGroupModel.updateMany(
-        {
-          _id: { $in: groupIds },
-          isDeleted: false,
-        },
-        {
-          $inc: {
-            totalFoodSaved: event.foodSavedInGrams,
-          },
-        },
+        { _id: { $in: groupIds }, isDeleted: false },
+        { $inc: { totalFoodSaved: event.foodSavedInGrams } },
       );
 
-      // Invalidate Redis cache for each updated group
-      for (const groupId of groupIds) {
-        const cacheKey = `community:group:${groupId.toString()}`;
-        await this.redisService.del(cacheKey);
-      }
-    } catch (error) {
+      await Promise.all(
+        groupIds.map((groupId) =>
+          this.redisService.del(`community:group:${groupId.toString()}`),
+        ),
+      );
+    } catch (error: any) {
       this.logger.error(
         `Failed to update community groups: ${error.message}`,
         error.stack,
@@ -141,23 +153,15 @@ export class AnalyticsListner {
   private async updateChallenges(event: FoodSavedEvent) {
     try {
       const now = new Date();
+      const userOid = new Types.ObjectId(event.userId);
 
-      // Find all groups where user is an active member
       const userGroups = await this.communityGroupMemberModel
-        .find({
-          userId: new Types.ObjectId(event.userId),
-          isActive: true,
-        })
+        .find({ userId: userOid, isActive: true })
         .select('groupId')
         .lean();
+      if (userGroups.length === 0) return;
+      const groupIds = userGroups.map((g) => g.groupId);
 
-      if (userGroups.length === 0) {
-        return;
-      }
-
-      const groupIds = userGroups.map(g => g.groupId);
-
-      // Find all active challenges in those groups (currently within date range)
       const activeChallenges = await this.communityChallengeModel
         .find({
           communityId: { $in: groupIds },
@@ -168,18 +172,12 @@ export class AnalyticsListner {
         })
         .select('_id communityId')
         .lean();
-
-      if (activeChallenges.length === 0) {
-        return;
-      }
+      if (activeChallenges.length === 0) return;
 
       const activeChallengeIds = activeChallenges.map((ch: any) => ch._id);
 
-      // Update totalFoodSaved for all active challenges
       await this.communityChallengeModel.updateMany(
-        {
-          _id: { $in: activeChallengeIds },
-        },
+        { _id: { $in: activeChallengeIds } },
         {
           $inc: {
             totalFoodSaved: event.foodSavedInGrams,
@@ -188,41 +186,42 @@ export class AnalyticsListner {
         },
       );
 
-      // Ensure participant docs exist and increment counters per active challenge
-      for (const challenge of activeChallenges) {
-        await this.challengeParticipantModel.findOneAndUpdate(
-          {
-            userId: new Types.ObjectId(event.userId),
-            challengeId: (challenge as any)._id,
-            communityId: (challenge as any).communityId,
+      const bulkOps = activeChallenges.map((challenge: any) => ({
+        updateOne: {
+          filter: {
+            userId: userOid,
+            challengeId: challenge._id,
+            communityId: challenge.communityId,
             isActive: true,
           },
-          {
+          update: {
             $inc: {
               foodSaved: event.foodSavedInGrams,
               totalMealsCompleted: 1,
             },
           },
-          {
-            upsert: true,
-            setDefaultsOnInsert: true,
-          },
-        );
+          upsert: true,
+        },
+      }));
+      if (bulkOps.length) {
+        await this.challengeParticipantModel.bulkWrite(bulkOps, {
+          ordered: false,
+        });
       }
 
-      // Invalidate Redis cache for each updated challenge
-      for (const challengeId of activeChallengeIds) {
-        const cacheKey = `community:challenge:single:${challengeId.toString()}`;
-        await this.redisService.del(cacheKey);
-        
-        // Also invalidate the community's challenges list
-        const challenge = await this.communityChallengeModel.findById(challengeId).select('communityId').lean();
-        if (challenge) {
-          const listCacheKey = `community:challenges:communityId:${challenge.communityId.toString()}`;
-          await this.redisService.del(listCacheKey);
-        }
+      const invalidations: Promise<any>[] = [];
+      for (const challenge of activeChallenges as any[]) {
+        invalidations.push(
+          this.redisService.del(
+            `community:challenge:single:${challenge._id.toString()}`,
+          ),
+          this.redisService.del(
+            `community:challenges:communityId:${challenge.communityId.toString()}`,
+          ),
+        );
       }
-    } catch (error) {
+      await Promise.all(invalidations);
+    } catch (error: any) {
       this.logger.error(
         `Failed to update challenges: ${error.message}`,
         error.stack,
@@ -230,6 +229,3 @@ export class AnalyticsListner {
     }
   }
 }
-
-
-

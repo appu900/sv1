@@ -11,6 +11,9 @@ export enum LeaderboardPeriod {
 export enum LeaderboardMetric {
   MEALS_COOKED = 'MEALS_COOKED',
   FOOD_SAVED = 'FOOD_SAVED',
+  MONEY_SAVED = 'MONEY_SAVED',
+  CO2_SAVED = 'CO2_SAVED',
+  BADGES = 'BADGES',
   BOTH = 'BOTH',
 }
 

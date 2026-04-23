@@ -15,6 +15,10 @@ import { Feedback, FeedbackSchema } from 'src/database/schemas/feedback.schema';
 import { BadgesModule } from '../badges/badges.module';
 import { User,UserSchema } from 'src/database/schemas/user.auth.schema';
 import { LeaderboardProfile, LeaderboardProfileSchema } from 'src/database/schemas/leaderboard-profile.schema';
+import { FoodSavedEventLog, FoodSavedEventLogSchema } from 'src/database/schemas/food-saved-event-log.schema';
+import { IngredientSearchEvent, IngredientSearchEventSchema } from 'src/database/schemas/ingredient-search-event.schema';
+import { ClientAnalyticsEvent, ClientAnalyticsEventSchema } from 'src/database/schemas/client-analytics-event.schema';
+import { MetricsService } from './metrics.service';
 @Global()
 @Module({
   imports: [
@@ -29,11 +33,14 @@ import { LeaderboardProfile, LeaderboardProfileSchema } from 'src/database/schem
       {name:Feedback.name,schema:FeedbackSchema},
       {name:User.name,schema:UserSchema},
       {name:LeaderboardProfile.name,schema:LeaderboardProfileSchema},
+      {name:FoodSavedEventLog.name,schema:FoodSavedEventLogSchema},
+      {name:IngredientSearchEvent.name,schema:IngredientSearchEventSchema},
+      {name:ClientAnalyticsEvent.name,schema:ClientAnalyticsEventSchema},
     ]),
     forwardRef(() => BadgesModule),
   ],
-  providers: [AnalyticsService,AnalyticsListner, AppSessionListener],
+  providers: [AnalyticsService, MetricsService, AnalyticsListner, AppSessionListener],
   controllers: [AnalyticsController],
-  exports:[AnalyticsService]
+  exports:[AnalyticsService, MetricsService]
 })
 export class AnalyticsModule {}

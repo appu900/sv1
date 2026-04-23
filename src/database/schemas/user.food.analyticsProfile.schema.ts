@@ -29,3 +29,9 @@ export class UserFoodAnalyticsProfile{
 
 export type UserFoodAnalyticalProfileDocument = UserFoodAnalyticsProfile & Document
 export const UserFoodAnalyticalProfileSchema = SchemaFactory.createForClass(UserFoodAnalyticsProfile)
+
+UserFoodAnalyticalProfileSchema.index({ updatedAt: -1 });
+UserFoodAnalyticalProfileSchema.index({ totalMoneySaved: -1, updatedAt: -1 });
+UserFoodAnalyticalProfileSchema.index({ foodSavedInGrams: -1, updatedAt: -1 });
+UserFoodAnalyticalProfileSchema.index({ totalCo2SavedInGrams: -1, updatedAt: -1 });
+UserFoodAnalyticalProfileSchema.index({ numberOfMealsCooked: -1, updatedAt: -1 });
