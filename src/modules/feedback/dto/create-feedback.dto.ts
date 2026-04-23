@@ -39,7 +39,6 @@ class FeedbackDataDto {
   @MaxLength(500)
   review?: string;
 
-  // ─── Post-make survey fields ───────────────────────────────────
   @IsOptional()
   @IsString()
   improvement_reason?: string;
@@ -55,6 +54,24 @@ class FeedbackDataDto {
   @IsOptional()
   @IsString()
   leftover_storage?: string;
+}
+
+class CustomIngredientDto {
+  @IsNotEmpty()
+  @IsString()
+  @MaxLength(120)
+  name: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  quantity?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(5000)
+  weight_grams?: number;
 }
 
 export class CreateFeedbackDto {
@@ -75,4 +92,12 @@ export class CreateFeedbackDto {
   @IsOptional()
   @IsArray()
   ingredient_ids?: string[];
+
+  // Used by cookbook (user-authored) recipes where ingredients have no DB ID.
+  // Backend will run the same AI price + CO2 estimation per name.
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => CustomIngredientDto)
+  custom_ingredients?: CustomIngredientDto[];
 }

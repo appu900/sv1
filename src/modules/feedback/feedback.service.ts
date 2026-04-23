@@ -71,10 +71,35 @@ export class FeedbackService {
     if (createFeedbackDto.prompted === false) {
       try {
         const ingredientIds = createFeedbackDto.ingredient_ids || [];
-        // directIngredients fallback: derive weight from food_saved (kg→g) if no IDs
-        const directIngredients = ingredientIds.length === 0 && createFeedbackDto.data?.food_saved
-          ? [{ name: 'meal', averageWeight: (createFeedbackDto.data.food_saved || 0) * 1000 }]
-          : [];
+        const customIngredients = createFeedbackDto.custom_ingredients || [];
+
+    
+        let directIngredients: {
+          name: string;
+          averageWeight?: number;
+          quantity?: string;
+        }[] = [];
+        if (ingredientIds.length === 0) {
+          if (customIngredients.length > 0) {
+          
+            directIngredients = customIngredients.map((ing) => ({
+              name: ing.name.trim(),
+              ...(ing.quantity && ing.quantity.trim().length > 0
+                ? { quantity: ing.quantity.trim() }
+                : {}),
+              ...(typeof ing.weight_grams === 'number' && ing.weight_grams > 0
+                ? { averageWeight: ing.weight_grams }
+                : {}),
+            }));
+          } else if (createFeedbackDto.data?.food_saved) {
+            directIngredients = [
+              {
+                name: 'meal',
+                averageWeight: (createFeedbackDto.data.food_saved || 0) * 1000,
+              },
+            ];
+          }
+        }
         await this.analyticsService.saveFood(
           userId,
           ingredientIds,

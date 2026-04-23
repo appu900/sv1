@@ -46,6 +46,15 @@ export interface Co2CalculationResult {
   co2SavedKg: number;
 }
 
+export interface QuantityResolutionResult {
+  ingredient: string;
+  quantity: string;
+  country: string;
+  weightInGrams: number;
+  priceInLocalCurrency: number;
+  co2SavedKg: number;
+}
+
 @Injectable()
 export class AnalyticsService {
   private readonly logger = new Logger(AnalyticsService.name);
@@ -81,7 +90,7 @@ async saveFood(
   userId: string,
   ingredinatIds: string[] = [],
   frameworkId?: string,
-  directIngredients?: { name: string; averageWeight: number }[],
+  directIngredients?: { name: string; averageWeight?: number; quantity?: string }[],
   idempotencyKey?: string,
 ) {
   const user = await this.userModel.findOne({ _id: userId }).lean();
@@ -107,25 +116,83 @@ async saveFood(
     }
   }
 
-  let ingredinats: Array<{ name: string; averageWeight: number }>;
+  // Resolve ingredients to { name, grams } + (optional) price/co2 already
+  // computed when a quantity string is supplied.
+  //
+  // Three possible sources, in priority order:
+  //   1. `ingredinatIds` → DB lookup, uses stored averageWeight.
+  //   2. `directIngredients[i].quantity` → one-shot AI resolver that returns
+  //      weight + price + CO2 together. Saves ~50% tokens vs. split calls.
+  //   3. `directIngredients[i].averageWeight` → already-known weight, price
+  //      and CO2 are computed via the separate cached AI calls.
+  let ingredinats: Array<{ name: string; averageWeight: number }> = [];
+  let preResolvedPrice: Array<PriceCalculationResult | null> = [];
+  let preResolvedCo2: Array<Co2CalculationResult | null> = [];
+
   if (ingredinatIds && ingredinatIds.length > 0) {
-    const dbIngredients = await this.ingredinatModel.find({ _id: { $in: ingredinatIds } }).lean();
-    ingredinats = dbIngredients.map(i => ({ name: i.name, averageWeight: i.averageWeight || 0 }));
-  } else {
-    ingredinats = (directIngredients || []).map(i => ({ name: i.name, averageWeight: i.averageWeight || 0 }));
+    const dbIngredients = await this.ingredinatModel
+      .find({ _id: { $in: ingredinatIds } })
+      .lean();
+    ingredinats = dbIngredients.map(i => ({
+      name: i.name,
+      averageWeight: i.averageWeight || 0,
+    }));
+    preResolvedPrice = ingredinats.map(() => null);
+    preResolvedCo2 = ingredinats.map(() => null);
+  } else if (directIngredients && directIngredients.length > 0) {
+    // Run AI resolvers only for entries that carry a quantity string.
+    const resolutions = await Promise.all(
+      directIngredients.map(i =>
+        i.quantity && i.quantity.trim().length > 0
+          ? this.resolveIngredientByQuantity(i.name, i.quantity, country)
+          : Promise.resolve(null),
+      ),
+    );
+
+    for (let idx = 0; idx < directIngredients.length; idx++) {
+      const i = directIngredients[idx];
+      const r = resolutions[idx];
+      if (r) {
+        ingredinats.push({ name: i.name, averageWeight: r.weightInGrams });
+        preResolvedPrice.push({
+          ingredient: i.name,
+          weightInGrams: r.weightInGrams,
+          country,
+          priceInLocalCurrency: r.priceInLocalCurrency,
+        });
+        preResolvedCo2.push({
+          ingredient: i.name,
+          weightInGrams: r.weightInGrams,
+          country,
+          co2SavedKg: r.co2SavedKg,
+        });
+      } else {
+        ingredinats.push({ name: i.name, averageWeight: i.averageWeight || 0 });
+        preResolvedPrice.push(null);
+        preResolvedCo2.push(null);
+      }
+    }
   }
 
   const foodSavedInGrams = ingredinats.reduce((sum, i) => sum + (i.averageWeight || 0), 0);
   const ingredientNames = ingredinats.map(i => i.name).join(', ') || 'none';
 
-  let aiResults: PriceCalculationResult[] = [];
-  let co2Results: Co2CalculationResult[] = [];
-  if (ingredinats.length > 0) {
-    [aiResults, co2Results] = await Promise.all([
-      Promise.all(ingredinats.map(i => this.calculatePriceWithAI(i.name, i.averageWeight || 0, country))),
-      Promise.all(ingredinats.map(i => this.calculateCo2SavedWithAI(i.name, i.averageWeight || 0, country))),
-    ]);
-  }
+  // For any entry without a pre-resolved price/co2 (i.e. ID-based or
+  // weight-only direct ingredient), fall back to the split AI calls.
+  const aiResults: PriceCalculationResult[] = await Promise.all(
+    ingredinats.map((i, idx) =>
+      preResolvedPrice[idx]
+        ? Promise.resolve(preResolvedPrice[idx]!)
+        : this.calculatePriceWithAI(i.name, i.averageWeight || 0, country),
+    ),
+  );
+  const co2Results: Co2CalculationResult[] = await Promise.all(
+    ingredinats.map((i, idx) =>
+      preResolvedCo2[idx]
+        ? Promise.resolve(preResolvedCo2[idx]!)
+        : this.calculateCo2SavedWithAI(i.name, i.averageWeight || 0, country),
+    ),
+  );
   const totalPriceInLocalCurrency = aiResults.reduce(
     (sum, r) => sum + Math.max(0, r.priceInLocalCurrency || 0),
     0,
@@ -158,6 +225,112 @@ async saveFood(
     co2Breakdown: co2Results,
     totalCo2SavedInKg: Number((totalCo2SavedInGrams / 1000).toFixed(3)),
   };
+}
+
+/**
+ * Single-shot AI resolver: given an ingredient NAME and a free-form
+ * QUANTITY string (e.g. "6 large", "2 tablespoons", "1 teaspoon",
+ * "to taste"), return estimated weight + local price + CO2e avoided.
+ *
+ * Cached in Redis for 7 days by (country, name|quantity). This means
+ * "onion | 1 large" in India is resolved ONCE and reused across every
+ * user that cooks any recipe containing that exact line — the hot
+ * ingredients (tomato, onion, oil, salt) cost zero tokens after the
+ * very first user.
+ *
+ * On AI failure returns null so the caller can decide on a fallback.
+ */
+async resolveIngredientByQuantity(
+  ingredientName: string,
+  quantity: string,
+  country: string,
+): Promise<QuantityResolutionResult | null> {
+  const safeName = (ingredientName || '').trim();
+  const safeQty = (quantity || '').trim();
+  if (!safeName || !safeQty) return null;
+
+  // "to taste", "for garnish", "as needed" → negligible weight, skip AI.
+  const negligible = /^(to taste|for garnish|as needed|optional|pinch)$/i;
+  if (negligible.test(safeQty)) {
+    return {
+      ingredient: safeName,
+      quantity: safeQty,
+      country,
+      weightInGrams: 0,
+      priceInLocalCurrency: 0,
+      co2SavedKg: 0,
+    };
+  }
+
+  const cacheKey = `analytics:qty:v1:${country}:${safeName.toLowerCase().slice(0, 60)}|${safeQty.toLowerCase().slice(0, 40)}`;
+  try {
+    const cached = await this.redisService.get<{
+      w: number;
+      p: number;
+      c: number;
+    }>(cacheKey);
+    if (cached && typeof cached.w === 'number') {
+      return {
+        ingredient: safeName,
+        quantity: safeQty,
+        country,
+        weightInGrams: cached.w,
+        priceInLocalCurrency: cached.p,
+        co2SavedKg: cached.c,
+      };
+    }
+  } catch (err: any) {
+    this.logger.warn(`qty cache read failed: ${err?.message}`);
+  }
+
+  try {
+    const content = await this.callOpenAIWithRetry([
+      {
+        role: 'system',
+        content:
+          'You estimate ingredient weight (grams), local-currency price, and CO2e emissions avoided from preventing that ingredient from being wasted. Respond with STRICT JSON only — no prose.',
+      },
+      {
+        role: 'user',
+        content:
+          `Resolve the following line from a recipe:\n` +
+          `- ingredient: ${safeName}\n` +
+          `- quantity: ${safeQty}\n` +
+          `- country: ${country}\n\n` +
+          `Return JSON exactly:\n` +
+          `{"weightInGrams":0,"priceInLocalCurrency":0,"co2SavedKg":0}\n` +
+          `- weightInGrams: realistic edible weight in grams for the given quantity.\n` +
+          `- priceInLocalCurrency: typical retail price for that weight in ${country}.\n` +
+          `- co2SavedKg: CO2e in kg that would be avoided by NOT wasting that weight of ${safeName}.`,
+      },
+    ]);
+    const parsed = JSON.parse(content);
+    const w = Math.max(0, Number(parsed?.weightInGrams) || 0);
+    const p = Math.max(0, Number(parsed?.priceInLocalCurrency) || 0);
+    const c = Math.max(0, Number(parsed?.co2SavedKg) || 0);
+
+    // Only cache when weight is meaningful — avoids poisoning the cache
+    // with zero-weight results from a bad AI response.
+    if (w > 0) {
+      void this.redisService.set(
+        cacheKey,
+        { w, p, c },
+        this.PRICE_CACHE_TTL_SEC,
+      );
+    }
+
+    return {
+      ingredient: safeName,
+      quantity: safeQty,
+      country,
+      weightInGrams: Number(w.toFixed(1)),
+      priceInLocalCurrency: Number(p.toFixed(2)),
+      co2SavedKg: Number(c.toFixed(4)),
+    };
+  } catch (err: any) {
+    this.logger.error(`qty AI failed for "${safeName} ${safeQty}": ${err?.message}`);
+    return null;
+  }
 }
 private async callOpenAIWithRetry(
   messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],

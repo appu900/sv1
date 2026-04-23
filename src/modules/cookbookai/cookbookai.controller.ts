@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Patch, Delete, UseGuards, Body, Param, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, UseGuards, Body, Param, BadRequestException, NotFoundException, UseInterceptors, UploadedFile } from '@nestjs/common';
 import { CookbookaiService } from './cookbookai.service';
 import { CookbookaiProducer } from './cookbookai.producer';
 import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
@@ -11,6 +11,8 @@ import { GenerateFromIngredientsDto } from './dto/generate-from-ingredients.dto'
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { User, UserDocument } from 'src/database/schemas/user.auth.schema';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { ImageUploadService } from '../image-upload/image-upload.service';
 
 @Controller('cookbookai')
 export class CookbookaiController {
@@ -18,6 +20,7 @@ export class CookbookaiController {
         private readonly cookbookaiService: CookbookaiService,
         private readonly cookbookaiProducer: CookbookaiProducer,
         private readonly redisService: RedisService,
+        private readonly imageUploadService: ImageUploadService,
         @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
     ) { }
 
@@ -203,6 +206,34 @@ export class CookbookaiController {
                 message: 'An error occurred while processing your request.',
             };
         }
+    }
+
+    @Patch('/recipes/:id/hero-image')
+    @Roles('USER')
+    @UseGuards(JwtAuthGuard, RolesGuard)
+    @UseInterceptors(FileInterceptor('photo'))
+    async uploadHeroImage(
+        @Request() req,
+        @Param('id') id: string,
+        @UploadedFile() file: Express.Multer.File,
+    ) {
+        const userId = this.resolveUserId(req);
+        if (!id || !/^[a-f\d]{24}$/i.test(id)) {
+            throw new BadRequestException('Invalid recipe ID.');
+        }
+        if (!file) {
+            throw new BadRequestException('No photo file provided.');
+        }
+        const allowedMimes = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'];
+        if (!allowedMimes.includes(file.mimetype)) {
+            throw new BadRequestException('Invalid file type. Only JPEG, PNG, WEBP, HEIC images are allowed.');
+        }
+        const imageUrl = await this.imageUploadService.uploadFile(file, 'saveful/cookbook/hero-images');
+        const updated = await this.cookbookaiService.updateHeroImage(id, userId, imageUrl);
+        if (!updated) {
+            throw new NotFoundException('Recipe not found.');
+        }
+        return { success: true, heroImageUrl: imageUrl, data: updated };
     }
 
     @Patch('/recipes/reorder')

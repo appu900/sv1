@@ -596,6 +596,18 @@ export class CookbookaiService {
             .exec();
     }
 
+    async updateHeroImage(recipeId: string, userId: string, imageUrl: string) {
+        if (!Types.ObjectId.isValid(recipeId)) return null;
+        return await this.userRecipeModel
+            .findOneAndUpdate(
+                { _id: new Types.ObjectId(recipeId), ...this.buildUserMatch(userId) },
+                { heroImageUrl: imageUrl },
+                { new: true },
+            )
+            .lean()
+            .exec();
+    }
+
     async updateRecipeSource(recipeId: string, userId: string, source: 'link' | 'ai_ingredients') {
         if (!Types.ObjectId.isValid(recipeId)) return null;
         return await this.userRecipeModel
