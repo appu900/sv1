@@ -594,6 +594,15 @@ export class InventoryService {
     item: UserInventoryItemDocument,
   ): Promise<void> {
     try {
+      // Leftover dishes / cooked meals (InventoryItemSource.RECIPE) should not be
+      // added to the shopping list — they're not items you go buy at the store.
+      if (item.source === InventoryItemSource.RECIPE) {
+        this.logger.log(
+          `Skipping shopping-list add for recipe leftover "${item.name}" (user ${userId})`,
+        );
+        return;
+      }
+
       let list = await this.shoppingListModel
         .findOne({
           userId: new Types.ObjectId(userId),
