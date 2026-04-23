@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Delete, UseGuards, Body, Param, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, UseGuards, Body, Param, BadRequestException, NotFoundException } from '@nestjs/common';
 import { CookbookaiService } from './cookbookai.service';
 import { CookbookaiProducer } from './cookbookai.producer';
 import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
@@ -203,6 +203,14 @@ export class CookbookaiController {
                 message: 'An error occurred while processing your request.',
             };
         }
+    }
+
+    @Patch('/recipes/reorder')
+    @Roles('USER')
+    @UseGuards(JwtAuthGuard, RolesGuard)
+    async reorderRecipes(@Request() req, @Body() body: { recipeIds: string[] }) {
+        const userId = this.resolveUserId(req);
+        return this.cookbookaiService.reorderRecipes(userId, body?.recipeIds || []);
     }
 
     @Get("/invalidate-cache")

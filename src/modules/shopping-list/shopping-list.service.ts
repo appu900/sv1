@@ -56,13 +56,18 @@ export class ShoppingListService {
     status?: ShoppingListItemStatus,
   ): Promise<any> {
     const list = await this.getCurrentList(userId);
-    
-    let filteredItems = list.items;
+
+    const sortedItems = [...list.items].sort((a, b) => {
+      const pa = (a as any).position ?? 0;
+      const pb = (b as any).position ?? 0;
+      return pa - pb;
+    });
+
+    let filteredItems = sortedItems;
     if (status) {
-      filteredItems = list.items.filter(item => item.status === status);
+      filteredItems = sortedItems.filter((item) => item.status === status);
     }
 
-    // Populate ingredient details
     await list.populate('items.ingredientId');
     await list.populate('items.recipeId');
 
@@ -161,10 +166,10 @@ export class ShoppingListService {
       );
 
       return list;
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error(
-        `Failed to add ingredients from recipe ${dto.recipeId} for user ${userId}: ${error.message}`,
-        error.stack,
+        `Failed to add ingredients from recipe ${dto.recipeId} for user ${userId}: ${(error as Error)?.message}`,
+        (error as Error)?.stack,
       );
       throw error;
     }
@@ -301,5 +306,91 @@ export class ShoppingListService {
       totalListsCreated: totalLists,
       totalListsArchived: archivedLists,
     };
+  }
+
+  async reorderItems(
+    userId: string,
+    orderedKeys: string[],
+  ): Promise<{ success: boolean; reorderedCount: number }> {
+    if (!Array.isArray(orderedKeys) || orderedKeys.length === 0) {
+      return { success: true, reorderedCount: 0 };
+    }
+    // Defensive cap to prevent abuse on very large arrays.
+    const MAX = 5000;
+    const keys = orderedKeys.slice(0, MAX);
+
+    const buildKey = (item: ShoppingListItemData): string => {
+      const idPart = item.ingredientId
+        ? item.ingredientId.toString()
+        : item.ingredientName || 'x';
+      const ts = item.addedAt ? new Date(item.addedAt).toISOString() : '';
+      return `${idPart}:${ts}`;
+    };
+
+    // Optimistic-concurrency retry on Mongoose VersionError.
+    const MAX_RETRIES = 3;
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      const list = await this.getCurrentList(userId);
+      const originalItems = list.items;
+      const n = originalItems.length;
+
+      // Map composite key -> array index (first occurrence wins).
+      const keyToIndex = new Map<string, number>();
+      for (let i = 0; i < n; i++) {
+        const k = buildKey(originalItems[i]);
+        if (!keyToIndex.has(k)) keyToIndex.set(k, i);
+      }
+
+      // De-dupe incoming keys & pick the touched indices in the requested order.
+      const seenKeys = new Set<string>();
+      const touchedIndicesInNewOrder: number[] = [];
+      for (const k of keys) {
+        if (typeof k !== 'string' || seenKeys.has(k)) continue;
+        const idx = keyToIndex.get(k);
+        if (idx === undefined) continue;
+        seenKeys.add(k);
+        touchedIndicesInNewOrder.push(idx);
+      }
+
+      if (touchedIndicesInNewOrder.length === 0) {
+        return { success: true, reorderedCount: 0 };
+      }
+
+      // Slots the touched items currently occupy (sorted ascending preserves
+      // un-touched items' absolute positions, so filtered-view reorders don't
+      // disturb purchased/other items the user didn't drag).
+      const slots = [...touchedIndicesInNewOrder].sort((a, b) => a - b);
+
+      const newItems = originalItems.slice();
+      for (let i = 0; i < slots.length; i++) {
+        newItems[slots[i]] = originalItems[touchedIndicesInNewOrder[i]];
+      }
+
+      // Recompute positions so subsequent sort-by-position is stable.
+      newItems.forEach((item, i) => {
+        (item as any).position = i;
+      });
+
+      list.items = newItems;
+      list.updatedAt = new Date();
+
+      try {
+        await list.save();
+        return {
+          success: true,
+          reorderedCount: touchedIndicesInNewOrder.length,
+        };
+      } catch (err: any) {
+        // Mongoose throws VersionError on concurrent writes; retry with fresh doc.
+        if (err?.name === 'VersionError' && attempt < MAX_RETRIES - 1) {
+          this.logger.warn(
+            `Shopping list reorder: VersionError, retry ${attempt + 1}/${MAX_RETRIES} for user ${userId}`,
+          );
+          continue;
+        }
+        throw err;
+      }
+    }
+    return { success: false, reorderedCount: 0 };
   }
 }

@@ -498,7 +498,7 @@ export class CookbookaiService {
 
     async findAllByUser(userId: string) {
         await this.reconcileUserRecipeStatuses(userId);
-        return await this.userRecipeModel.find(this.buildUserMatch(userId)).sort({ createdAt: -1 }).lean().exec();
+        return await this.userRecipeModel.find(this.buildUserMatch(userId)).sort({ order: 1, createdAt: -1, _id: -1 }).lean().exec();
     }
 
     async findById(id: string, userId: string) {
@@ -822,5 +822,41 @@ export class CookbookaiService {
             console.error('Error creating recipe:', error);
             return { success: false, message: 'An error occurred while creating the recipe.' };
         }
+    }
+
+    async reorderRecipes(
+        userId: string,
+        recipeIds: string[],
+    ): Promise<{ success: boolean; updated: number }> {
+        if (!Array.isArray(recipeIds) || recipeIds.length === 0) {
+            return { success: true, updated: 0 };
+        }
+        const MAX = 5000;
+        const seen = new Set<string>();
+        const deduped: string[] = [];
+        for (const id of recipeIds) {
+            if (typeof id !== 'string') continue;
+            if (!Types.ObjectId.isValid(id)) continue;
+            if (seen.has(id)) continue;
+            seen.add(id);
+            deduped.push(id);
+            if (deduped.length >= MAX) break;
+        }
+        if (deduped.length === 0) {
+            return { success: true, updated: 0 };
+        }
+
+        const userMatch = this.buildUserMatch(userId);
+        const ops = deduped.map((id, index) => ({
+            updateOne: {
+                filter: { _id: new Types.ObjectId(id), ...userMatch },
+                update: { $set: { order: index } },
+            },
+        }));
+        const result = await this.userRecipeModel.bulkWrite(ops, { ordered: false });
+        return {
+            success: true,
+            updated: result.modifiedCount ?? deduped.length,
+        };
     }
 }

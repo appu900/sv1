@@ -112,6 +112,9 @@ export class UserInventoryItem {
 
   @Prop({ default: false })
   isStaple: boolean; 
+
+  @Prop({ type: Number, default: 0, index: true })
+  position: number;
 }
 
 export type UserInventoryItemDocument = UserInventoryItem & Document;

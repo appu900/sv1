@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Put,
+  Patch,
   Delete,
   Body,
   Param,
@@ -66,10 +67,10 @@ export class ShoppingListController {
     
     try {
       return await this.shoppingListService.addIngredientsFromRecipe(userId, dto);
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error(
-        `Error adding ingredients from recipe: ${error.message}`,
-        error.stack,
+        `Error adding ingredients from recipe: ${(error as Error)?.message}`,
+        (error as Error)?.stack,
       );
       throw error;
     }
@@ -93,6 +94,20 @@ export class ShoppingListController {
     this.logger.log(`Archiving shopping list for user ${userId}`);
     
     return this.shoppingListService.archiveCurrentList(userId);
+  }
+
+  @Patch('reorder')
+  @HttpCode(HttpStatus.OK)
+  async reorderItems(
+    @Request() req,
+    @Body() dto: { orderedKeys?: string[] },
+  ) {
+    const userId = req.user._id || req.user.userId;
+    const keys = Array.isArray(dto?.orderedKeys) ? dto.orderedKeys : [];
+    this.logger.log(
+      `Reordering ${keys.length} shopping list items for user ${userId}`,
+    );
+    return this.shoppingListService.reorderItems(userId, keys);
   }
 
   @Put(':index')

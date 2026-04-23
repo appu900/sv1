@@ -324,6 +324,16 @@ export class InventoryController {
     await this.inventoryService.adminDeleteItem(itemId);
   }
 
+  @Patch('reorder')
+  @HttpCode(HttpStatus.OK)
+  async reorderItems(
+    @Request() req,
+    @Body() dto: { itemIds: string[] },
+  ) {
+    const userId = req.user._id || req.user.userId;
+    this.logger.log(`Reordering ${dto.itemIds?.length ?? 0} inventory items for user ${userId}`);
+    return this.inventoryService.reorderItems(userId, dto.itemIds || []);
+  }
 
   @Patch(':id')
   async updateItem(

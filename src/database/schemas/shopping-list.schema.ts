@@ -50,6 +50,9 @@ export class ShoppingListItemData {
 
   @Prop({ type: Date, default: Date.now })
   addedAt: Date;
+
+  @Prop({ type: Number, default: 0 })
+  position?: number;
 }
 
 export const ShoppingListItemDataSchema = SchemaFactory.createForClass(ShoppingListItemData);

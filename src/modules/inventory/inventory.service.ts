@@ -90,7 +90,7 @@ export class InventoryService {
       .find(filter)
       .populate('ingredientId', 'name heroImageUrl theme categoryId')
       .populate('categoryId', 'name')
-      .sort({ expiresAt: 1, createdAt: -1 })
+      .sort({ position: 1, expiresAt: 1, createdAt: -1 })
       .lean()
       .exec();
 
@@ -112,8 +112,8 @@ export class InventoryService {
     try {
       const cached = await this.redisService.get(cacheKey);
       if (cached) return JSON.parse(cached);
-    } catch (e) {
-      this.logger.warn('Cache read failed:', e?.message);
+    } catch (e: unknown) {
+      this.logger.warn('Cache read failed:', (e as Error)?.message);
     }
 
     const items = await this.inventoryModel
@@ -123,7 +123,7 @@ export class InventoryService {
       })
       .populate('ingredientId', 'name heroImageUrl theme categoryId')
       .populate('categoryId', 'name')
-      .sort({ expiresAt: 1, createdAt: -1 })
+      .sort({ position: 1, expiresAt: 1, createdAt: -1 })
       .lean()
       .exec();
 
@@ -172,8 +172,8 @@ export class InventoryService {
 
     try {
       await this.redisService.set(cacheKey, JSON.stringify(grouped), this.CACHE_TTL);
-    } catch (e) {
-      this.logger.warn('Cache write failed:', e?.message);
+    } catch (e: unknown) {
+      this.logger.warn('Cache write failed:', (e as Error)?.message);
     }
 
     return grouped as any;
@@ -635,9 +635,9 @@ export class InventoryService {
       this.logger.log(
         `Auto-added "${item.name}" to shopping list for user ${userId}`,
       );
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error(
-        `Failed to auto-add to shopping list: ${error.message}`,
+        `Failed to auto-add to shopping list: ${(error as Error)?.message}`,
       );
     }
   }
@@ -645,15 +645,15 @@ export class InventoryService {
   private async invalidateCache(userId: string): Promise<void> {
     try {
       await this.redisService.del(`${this.CACHE_PREFIX}:grouped:${userId}`);
-    } catch (e) {
-      this.logger.warn('Cache invalidation failed:', e?.message);
+    } catch (e: unknown) {
+      this.logger.warn('Cache invalidation failed:', (e as Error)?.message);
     }
     // Also clear the AI meal-suggestions cache so the next fetch re-computes
     // against the updated inventory instead of returning stale suggestions.
     try {
       await this.redisService.delByPattern(`inventory-ai:suggestions:quick:${userId}*`);
-    } catch (e) {
-      this.logger.warn('AI suggestions cache invalidation failed:', e?.message);
+    } catch (e: unknown) {
+      this.logger.warn('AI suggestions cache invalidation failed:', (e as Error)?.message);
     }
   }
 
@@ -818,5 +818,47 @@ export class InventoryService {
     await this.invalidateCache(item.userId.toString()).catch((e) =>
       this.logger.warn(`Cache invalidation failed after adminDelete: ${(e as Error).message}`),
     );
+  }
+
+  async reorderItems(
+    userId: string,
+    itemIds: string[],
+  ): Promise<{ success: boolean; updated: number }> {
+    if (!Array.isArray(itemIds) || itemIds.length === 0) {
+      return { success: true, updated: 0 };
+    }
+    const MAX = 5000;
+    const seen = new Set<string>();
+    const deduped: string[] = [];
+    for (const id of itemIds) {
+      if (typeof id !== 'string') continue;
+      if (!Types.ObjectId.isValid(id)) continue;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      deduped.push(id);
+      if (deduped.length >= MAX) break;
+    }
+    if (deduped.length === 0) {
+      return { success: true, updated: 0 };
+    }
+
+    const userOid = new Types.ObjectId(userId);
+    const ops = deduped.map((id, index) => ({
+      updateOne: {
+        filter: { _id: new Types.ObjectId(id), userId: userOid },
+        update: { $set: { position: index } },
+      },
+    }));
+
+    const result = await this.inventoryModel.bulkWrite(ops, { ordered: false });
+    await this.invalidateCache(userId).catch((e) =>
+      this.logger.warn(
+        `Cache invalidation failed after reorder: ${(e as Error).message}`,
+      ),
+    );
+    return {
+      success: true,
+      updated: result.modifiedCount ?? deduped.length,
+    };
   }
 }
