@@ -6,9 +6,12 @@ import {
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import {
-  KitchenScanUsage,
-  KitchenScanUsageDocument,
-} from '../../database/schemas/kitchen-scan-usage.schema';
+  SubscriptionUsage,
+  SubscriptionUsageDocument,
+} from '../../database/schemas/subscription-usage.schema';
+import { SubscriptionService } from '../subscription/subscription.service';
+import { PLANS, UNLIMITED } from '../subscription/subscription.constants';
+import { currentPeriod } from '../subscription/utils/period';
 
 export const KITCHEN_SCAN_LIFETIME_LIMIT = 5;
 
@@ -17,76 +20,139 @@ export class KitchenScanUsageService {
   private readonly logger = new Logger(KitchenScanUsageService.name);
 
   constructor(
-    @InjectModel(KitchenScanUsage.name)
-    private readonly model: Model<KitchenScanUsageDocument>,
+    @InjectModel(SubscriptionUsage.name)
+    private readonly usageModel: Model<SubscriptionUsageDocument>,
+    private readonly subscriptionService: SubscriptionService,
   ) {}
 
-  async getUsage(
-    userId: string,
-  ): Promise<{ count: number; remaining: number; limit: number; lastUsedAt?: Date }> {
-    const doc = await this.model
-      .findOne({ userId: new Types.ObjectId(userId) })
-      .lean()
+  private planLimit(plan: 'basic' | 'hero' | 'legend'): number {
+    return PLANS[plan].limits.kitchenScansPerMonth;
+  }
+
+  async getUsage(userId: string): Promise<{
+    count: number;
+    remaining: number | null;
+    limit: number | null;
+    unlimited: boolean;
+    plan: 'basic' | 'hero' | 'legend';
+    lastUsedAt?: Date;
+    periodKey: string;
+    periodEnd: Date;
+  }> {
+    const plan = await this.subscriptionService.getPlan(userId);
+    const limit = this.planLimit(plan);
+    const unlimited = limit === UNLIMITED;
+
+    const { periodKey, periodStart, periodEnd } = currentPeriod();
+    const uid = new Types.ObjectId(userId);
+    const doc = await this.usageModel
+      .findOneAndUpdate(
+        { userId: uid, periodKey },
+        { $setOnInsert: { userId: uid, periodKey, periodStart, periodEnd } },
+        { upsert: true, new: true, setDefaultsOnInsert: true },
+      )
       .exec();
-    const count = doc?.count ?? 0;
+
+    const count = doc?.kitchenScansUsed ?? 0;
     return {
       count,
-      remaining: Math.max(0, KITCHEN_SCAN_LIFETIME_LIMIT - count),
-      limit: KITCHEN_SCAN_LIFETIME_LIMIT,
-      lastUsedAt: doc?.lastUsedAt,
+      remaining: unlimited ? null : Math.max(0, limit - count),
+      limit: unlimited ? null : limit,
+      unlimited,
+      plan,
+      lastUsedAt: (doc as any)?.updatedAt,
+      periodKey,
+      periodEnd,
     };
   }
 
- 
-  async reserve(userId: string): Promise<{ count: number; remaining: number; limit: number }> {
-    const uid = new Types.ObjectId(userId);
-    const updated = await this.model
-      .findOneAndUpdate(
-        { userId: uid, count: { $lt: KITCHEN_SCAN_LIFETIME_LIMIT } },
-        { $inc: { count: 1 }, $set: { lastUsedAt: new Date() }, $setOnInsert: { userId: uid } },
-        { upsert: true, new: true },
-      )
-      .exec()
-      .catch((err: any) => {
-        if (err?.code === 11000) return null;
-        throw err;
-      });
+  async reserve(userId: string): Promise<{
+    count: number;
+    remaining: number;
+    limit: number;
+    unlimited: boolean;
+    plan: 'basic' | 'hero' | 'legend';
+  }> {
+    const plan = await this.subscriptionService.getPlan(userId);
+    const limit = this.planLimit(plan);
+    const unlimited = limit === UNLIMITED;
 
-    if (updated && updated.count <= KITCHEN_SCAN_LIFETIME_LIMIT) {
+    const uid = new Types.ObjectId(userId);
+    const { periodKey, periodStart, periodEnd } = currentPeriod();
+
+    if (unlimited) {
+      const doc = await this.usageModel
+        .findOneAndUpdate(
+          { userId: uid, periodKey },
+          {
+            $inc: { kitchenScansUsed: 1 },
+            $setOnInsert: { userId: uid, periodKey, periodStart, periodEnd },
+          },
+          { upsert: true, new: true },
+        )
+        .exec();
       return {
-        count: updated.count,
-        remaining: Math.max(0, KITCHEN_SCAN_LIFETIME_LIMIT - updated.count),
-        limit: KITCHEN_SCAN_LIFETIME_LIMIT,
+        count: doc!.kitchenScansUsed,
+        remaining: Number.POSITIVE_INFINITY,
+        limit: UNLIMITED,
+        unlimited: true,
+        plan,
       };
     }
 
-    // Retry path after duplicate-key race
-    const retry = await this.model
-      .findOneAndUpdate(
-        { userId: uid, count: { $lt: KITCHEN_SCAN_LIFETIME_LIMIT } },
-        { $inc: { count: 1 }, $set: { lastUsedAt: new Date() } },
-        { new: true },
+    await this.usageModel
+      .updateOne(
+        { userId: uid, periodKey },
+        { $setOnInsert: { userId: uid, periodKey, periodStart, periodEnd } },
+        { upsert: true },
       )
       .exec();
 
-    if (!retry) {
-      throw new ForbiddenException(
-        `You have reached the limit of ${KITCHEN_SCAN_LIFETIME_LIMIT} shopping-list photo scans.`,
-      );
-    }
-    return {
-      count: retry.count,
-      remaining: Math.max(0, KITCHEN_SCAN_LIFETIME_LIMIT - retry.count),
-      limit: KITCHEN_SCAN_LIFETIME_LIMIT,
+    const planLabel = PLANS[plan].label;
+    const denyLimit = (): never => {
+      throw new ForbiddenException({
+        code: 'LIMIT_REACHED',
+        limit: 'kitchenScansPerMonth',
+        cap: limit,
+        plan,
+        message: `You have used all ${limit} of your kitchen photo scans this month on the ${planLabel} plan. Upgrade to keep scanning.`,
+      });
     };
+
+    try {
+      const doc = await this.usageModel
+        .findOneAndUpdate(
+          {
+            userId: uid,
+            periodKey,
+            kitchenScansUsed: { $lte: limit - 1 },
+          },
+          { $inc: { kitchenScansUsed: 1 } },
+          { new: true },
+        )
+        .exec();
+      if (!doc || doc.kitchenScansUsed > limit) denyLimit();
+      return {
+        count: doc!.kitchenScansUsed,
+        remaining: Math.max(0, limit - doc!.kitchenScansUsed),
+        limit,
+        unlimited: false,
+        plan,
+      };
+    } catch (err: any) {
+      if (err?.code === 11000) denyLimit();
+      throw err;
+    }
   }
 
   async rollback(userId: string): Promise<void> {
+    const uid = new Types.ObjectId(userId);
+    const { periodKey } = currentPeriod();
     try {
-      await this.model
+      await this.usageModel
         .updateOne(
-          { userId: new Types.ObjectId(userId), count: { $gt: 0 } },
-          { $inc: { count: -1 } },
+          { userId: uid, periodKey, kitchenScansUsed: { $gte: 1 } },
+          { $inc: { kitchenScansUsed: -1 } },
         )
         .exec();
     } catch (err: any) {

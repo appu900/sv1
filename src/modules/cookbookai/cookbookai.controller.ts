@@ -14,6 +14,8 @@ import { User, UserDocument } from 'src/database/schemas/user.auth.schema';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ImageUploadService } from '../image-upload/image-upload.service';
 import { COOKBOOKAI_FREE_GENERATION_LIMIT } from './cookbookai.constants';
+import { SubscriptionService } from '../subscription/subscription.service';
+import { UNLIMITED } from '../subscription/subscription.constants';
 
 @Controller('cookbookai')
 export class CookbookaiController {
@@ -23,6 +25,7 @@ export class CookbookaiController {
         private readonly redisService: RedisService,
         private readonly imageUploadService: ImageUploadService,
         @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
+        private readonly subscriptionService: SubscriptionService,
     ) { }
 
     private resolveUserId(req: any): string {
@@ -35,8 +38,64 @@ export class CookbookaiController {
         return String(resolved || '');
     }
 
-    private getGenerationLimitMessage(): string {
-        return `You have used all ${COOKBOOKAI_FREE_GENERATION_LIMIT} of your free recipe generations. Stay tuned for our subscription plan!`;
+    private getGenerationLimitMessage(used: number, limit: number, plan: string): string {
+        if (plan === 'basic') {
+            return `You have used all ${limit} of your monthly AI recipe generations. Upgrade to Saveful Hero or Legend for more!`;
+        }
+        return `You have reached this month's limit of ${limit} AI recipes on your ${plan} plan.`;
+    }
+
+    /**
+     * Return a compact quota block the app can use to show "X left — upgrade
+     * to continue" style warnings inline with success responses.
+     */
+    private async getAiMealQuota(userId: string) {
+        const snapshot = await this.subscriptionService.getSubscriptionSnapshot(userId);
+        const { used, limit, remaining } = await this.subscriptionService.checkLimit(
+            userId,
+            'aiMealsUsed',
+        );
+        const unlimited = limit === UNLIMITED;
+        return {
+            plan: snapshot.plan,
+            used,
+            limit: unlimited ? null : limit,
+            remaining: unlimited ? null : remaining,
+            unlimited,
+            // True when the user is within the last 2 generations — UI can
+            // render a yellow banner / toast.
+            warn: !unlimited && remaining <= 2,
+            // True when the user has exhausted their quota and the next call
+            // will be rejected with LIMIT_REACHED.
+            exhausted: !unlimited && remaining <= 0,
+        };
+    }
+
+    /**
+     * Subscription-aware monthly AI meal quota check.
+     * Returns an error payload the frontend can show as a paywall trigger, or
+     * null when the user is under quota.
+     */
+    private async enforceAiMealQuota(userId: string) {
+        const snapshot = await this.subscriptionService.getSubscriptionSnapshot(userId);
+        const { limit, used, remaining } = await this.subscriptionService.checkLimit(
+            userId,
+            'aiMealsUsed',
+        );
+        if (limit !== UNLIMITED && used >= limit) {
+            return {
+                success: false,
+                code: 'LIMIT_REACHED',
+                limit: 'aiMealsPerMonth',
+                message: this.getGenerationLimitMessage(used, limit, snapshot.plan),
+                limitReached: true,
+                plan: snapshot.plan,
+                count: used,
+                cap: limit,
+                remaining,
+            };
+        }
+        return null;
     }
 
     @Get()
@@ -103,40 +162,59 @@ export class CookbookaiController {
                 };
             }
 
-            // Lifetime free-generation limit across all recipe entry points.
-            const totalCount = await this.cookbookaiService.getTotalUserRecipeCount(userId);
-            if (totalCount >= COOKBOOKAI_FREE_GENERATION_LIMIT) {
-                return {
-                    success: false,
-                    message: this.getGenerationLimitMessage(),
-                    limitReached: true,
-                    count: totalCount,
-                    limit: COOKBOOKAI_FREE_GENERATION_LIMIT,
-                };
+          
+            const existingCookbookCount =
+                await this.cookbookaiService.getTotalUserRecipeCount(userId);
+            await this.subscriptionService.enforceLiveLimit(
+                userId,
+                'cookbooks',
+                existingCookbookCount,
+                1,
+            );
+
+            // Monthly AI meal quota enforcement (backend source of truth).
+            const quotaError = await this.enforceAiMealQuota(userId);
+            if (quotaError) return quotaError;
+
+        
+            await this.subscriptionService.incrementUsage(userId, 'aiMealsUsed');
+
+        
+            let pendingRecipe: any;
+            let jobId: string;
+            try {
+                pendingRecipe = await this.cookbookaiService.createPendingRecipe(
+                    userId,
+                    body.message,
+                );
+                jobId = await this.cookbookaiProducer.enqueueRecipeExtraction(
+                    userId,
+                    body.message,
+                    String(pendingRecipe._id),
+                );
+            } catch (e) {
+                await this.subscriptionService
+                    .refundUsage(userId, 'aiMealsUsed')
+                    .catch(() => undefined);
+                throw e;
             }
 
-            // Create a pending row immediately so the app can show a stable
-            // loading card while background generation runs.
-            const pendingRecipe = await this.cookbookaiService.createPendingRecipe(
-                userId,
-                body.message,
-            );
-
-            // Queue the recipe extraction as a background job linked to this row.
-            const jobId = await this.cookbookaiProducer.enqueueRecipeExtraction(
-                userId,
-                body.message,
-                String(pendingRecipe._id),
-            );
+            const quota = await this.getAiMealQuota(userId);
 
             return {
                 success: true,
                 queued: true,
                 jobId,
                 data: pendingRecipe,
-                message: 'Your recipe is being generated! We\'ll send you a notification when it\'s ready.',
+                quota,
+                message: quota.warn
+                    ? `Recipe queued. ${quota.remaining} AI recipe${quota.remaining === 1 ? '' : 's'} left this month — upgrade for more.`
+                    : 'Your recipe is being generated! We\'ll send you a notification when it\'s ready.',
             };
-        } catch (error) {
+        } catch (error: any) {
+            // Let paywall / auth / validation errors propagate with their
+            // original status so the client can open the correct paywall.
+            if (error?.status && error.status !== 500) throw error;
             console.error('Error in addRecipe:', error);
             return {
                 success: false,
@@ -149,12 +227,16 @@ export class CookbookaiController {
     @UseGuards(JwtAuthGuard, RolesGuard)
     async getAiGenerationCount(@Request() req) {
         const userId = this.resolveUserId(req);
-        const count = await this.cookbookaiService.getTotalUserRecipeCount(userId);
+        const { used, limit, remaining } = await this.subscriptionService.checkLimit(
+            userId,
+            'aiMealsUsed',
+        );
         return {
             success: true,
-            count,
-            limit: COOKBOOKAI_FREE_GENERATION_LIMIT,
-            remaining: Math.max(0, COOKBOOKAI_FREE_GENERATION_LIMIT - count),
+            count: used,
+            limit: limit === UNLIMITED ? null : limit,
+            remaining: limit === UNLIMITED ? null : remaining,
+            unlimited: limit === UNLIMITED,
         };
     }
 
@@ -171,45 +253,63 @@ export class CookbookaiController {
                 };
             }
 
-            // Lifetime free-generation limit across all recipe entry points.
-            const existingCount = await this.cookbookaiService.getTotalUserRecipeCount(userId);
-            if (existingCount >= COOKBOOKAI_FREE_GENERATION_LIMIT) {
-                return {
-                    success: false,
-                    message: this.getGenerationLimitMessage(),
-                    limitReached: true,
-                    count: existingCount,
-                    limit: COOKBOOKAI_FREE_GENERATION_LIMIT,
-                };
+            // Cookbook total-count cap (basic = 5 saved recipes).
+            const existingCookbookCount =
+                await this.cookbookaiService.getTotalUserRecipeCount(userId);
+            await this.subscriptionService.enforceLiveLimit(
+                userId,
+                'cookbooks',
+                existingCookbookCount,
+                1,
+            );
+
+            // Monthly AI meal quota enforcement (backend source of truth).
+            const quotaError = await this.enforceAiMealQuota(userId);
+            if (quotaError) return quotaError;
+
+            await this.subscriptionService.incrementUsage(userId, 'aiMealsUsed');
+
+            let pendingRecipe: any;
+            let jobId: string;
+            try {
+                pendingRecipe = await this.cookbookaiService.createPendingRecipe(
+                    userId,
+                    `AI Recipe from: ${body.ingredients.slice(0, 5).join(', ')}${body.ingredients.length > 5 ? '...' : ''}`,
+                    'ai_ingredients',
+                );
+
+                await this.cookbookaiService.updateRecipeSource(String(pendingRecipe._id), userId, 'ai_ingredients');
+
+                const country = await this.resolveUserCountry(userId);
+
+                jobId = await this.cookbookaiProducer.enqueueRecipeFromIngredients(
+                    userId,
+                    body.ingredients,
+                    body.preference,
+                    String(pendingRecipe._id),
+                    country,
+                );
+            } catch (e) {
+                await this.subscriptionService
+                    .refundUsage(userId, 'aiMealsUsed')
+                    .catch(() => undefined);
+                throw e;
             }
 
-            const pendingRecipe = await this.cookbookaiService.createPendingRecipe(
-                userId,
-                `AI Recipe from: ${body.ingredients.slice(0, 5).join(', ')}${body.ingredients.length > 5 ? '...' : ''}`,
-                'ai_ingredients',
-            );
-
-            await this.cookbookaiService.updateRecipeSource(String(pendingRecipe._id), userId, 'ai_ingredients');
-
-            const country = await this.resolveUserCountry(userId);
-
-            const jobId = await this.cookbookaiProducer.enqueueRecipeFromIngredients(
-                userId,
-                body.ingredients,
-                body.preference,
-                String(pendingRecipe._id),
-                country,
-            );
+            const quota = await this.getAiMealQuota(userId);
 
             return {
                 success: true,
                 queued: true,
                 jobId,
                 data: pendingRecipe,
-                message: 'Your recipe is being generated! We\'ll notify you when it\'s ready.',
-                remaining: Math.max(0, COOKBOOKAI_FREE_GENERATION_LIMIT - existingCount - 1),
+                quota,
+                message: quota.warn
+                    ? `Recipe queued. ${quota.remaining} AI recipe${quota.remaining === 1 ? '' : 's'} left this month — upgrade for more.`
+                    : 'Your recipe is being generated! We\'ll notify you when it\'s ready.',
             };
-        } catch (error) {
+        } catch (error: any) {
+            if (error?.status && error.status !== 500) throw error;
             console.error('Error in generateFromIngredients:', error);
             return {
                 success: false,
@@ -264,7 +364,11 @@ export class CookbookaiController {
     }
 
     @Get("/dev-reset-limits")
+    @Roles('ADMIN')
+    @UseGuards(JwtAuthGuard, RolesGuard)
     async devResetLimits() {
+        // Gated behind admin role. Previously unauthenticated, which let
+        // anyone wipe cookbookai rate-limit state for every user.
         await this.redisService.delByPattern(`user:*:cookbookai*`);
         return { message: "All cookbookai rate limits cleared." };
     }

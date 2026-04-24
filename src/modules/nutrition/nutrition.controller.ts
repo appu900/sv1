@@ -22,6 +22,10 @@ import {
 import { FileInterceptor, FileFieldsInterceptor } from '@nestjs/platform-express';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import {
+  RequireFeature,
+  SubscriptionGuard,
+} from '../subscription/subscription.guard';
 import { FoodItemService } from './food-item.service';
 import { UserCustomFoodService } from './user-custom-food.service';
 import { NutritionService } from './nutrition.service';
@@ -62,7 +66,8 @@ import { User, UserDocument } from '../../database/schemas/user.auth.schema';
 
 
 @Controller('nutrition')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, SubscriptionGuard)
+@RequireFeature('nutrition_insights')
 export class NutritionController {
   private readonly logger = new Logger(NutritionController.name);
 
@@ -116,6 +121,7 @@ export class NutritionController {
  
   @Post('foods/barcode')
   @HttpCode(HttpStatus.OK)
+  @RequireFeature('barcode_scanning')
   async lookupBarcode(@Request() req: any, @Body() dto: BarcodeLookupDto) {
     const userId = this.resolveUserId(req);
     const country = await this.resolveUserCountry(userId);
@@ -353,7 +359,6 @@ export class NutritionController {
       country,
     );
 
-    // 2) Upload photo to S3 (non-fatal if it fails)
     let imageUrl: string | null = null;
     try {
       imageUrl = await this.imageUpload.uploadFile(file, 'photo-food');
@@ -361,7 +366,6 @@ export class NutritionController {
       this.logger.warn(`Failed to upload food photo: ${(err as Error).message}`);
     }
 
-    // 3) Save as a user custom food with AI-estimated nutrition
     const customFood = await this.userCustomFoodService.createFromPhotoAnalysis(
       userId,
       {

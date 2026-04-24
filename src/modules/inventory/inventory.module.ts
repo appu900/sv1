@@ -30,6 +30,10 @@ import {
   KitchenScanUsage,
   KitchenScanUsageSchema,
 } from '../../database/schemas/kitchen-scan-usage.schema';
+import {
+  SubscriptionUsage,
+  SubscriptionUsageSchema,
+} from '../../database/schemas/subscription-usage.schema';
 import { RedisModule } from '../../redis/redis.module';
 import { NotificationModule } from '../notification/notification.module';
 
@@ -43,6 +47,7 @@ import { NotificationModule } from '../notification/notification.module';
       { name: ShoppingList.name, schema: ShoppingListSchema },
       { name: User.name, schema: UserSchema },
       { name: KitchenScanUsage.name, schema: KitchenScanUsageSchema },
+      { name: SubscriptionUsage.name, schema: SubscriptionUsageSchema },
     ]),
     RedisModule,
     NotificationModule,

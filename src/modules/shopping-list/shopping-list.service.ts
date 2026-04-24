@@ -30,6 +30,13 @@ export class ShoppingListService {
     private readonly userEventService: UserEventService,
   ) {}
 
+  /** Count of all shopping lists (active + archived) owned by the user. */
+  async countUserLists(userId: string): Promise<number> {
+    return this.shoppingListModel.countDocuments({
+      userId: new Types.ObjectId(userId),
+    });
+  }
+
   async getCurrentList(userId: string): Promise<ShoppingListDocument> {
     let list = await this.shoppingListModel
       .findOne({

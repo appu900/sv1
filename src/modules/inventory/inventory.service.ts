@@ -180,6 +180,13 @@ export class InventoryService {
   }
 
 
+  async countActiveItems(userId: string): Promise<number> {
+    return this.inventoryModel.countDocuments({
+      userId: new Types.ObjectId(userId),
+      isDiscarded: { $ne: true },
+    });
+  }
+
   async addItem(
     userId: string,
     dto: AddInventoryItemDto,

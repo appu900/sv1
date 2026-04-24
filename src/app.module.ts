@@ -40,6 +40,7 @@ import { NutritionModule } from './modules/nutrition/nutrition.module';
 import { MealPlanModule } from './modules/meal-plan/meal-plan.module';
 import { UserEventsModule } from './modules/user-events/user-events.module';
 import { AIInteractionModule } from './modules/ai-interaction/ai-interaction.module';
+import { SubscriptionModule } from './modules/subscription/subscription.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
@@ -114,6 +115,7 @@ import { AIInteractionModule } from './modules/ai-interaction/ai-interaction.mod
     MealPlanModule,
     UserEventsModule,
     AIInteractionModule,
+    SubscriptionModule,
   ],
   controllers: [AppController],
   providers: [AppService],

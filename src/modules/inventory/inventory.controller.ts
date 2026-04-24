@@ -22,7 +22,6 @@ import { InventoryService } from './inventory.service';
 import { InventoryAiService } from './inventory-ai.service';
 import {
   KitchenScanUsageService,
-  KITCHEN_SCAN_LIFETIME_LIMIT,
 } from './kitchen-scan-usage.service';
 import { AddInventoryItemDto } from './dto/add-inventory-item.dto';
 import { BatchAddInventoryItemsDto } from './dto/batch-add-inventory-items.dto';
@@ -41,6 +40,7 @@ import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/role.decorators';
 import { UserRole } from '../../database/schemas/user.auth.schema';
 import { InventoryItemSource } from '../../database/schemas/user-inventory.schema';
+import { SubscriptionService } from '../subscription/subscription.service';
 
 @Controller('inventory')
 @UseGuards(JwtAuthGuard)
@@ -51,6 +51,7 @@ export class InventoryController {
     private readonly inventoryService: InventoryService,
     private readonly inventoryAiService: InventoryAiService,
     private readonly kitchenScanUsage: KitchenScanUsageService,
+    private readonly subscriptionService: SubscriptionService,
   ) {}
 
 
@@ -154,7 +155,15 @@ export class InventoryController {
   async addItem(@Request() req, @Body() dto: AddInventoryItemDto) {
     const userId = req.user._id || req.user.userId;
     this.logger.log(`Adding inventory item for user ${userId}`);
-    return this.inventoryService.addItem(userId, dto);
+    const current = await this.inventoryService.countActiveItems(userId);
+    const quota = await this.subscriptionService.enforceLiveLimit(
+      userId,
+      'ingredients',
+      current,
+      1,
+    );
+    const item = await this.inventoryService.addItem(userId, dto);
+    return { item, quota };
   }
 
   @Post('batch')
@@ -164,7 +173,15 @@ export class InventoryController {
     this.logger.log(
       `Batch adding ${dto.items.length} inventory items for user ${userId}`,
     );
-    return this.inventoryService.addBatch(userId, dto);
+    const current = await this.inventoryService.countActiveItems(userId);
+    const quota = await this.subscriptionService.enforceLiveLimit(
+      userId,
+      'ingredients',
+      current,
+      dto.items.length,
+    );
+    const items = await this.inventoryService.addBatch(userId, dto);
+    return { items, quota };
   }
 
   @Post('voice-add')
@@ -208,6 +225,14 @@ export class InventoryController {
       `Confirming ${dto.items.length} voice-parsed items for user ${userId}`,
     );
 
+    const current = await this.inventoryService.countActiveItems(userId);
+    const quota = await this.subscriptionService.enforceLiveLimit(
+      userId,
+      'ingredients',
+      current,
+      dto.items.length,
+    );
+
     const itemsWithSource = {
       items: dto.items.map((item) => ({
         ...item,
@@ -215,7 +240,11 @@ export class InventoryController {
       })),
     };
 
-    return this.inventoryService.addBatch(userId, itemsWithSource as any);
+    const items = await this.inventoryService.addBatch(
+      userId,
+      itemsWithSource as any,
+    );
+    return { items, quota };
   }
 
   @Get('photos/scan-usage')
@@ -262,7 +291,7 @@ export class InventoryController {
 
     const reservation = await this.kitchenScanUsage.reserve(userId);
     this.logger.log(
-      `Scanning ${images.length} shopping-list photo(s) for user ${userId} (usage ${reservation.count}/${KITCHEN_SCAN_LIFETIME_LIMIT})`,
+      `Scanning ${images.length} shopping-list photo(s) for user ${userId} (usage ${reservation.count}/${reservation.unlimited ? '∞' : reservation.limit} plan=${reservation.plan})`,
     );
 
     let parsedItems;
@@ -294,6 +323,10 @@ export class InventoryController {
     }
 
     const now = Date.now();
+    const remainingNum =
+      typeof reservation.remaining === 'number' && Number.isFinite(reservation.remaining)
+        ? reservation.remaining
+        : null;
     return {
       parsedItems: parsedItems.map((item) => ({
         ...item,
@@ -305,8 +338,18 @@ export class InventoryController {
       imagesProcessed: images.length,
       usage: {
         count: reservation.count,
-        remaining: reservation.remaining,
-        limit: reservation.limit,
+        remaining: reservation.unlimited ? null : remainingNum,
+        limit: reservation.unlimited ? null : reservation.limit,
+        unlimited: reservation.unlimited,
+        plan: reservation.plan,
+        warn: !reservation.unlimited && remainingNum !== null && remainingNum <= 1,
+        warningMessage: reservation.unlimited
+          ? undefined
+          : remainingNum !== null && remainingNum <= 0
+          ? 'This was your last photo scan this month. Upgrade to keep scanning.'
+          : remainingNum !== null && remainingNum <= 1
+          ? `Only ${remainingNum} photo scan left this month — upgrade to keep scanning.`
+          : undefined,
       },
     };
   }
@@ -330,7 +373,17 @@ export class InventoryController {
 
     const parsedItems = await this.inventoryAiService.parseVoiceTranscript(transcript, country, userId);
 
-    // Merge back the original ingredientId hint if the AI didn't resolve it
+    // Enforce the plan `ingredients` cap against the live count. Without
+    // this, the /from-shopping-list route bypasses the cap that /batch and
+    // /voice-confirm already enforce.
+    const current = await this.inventoryService.countActiveItems(userId);
+    const quota = await this.subscriptionService.enforceLiveLimit(
+      userId,
+      'ingredients',
+      current,
+      parsedItems.length,
+    );
+
     const itemsWithSource = {
       items: parsedItems.map((parsed, idx) => ({
         ...parsed,
@@ -340,7 +393,8 @@ export class InventoryController {
       })),
     };
 
-    return this.inventoryService.addBatch(userId, itemsWithSource as any);
+    const items = await this.inventoryService.addBatch(userId, itemsWithSource as any);
+    return { items, quota };
   }
 
   @Post('consume')

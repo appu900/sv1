@@ -21,13 +21,17 @@ import { AddIngredientsFromRecipeDto } from './dto/add-ingredients-from-recipe.d
 import { BatchUpdateItemsDto } from './dto/batch-update-items.dto';
 import { GetShoppingListQueryDto } from './dto/get-shopping-list-query.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { SubscriptionService } from '../subscription/subscription.service';
 
 @Controller('shopping-list')
 @UseGuards(JwtAuthGuard)
 export class ShoppingListController {
   private readonly logger = new Logger(ShoppingListController.name);
 
-  constructor(private readonly shoppingListService: ShoppingListService) {}
+  constructor(
+    private readonly shoppingListService: ShoppingListService,
+    private readonly subscriptionService: SubscriptionService,
+  ) {}
 
   @Get()
   async getShoppingList(@Request() req, @Query() query: GetShoppingListQueryDto) {
@@ -92,8 +96,20 @@ export class ShoppingListController {
   async archiveCurrentList(@Request() req) {
     const userId = req.user._id || req.user.userId;
     this.logger.log(`Archiving shopping list for user ${userId}`);
-    
-    return this.shoppingListService.archiveCurrentList(userId);
+
+    // Count the user's total lists (active + archived). Archiving creates a
+    // fresh active list, so enforce the plan cap (basic = 5 lists).
+    const existingLists =
+      await this.shoppingListService.countUserLists(userId);
+    const quota = await this.subscriptionService.enforceLiveLimit(
+      userId,
+      'shoppingLists',
+      existingLists,
+      1,
+    );
+
+    const result = await this.shoppingListService.archiveCurrentList(userId);
+    return { ...(result as any), quota };
   }
 
   @Patch('reorder')
