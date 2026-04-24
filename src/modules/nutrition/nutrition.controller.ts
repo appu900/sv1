@@ -96,10 +96,11 @@ export class NutritionController {
 
   @Get('foods/search')
   async searchFoods(@Request() req: any, @Query() query: FoodSearchQueryDto) {
-    this.resolveUserId(req); // ensure authenticated user
+    const userId = this.resolveUserId(req); // ensure authenticated user
+    const country = await this.resolveUserCountry(userId);
     return this.hydraSearch.search(query.q ?? '', {
       limit: query.limit ?? 20,
-      locale: query.locale,
+      locale: query.locale ?? country,
     });
   }
 
@@ -115,8 +116,10 @@ export class NutritionController {
  
   @Post('foods/barcode')
   @HttpCode(HttpStatus.OK)
-  async lookupBarcode(@Body() dto: BarcodeLookupDto) {
-    const result = await this.barcodeLookup.lookup(dto.barcode);
+  async lookupBarcode(@Request() req: any, @Body() dto: BarcodeLookupDto) {
+    const userId = this.resolveUserId(req);
+    const country = await this.resolveUserCountry(userId);
+    const result = await this.barcodeLookup.lookupForCountry(dto.barcode, country);
     if (!result) {
       this.logger.warn(`Barcode ${dto.barcode} not found in any data source`);
       throw new NotFoundException(
@@ -154,7 +157,8 @@ export class NutritionController {
     @Request() req: any,
     @UploadedFiles() files: { image?: Express.Multer.File[]; barcode?: Express.Multer.File[]; nutrition?: Express.Multer.File[]; front?: Express.Multer.File[] },
   ) {
-    this.resolveUserId(req);
+    const userId = this.resolveUserId(req);
+    const country = await this.resolveUserCountry(userId);
 
     const barcodeFile = files?.barcode?.[0];
     const nutritionFile = files?.nutrition?.[0];
@@ -201,7 +205,7 @@ export class NutritionController {
 
     // 2) If AI found a barcode, check if product already exists in DB
     if (analysis.barcode) {
-      const existing = await this.barcodeLookup.lookup(analysis.barcode);
+      const existing = await this.barcodeLookup.lookupForCountry(analysis.barcode, country);
       if (existing) {
         this.logger.log(
           `Image analysis found barcode ${analysis.barcode} — returning existing product`,
@@ -274,16 +278,18 @@ export class NutritionController {
     @Query('limit') limit?: string,
     @Query('locale') locale?: string,
   ) {
-    this.resolveUserId(req);
+    const userId = this.resolveUserId(req);
 
     if (!file || !file.buffer || file.buffer.length === 0) {
       throw new BadRequestException('Image file is required');
     }
 
+    const country = await this.resolveUserCountry(userId);
     const base64 = file.buffer.toString('base64');
     const identified = await this.nutritionAi.identifyFoodFromImage(
       base64,
       file.mimetype,
+      country,
     );
 
     if (!identified.primaryFood) {
@@ -296,7 +302,7 @@ export class NutritionController {
 
     const searchResults = await this.hydraSearch.search(
       identified.primaryFood,
-      { limit: safeLimit, locale: locale ?? undefined },
+      { limit: safeLimit, locale: locale ?? country ?? undefined },
     );
 
     return {

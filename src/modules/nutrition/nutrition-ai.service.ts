@@ -34,6 +34,24 @@ export interface PhotoFoodAnalysis {
   source: string;
 }
 
+const TITLE_REGION_PATTERN = /\b(India|Indian|Australia|Australian|United States|American|United Kingdom|British|England|English|Canada|Canadian|China|Chinese|Japan|Japanese|South Korea|Korean|Singapore|Singaporean|United Arab Emirates|UAE|Emirati|Germany|German|France|French|New Zealand)\b/gi;
+
+function buildCuisineNamingGuidance(country?: string): string {
+  const ctx = getCuisineContext(country);
+  if (ctx.countryName === 'Global') {
+    return 'Use the most common, searchable English name for the dish or ingredient. If a regional dish appears, use the best-known transliteration or international name.';
+  }
+
+  return `Use the most common, searchable English name for foods the user is likely familiar with in ${ctx.countryName}. If a regional dish appears, use the best-known transliteration or international name.`;
+}
+
+function sanitizeFoodName(name: string): string {
+  return name
+    .replace(TITLE_REGION_PATTERN, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
 @Injectable()
 export class NutritionAiService {
   private readonly logger = new Logger(NutritionAiService.name);
@@ -150,6 +168,7 @@ Return JSON:
   async identifyFoodFromImage(
     imageBase64: string,
     mimeType: string,
+    country?: string,
   ): Promise<{ foods: string[]; primaryFood: string }> {
     if (!this.openai) {
       throw new ServiceUnavailableException(
@@ -158,13 +177,15 @@ Return JSON:
     }
 
     this.logger.log('Identifying food from image with AI Vision...');
+    const ctx = getCuisineContext(country);
 
     const response = await this.openai.chat.completions.create({
       model: 'gpt-4.1',
       messages: [
         {
           role: 'system',
-          content: `You are a food identification engine for Saveful, a food tracking app used in India.
+          content: `You are a food identification engine for Saveful, a global food tracking app.
+The user is located in ${ctx.countryName}.
 Given a photo of food, identify what food items are visible.
 
 RULES:
@@ -173,7 +194,7 @@ RULES:
 3. If multiple distinct foods are visible, list each separately.
 4. The "primaryFood" should be the most prominent/main item.
 5. Keep names short and searchable — no long descriptions.
-6. For Indian foods, use common English transliterations (e.g. "dal tadka", "roti", "biryani").
+6. ${buildCuisineNamingGuidance(country)}
 7. If you see a packaged product, return the product name.
 8. If the image is unclear or not food, return an empty foods array.
 
@@ -227,12 +248,13 @@ Return JSON:
     const foods: string[] = Array.isArray(parsed.foods)
       ? parsed.foods
           .filter((f: unknown) => typeof f === 'string' && f.trim().length > 0)
-          .map((f: string) => f.trim().slice(0, 100))
+          .map((f: string) => sanitizeFoodName(f.trim()).slice(0, 100))
+          .filter((f: string) => f.length > 0)
           .slice(0, 10)
       : [];
     const primaryFood: string =
       typeof parsed.primaryFood === 'string' && parsed.primaryFood.trim().length > 0
-        ? parsed.primaryFood.trim().slice(0, 100)
+        ? sanitizeFoodName(parsed.primaryFood.trim()).slice(0, 100)
         : foods[0] ?? '';
 
     this.logger.log(
@@ -369,7 +391,7 @@ RULES:
 - Be conservative — slightly overestimate calories rather than underestimate.
 - Set confidence: "high" for clearly identifiable single items, "medium" for common dishes, "low" for unclear images or complex multi-item plates.
 - Use simple, common food names suitable for database search.
-- For Indian foods use common English transliterations (e.g. "dal tadka", "roti", "biryani").
+- ${buildCuisineNamingGuidance(country)}
 
 Respond ONLY with valid JSON, no markdown, no explanation.`,
         },

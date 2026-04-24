@@ -696,12 +696,12 @@ export class HealthProfileService {
 Analyze the user's monthly performance data and provide 4-6 specific, actionable recommendations.
 
 User's country: ${cuisine.countryName}
-Cuisine context: ${cuisine.cuisineFocus} — suggest foods the user is likely familiar with (e.g., ${cuisine.exampleDishes}).
+Cuisine context: ${cuisine.cuisineFocus} — use this as a soft preference for familiar foods, not a strict requirement (e.g., ${cuisine.exampleDishes}).
 Cooking context: ${cuisine.cookingContext}
 
 RULES:
 1. Be specific — reference actual numbers (e.g., "You averaged 1400 kcal but your target is 1800").
-2. Suggestions must be practical and tailored to the user's local cuisine and familiar ingredients.
+2. Suggestions must be practical and should prefer familiar local ingredients without forcing a single cuisine style.
 3. Keep each recommendation to 1-2 sentences max.
 4. Focus on the biggest gaps first (calories, then protein, then water, then other macros).
 5. If performance is good, acknowledge it and suggest optimization tips.
@@ -812,7 +812,7 @@ Cooking context: ${cuisine.cookingContext}
 RULES:
 1. If the user has eaten today, suggest what to eat for remaining meals to hit targets.
 2. If the user hasn't eaten yet, suggest a meal plan for the day.
-3. Suggest foods that are practical and familiar for someone in ${cuisine.countryName}.
+3. Prefer foods that are practical and familiar for someone in ${cuisine.countryName}, but do not force a single cuisine style into every recommendation.
 4. Be encouraging and practical.
 5. Keep each recommendation to 1-2 sentences.
 6. Consider the 7-day trend — if they've been consistently over/under, address that.
@@ -1078,7 +1078,7 @@ Return a JSON array of 3-5 recommendation strings.`,
       messages: [
         {
           role: 'system',
-          content: `You are a certified nutritionist AI for Saveful India, a health & food tracking app.
+          content: `You are a certified nutritionist AI for Saveful, a global health & food tracking app.
 Given a user's health profile, calculate precise daily nutrition targets.
 
 RULES:

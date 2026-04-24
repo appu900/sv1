@@ -6,6 +6,7 @@ import { UsdaProvider } from './providers/usda.provider';
 import { CalorieNinjasProvider } from './providers/calorie-ninjas.provider';
 import { NormalizedFood } from './providers/open-food-facts.provider';
 import { FoodItemDocument } from '../../database/schemas/nutrition/food-item.schema';
+import { normalizeCountry } from '../../utils/countries.util';
 
 interface HydraSearchOpts {
   limit?: number;
@@ -22,7 +23,39 @@ interface CircuitState {
   state: 'closed' | 'open' | 'half-open';
 }
 
-type ProviderName = 'calorieNinjas' | 'usda' | 'offIndia' | 'offGlobal';
+type ProviderName = 'calorieNinjas' | 'usda' | 'offLocal' | 'offGlobal';
+
+const COUNTRY_NAME_TO_LOCALE: Record<string, string> = {
+  India: 'IN',
+  'United States': 'US',
+  'United Kingdom': 'GB',
+  Australia: 'AU',
+  Canada: 'CA',
+  China: 'CN',
+  Japan: 'JP',
+  'South Korea': 'KR',
+  Singapore: 'SG',
+  'United Arab Emirates': 'AE',
+  Germany: 'DE',
+  France: 'FR',
+  'New Zealand': 'NZ',
+};
+
+const LOCALE_TO_OFF_COUNTRY_TAG: Record<string, string> = {
+  IN: 'india',
+  US: 'united-states',
+  GB: 'united-kingdom',
+  AU: 'australia',
+  CA: 'canada',
+  CN: 'china',
+  JP: 'japan',
+  KR: 'south-korea',
+  SG: 'singapore',
+  AE: 'united-arab-emirates',
+  DE: 'germany',
+  FR: 'france',
+  NZ: 'new-zealand',
+};
 
 
 const CIRCUIT_FAILURE_THRESHOLD = 3;
@@ -32,7 +65,7 @@ const PER_PROVIDER_TIMEOUT_MS = 6_000;
 const SOURCE_WEIGHT: Record<ProviderName, number> = {
   calorieNinjas: 0.90, 
   usda: 1.0,          
-  offIndia: 0.80,     
+  offLocal: 0.80,     
   offGlobal: 0.70,   
 };
 
@@ -54,7 +87,7 @@ export class HydraSearchService {
   private circuits: Record<ProviderName, CircuitState> = {
     calorieNinjas: { failures: 0, lastFailure: 0, state: 'closed' },
     usda: { failures: 0, lastFailure: 0, state: 'closed' },
-    offIndia: { failures: 0, lastFailure: 0, state: 'closed' },
+    offLocal: { failures: 0, lastFailure: 0, state: 'closed' },
     offGlobal: { failures: 0, lastFailure: 0, state: 'closed' },
   };
 
@@ -70,7 +103,7 @@ export class HydraSearchService {
     opts: HydraSearchOpts = {},
   ): Promise<{ count: number; items: FoodItemDocument[] }> {
     const limit = Math.min(Math.max(opts.limit ?? 20, 1), 50);
-    const locale = opts.locale ?? 'in';
+    const locale = this.normalizeLocale(opts.locale);
 
     const q = this.normalize(rawQuery);
     if (!q) {
@@ -143,6 +176,8 @@ export class HydraSearchService {
       fn: () => Promise<NormalizedFood[]>;
     };
 
+    const localOffCountryTag = LOCALE_TO_OFF_COUNTRY_TAG[locale];
+
     const heads: Head[] = [
       {
         name: 'calorieNinjas',
@@ -153,8 +188,11 @@ export class HydraSearchService {
         fn: () => this.usda.search(q, { pageSize: limit }),
       },
       {
-        name: 'offIndia',
-        fn: () => this.openFoodFacts.search(q, { pageSize: limit, country: 'india' }),
+        name: 'offLocal',
+        fn: () =>
+          localOffCountryTag
+            ? this.openFoodFacts.search(q, { pageSize: limit, country: localOffCountryTag })
+            : Promise.resolve([]),
       },
       {
         name: 'offGlobal',
@@ -391,6 +429,21 @@ export class HydraSearchService {
     }
 
     return false;
+  }
+
+  private normalizeLocale(locale?: string): string {
+    if (!locale) return 'global';
+
+    const trimmed = locale.trim();
+    if (!trimmed) return 'global';
+    if (trimmed.toLowerCase() === 'global') return 'global';
+
+    if (/^[A-Za-z]{2}$/.test(trimmed)) {
+      return trimmed.toUpperCase();
+    }
+
+    const normalizedCountry = normalizeCountry(trimmed);
+    return normalizedCountry ? COUNTRY_NAME_TO_LOCALE[normalizedCountry] ?? 'global' : 'global';
   }
 
   private recordSuccess(name: ProviderName): void {

@@ -41,6 +41,15 @@ export interface AiMealPlanResult {
   healthGoal: string;
 }
 
+function sanitizePlanTitle(title?: string): string {
+  const cleaned = title
+    ?.replace(/\b(Indian|Australian|American|British|English|Canadian|Chinese|Japanese|Korean|Singaporean|Emirati|German|French|New Zealand)\b\s*/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
+  return cleaned || 'Balanced Meal Plan';
+}
+
 export interface MealPlanGenerationContext {
   requestedDays?: number;
   preference?: string;
@@ -124,9 +133,10 @@ export class MealPlanAiService {
     const preferenceNote = ctx.preference ? `\nUser note: ${ctx.preference}` : '';
 
     const systemPrompt = `You are SavefulAI, a world-class meal planning engine.
-You create personalised, practical meal plans that respect dietary restrictions, match calorie targets, and prioritise available inventory.
-Country / cuisine context: ${cuisineCtx.countryName} (${cuisineCtx.cuisineFocus}).
-Example local dishes: ${cuisineCtx.exampleDishes}.`;
+  You create personalised, practical meal plans that respect dietary restrictions, match calorie targets, and prioritise available inventory.
+  Country / cuisine context: ${cuisineCtx.countryName} (${cuisineCtx.cuisineFocus}).
+  Use that cuisine context as a soft preference for familiar ingredients and meal styles, not as a strict requirement.
+  Example local dishes: ${cuisineCtx.exampleDishes}.`;
 
     const userPrompt = `
 DIETARY REQUIREMENTS:
@@ -144,7 +154,7 @@ ${preferenceNote}
 TASK: ${daysInstruction}
 Create a personalised meal plan. For each day provide 4 meals: breakfast, lunch, snack and dinner.
 For every meal:
-- Choose a title and brief description fitting ${cuisineCtx.countryName} cuisine.
+- Choose a title and brief description that fit the user's ingredients, goals and preferences. Prefer familiar options for ${cuisineCtx.countryName} when helpful, but do not force every meal into a single national cuisine.
 - Estimate kcal, protein_g, carbs_g, fat_g, fiber_g per meal.
 - List all ingredients required (ingredient name strings only).
 - Cross-check against the inventory list above and split into inventoryMatches (ingredients the user has) and missingIngredients (ingredients they lack).
@@ -152,7 +162,7 @@ For every meal:
 
 Respond ONLY with valid JSON, no markdown, no explanation:
 {
-  "title": "string (e.g. '7-Day Balanced Indian Plan')",
+  "title": "string (e.g. '7-Day Balanced Meal Plan')",
   "totalDays": number,
   "healthGoal": "short description of goal",
   "days": [
@@ -225,6 +235,8 @@ Respond ONLY with valid JSON, no markdown, no explanation:
       }
       throw new ServiceUnavailableException('AI returned empty meal plan — please try again');
     }
+
+    parsed.title = sanitizePlanTitle(parsed.title);
 
     let aiEventId: string | undefined;
     if (this.aiTracker) {

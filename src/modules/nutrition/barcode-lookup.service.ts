@@ -4,6 +4,7 @@ import { UpcItemDbProvider } from './providers/upc-itemdb.provider';
 import { NutritionAiService } from './nutrition-ai.service';
 import { FoodItemService } from './food-item.service';
 import { FoodSource } from '../../database/schemas/nutrition/food-item.schema';
+import { normalizeCountry } from '../../utils/countries.util';
 
 const OFF_INDIA_BASE = 'https://in.openfoodfacts.org';
 
@@ -22,6 +23,15 @@ export class BarcodeLookupService {
     source: string;
     item: any;
   } | null> {
+    return this.lookupForCountry(barcode);
+  }
+
+  async lookupForCountry(barcode: string, country?: string): Promise<{
+    source: string;
+    item: any;
+  } | null> {
+    const normalizedCountry = normalizeCountry(country);
+
     // 1. Check local DB cache
     const cached = await this.foodItemService.findByBarcode(barcode);
     if (cached) {
@@ -43,17 +53,19 @@ export class BarcodeLookupService {
       }
     }
 
-    // 3. Open Food Facts — India endpoint (separate DB, more Indian products)
-    this.logger.log(`Trying OFF India for barcode ${barcode}...`);
-    const offIndia = await this.fetchFromOffIndia(barcode);
-    if (offIndia && offIndia.per100g.kcal > 0) {
-      this.logger.log(`Barcode ${barcode} found on OFF India`);
-      try {
-        const saved = await this.foodItemService.upsert(offIndia);
-        return { source: 'openfoodfacts-india', item: saved };
-      } catch (e) {
-        this.logger.warn(`Upsert failed for OFF India barcode ${barcode}: ${(e as Error).message}`);
-        return { source: 'openfoodfacts-india', item: offIndia };
+    // 3. India-specific OFF endpoint is only used for India users.
+    if (normalizedCountry === 'India') {
+      this.logger.log(`Trying OFF India for barcode ${barcode}...`);
+      const offIndia = await this.fetchFromOffIndia(barcode);
+      if (offIndia && offIndia.per100g.kcal > 0) {
+        this.logger.log(`Barcode ${barcode} found on OFF India`);
+        try {
+          const saved = await this.foodItemService.upsert(offIndia);
+          return { source: 'openfoodfacts-india', item: saved };
+        } catch (e) {
+          this.logger.warn(`Upsert failed for OFF India barcode ${barcode}: ${(e as Error).message}`);
+          return { source: 'openfoodfacts-india', item: offIndia };
+        }
       }
     }
 

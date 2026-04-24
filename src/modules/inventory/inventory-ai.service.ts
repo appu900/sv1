@@ -682,11 +682,12 @@ Return JSON EXACTLY in this shape:
     limit = 10,
     filterIngredientId?: string,
   ): Promise<MealSuggestion[]> {
-    // Build a cache key including the ingredient filter
-    const cacheKeySuffix = filterIngredientId
-      ? `:ing:${filterIngredientId}`
-      : '';
-    const cacheKey = `${this.CACHE_PREFIX}:suggestions:quick:${userId}${cacheKeySuffix}`;
+    const parsedLimit = Number(limit);
+    const resolvedLimit =
+      Number.isFinite(parsedLimit) && parsedLimit > 0
+        ? Math.floor(parsedLimit)
+        : 10;
+    const cacheKey = `${this.CACHE_PREFIX}:suggestions:quick:${userId}:country:${country ?? 'all'}:limit:${resolvedLimit}:ing:${filterIngredientId ?? 'all'}`;
 
     try {
       const cached = await this.redisService.get(cacheKey);
@@ -701,7 +702,7 @@ Return JSON EXACTLY in this shape:
     const { suggestions } = await this.matchRecipesToInventory(
       userId,
       country,
-      limit,
+      resolvedLimit,
       filterIngredientId,
     );
  
