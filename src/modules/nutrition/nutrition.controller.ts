@@ -136,13 +136,13 @@ export class NutritionController {
   @UseInterceptors(
     FileFieldsInterceptor(
       [
-        { name: 'image', maxCount: 1 },       // legacy single-image
-        { name: 'barcode', maxCount: 1 },      // barcode close-up
-        { name: 'nutrition', maxCount: 1 },    // nutrition label
-        { name: 'front', maxCount: 1 },        // product front/name
+        { name: 'image', maxCount: 1 },      
+        { name: 'barcode', maxCount: 1 },      
+        { name: 'nutrition', maxCount: 1 },    
+        { name: 'front', maxCount: 1 },        
       ],
       {
-        limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB max per file
+        limits: { fileSize: 10 * 1024 * 1024 }, 
         fileFilter: (_req, file, cb) => {
           if (!file.mimetype.startsWith('image/')) {
             cb(new BadRequestException('Only image files are allowed'), false);

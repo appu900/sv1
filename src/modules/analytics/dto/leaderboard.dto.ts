@@ -6,6 +6,7 @@ export enum LeaderboardPeriod {
   YEARLY = 'YEARLY',
   MONTHLY = 'MONTHLY',
   WEEKLY = 'WEEKLY',
+  DAILY = 'DAILY',
 }
 
 export enum LeaderboardMetric {

@@ -13,6 +13,7 @@ import { Model } from 'mongoose';
 import { User, UserDocument } from 'src/database/schemas/user.auth.schema';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ImageUploadService } from '../image-upload/image-upload.service';
+import { COOKBOOKAI_FREE_GENERATION_LIMIT } from './cookbookai.constants';
 
 @Controller('cookbookai')
 export class CookbookaiController {
@@ -32,6 +33,10 @@ export class CookbookaiController {
             req?.user?.sub ??
             '';
         return String(resolved || '');
+    }
+
+    private getGenerationLimitMessage(): string {
+        return `You have used all ${COOKBOOKAI_FREE_GENERATION_LIMIT} of your free recipe generations. Stay tuned for our subscription plan!`;
     }
 
     @Get()
@@ -98,15 +103,15 @@ export class CookbookaiController {
                 };
             }
 
-            // Lifetime limit of 3 total recipes (all types combined)
+            // Lifetime free-generation limit across all recipe entry points.
             const totalCount = await this.cookbookaiService.getTotalUserRecipeCount(userId);
-            if (totalCount >= 3) {
+            if (totalCount >= COOKBOOKAI_FREE_GENERATION_LIMIT) {
                 return {
                     success: false,
-                    message: 'You have used all 3 of your free recipe generations. Stay tuned for our subscription plan!',
+                    message: this.getGenerationLimitMessage(),
                     limitReached: true,
                     count: totalCount,
-                    limit: 3,
+                    limit: COOKBOOKAI_FREE_GENERATION_LIMIT,
                 };
             }
 
@@ -145,7 +150,12 @@ export class CookbookaiController {
     async getAiGenerationCount(@Request() req) {
         const userId = this.resolveUserId(req);
         const count = await this.cookbookaiService.getTotalUserRecipeCount(userId);
-        return { success: true, count, limit: 3, remaining: Math.max(0, 3 - count) };
+        return {
+            success: true,
+            count,
+            limit: COOKBOOKAI_FREE_GENERATION_LIMIT,
+            remaining: Math.max(0, COOKBOOKAI_FREE_GENERATION_LIMIT - count),
+        };
     }
 
     @Post("/generate-from-ingredients")
@@ -161,15 +171,15 @@ export class CookbookaiController {
                 };
             }
 
-            // Lifetime limit of 3 total recipes (all types combined)
+            // Lifetime free-generation limit across all recipe entry points.
             const existingCount = await this.cookbookaiService.getTotalUserRecipeCount(userId);
-            if (existingCount >= 3) {
+            if (existingCount >= COOKBOOKAI_FREE_GENERATION_LIMIT) {
                 return {
                     success: false,
-                    message: 'You have used all 3 of your free recipe generations. Stay tuned for our subscription plan!',
+                    message: this.getGenerationLimitMessage(),
                     limitReached: true,
                     count: existingCount,
-                    limit: 3,
+                    limit: COOKBOOKAI_FREE_GENERATION_LIMIT,
                 };
             }
 
@@ -197,7 +207,7 @@ export class CookbookaiController {
                 jobId,
                 data: pendingRecipe,
                 message: 'Your recipe is being generated! We\'ll notify you when it\'s ready.',
-                remaining: Math.max(0, 3 - existingCount - 1),
+                remaining: Math.max(0, COOKBOOKAI_FREE_GENERATION_LIMIT - existingCount - 1),
             };
         } catch (error) {
             console.error('Error in generateFromIngredients:', error);

@@ -1,4 +1,5 @@
 export const COOKBOOKAI_QUEUE_NAME = 'cookbookai';
+export const COOKBOOKAI_FREE_GENERATION_LIMIT = 5;
 
 export const COOKBOOKAI_JOB_ATTEMPTS = 2;
 export const COOKBOOKAI_JOB_BACKOFF_TYPE = 'exponential' as const;

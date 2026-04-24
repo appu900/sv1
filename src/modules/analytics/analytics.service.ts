@@ -16,9 +16,13 @@ import {
 import { User } from 'src/database/schemas/user.auth.schema';
 import { LeaderboardProfile, LeaderboardProfileDocument } from 'src/database/schemas/leaderboard-profile.schema';
 import { FoodSavedEventLog, FoodSavedEventLogDocument } from 'src/database/schemas/food-saved-event-log.schema';
+import { UserBadge, UserBadgeDocument } from 'src/database/schemas/user-badge.schema';
 import { RedisService } from 'src/redis/redis.service';
 import { normalizeCountry } from '../../utils/countries.util';
 import { fallbackPriceInLocalCurrency, fallbackCo2SavedKg } from './utils/fallback-pricing.util';
+
+type LeaderboardPeriodOption = 'ALL_TIME' | 'YEARLY' | 'MONTHLY' | 'WEEKLY' | 'DAILY';
+type LeaderboardMetricOption = 'MEALS_COOKED' | 'FOOD_SAVED' | 'MONEY_SAVED' | 'BADGES' | 'CO2_SAVED' | 'BOTH';
 
 export interface FoodSavedEvent {
   userId: string;
@@ -83,9 +87,160 @@ export class AnalyticsService {
     private readonly leaderboardProfileModel: Model<LeaderboardProfileDocument>,
     @InjectModel(FoodSavedEventLog.name)
     private readonly foodSavedEventLogModel: Model<FoodSavedEventLogDocument>,
+    @InjectModel(UserBadge.name)
+    private readonly userBadgeModel: Model<UserBadgeDocument>,
     private readonly redisService: RedisService,
     private readonly eventEmmiter: EventEmitter2,
   ) {}
+
+  private getLeaderboardWindowStart(period: LeaderboardPeriodOption): Date | null {
+    const now = new Date();
+
+    switch (period) {
+      case 'DAILY':
+        return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+      case 'WEEKLY':
+        return new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      case 'MONTHLY':
+        return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+      case 'YEARLY':
+        return new Date(Date.UTC(now.getUTCFullYear(), 0, 1));
+      default:
+        return null;
+    }
+  }
+
+  private async getBadgeLeaderboard(options: {
+    period: LeaderboardPeriodOption;
+    limit: number;
+    offset: number;
+    normalizedCountry?: string;
+    stateCode?: string;
+    cacheKey: string;
+  }) {
+    const {
+      period,
+      limit,
+      offset,
+      normalizedCountry,
+      stateCode,
+      cacheKey,
+    } = options;
+
+    const windowFrom = this.getLeaderboardWindowStart(period);
+    const pipeline: any[] = [];
+
+    if (windowFrom) {
+      pipeline.push({
+        $match: {
+          earnedAt: { $gte: windowFrom },
+        },
+      });
+    }
+
+    pipeline.push(
+      {
+        $group: {
+          _id: '$userId',
+          badgeCount: { $sum: 1 },
+        },
+      },
+      {
+        $lookup: {
+          from: 'leaderboardprofiles',
+          localField: '_id',
+          foreignField: 'userId',
+          as: 'lbProfile',
+        },
+      },
+      {
+        $match: {
+          'lbProfile.0': { $exists: true },
+          'lbProfile.isActive': true,
+        },
+      },
+      { $unwind: '$lbProfile' },
+      {
+        $lookup: {
+          from: 'users',
+          localField: '_id',
+          foreignField: '_id',
+          as: 'user',
+        },
+      },
+      { $unwind: '$user' },
+    );
+
+    const matchConditions: Record<string, string> = {};
+    if (normalizedCountry) {
+      matchConditions['user.country'] = normalizedCountry;
+    }
+    if (stateCode) {
+      matchConditions['user.stateCode'] = stateCode;
+    }
+    if (Object.keys(matchConditions).length > 0) {
+      pipeline.push({ $match: matchConditions });
+    }
+
+    pipeline.push({
+      $facet: {
+        rows: [
+          { $sort: { badgeCount: -1, _id: 1 } },
+          { $skip: offset },
+          { $limit: limit },
+          {
+            $project: {
+              userId: '$user._id',
+              userName: '$lbProfile.displayName',
+              country: '$user.country',
+              stateCode: '$user.stateCode',
+              numberOfMealsCooked: { $literal: 0 },
+              foodSavedInGrams: { $literal: 0 },
+              foodSavedInKg: { $literal: 0 },
+              totalMoneySaved: { $literal: 0 },
+              totalCo2SavedInGrams: { $literal: 0 },
+              totalCo2SavedKg: { $literal: 0 },
+              badgeCount: 1,
+              combinedScore: { $literal: 0 },
+            },
+          },
+        ],
+        total: [{ $count: 'total' }],
+      },
+    });
+
+    const [facet] = await this.userBadgeModel.aggregate(pipeline);
+    const rowsRaw = facet?.rows ?? [];
+    const totalEntries = facet?.total?.[0]?.total ?? 0;
+    const leaderboard = rowsRaw.map((entry: any, index: number) => ({
+      ...entry,
+      rank: offset + index + 1,
+      totalMoneySaved: Number((entry.totalMoneySaved || 0).toFixed(2)),
+      totalCo2SavedInGrams: entry.totalCo2SavedInGrams || 0,
+      totalCo2SavedKg: Number((entry.totalCo2SavedKg || 0).toFixed(2)),
+    }));
+
+    const payload = {
+      period,
+      metric: 'BADGES' as const,
+      limit,
+      offset,
+      filters: {
+        country: normalizedCountry || 'all',
+        stateCode: stateCode || 'all',
+      },
+      totalEntries,
+      leaderboard,
+    };
+    try {
+      await this.redisService.set(cacheKey, payload, this.LEADERBOARD_CACHE_TTL_SEC);
+    } catch (err: any) {
+      this.logger.warn(`leaderboard cache write failed: ${err?.message}`);
+    }
+
+    return payload;
+  }
+
 async saveFood(
   userId: string,
   ingredinatIds: string[] = [],
@@ -718,8 +873,8 @@ private co2CacheKey(ingredient: string, country: string): string {
 
  
   async getLeaderboard(options: {
-    period?: 'ALL_TIME' | 'YEARLY' | 'MONTHLY' | 'WEEKLY';
-    metric?: 'MEALS_COOKED' | 'FOOD_SAVED' | 'MONEY_SAVED' | 'BADGES' | 'CO2_SAVED' | 'BOTH';
+    period?: LeaderboardPeriodOption;
+    metric?: LeaderboardMetricOption;
     limit?: number;
     offset?: number;
     country?: string;
@@ -745,19 +900,18 @@ private co2CacheKey(ingredient: string, country: string): string {
       this.logger.warn(`leaderboard cache read failed: ${err?.message}`);
     }
 
-    let dateFilter: any = {};
-    void dateFilter;
-    const now = new Date();
-
-
-    let windowFrom: Date | null = null;
-    if (period === 'WEEKLY') {
-      windowFrom = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-    } else if (period === 'MONTHLY') {
-      windowFrom = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-    } else if (period === 'YEARLY') {
-      windowFrom = new Date(Date.UTC(now.getUTCFullYear(), 0, 1));
+    if (metric === 'BADGES') {
+      return this.getBadgeLeaderboard({
+        period,
+        limit,
+        offset,
+        normalizedCountry: normalizedCountry ?? undefined,
+        stateCode,
+        cacheKey,
+      });
     }
+
+    const windowFrom = this.getLeaderboardWindowStart(period);
 
     if (windowFrom) {
       const periodPipeline: any[] = [
@@ -805,26 +959,11 @@ private co2CacheKey(ingredient: string, country: string): string {
         periodPipeline.push({ $match: periodMatch });
       }
 
-      if (metric === 'BADGES') {
-        periodPipeline.push(
-          {
-            $lookup: {
-              from: 'userbadges',
-              localField: '_id',
-              foreignField: 'userId',
-              as: 'badges',
-            },
-          },
-          { $addFields: { badgeCount: { $size: '$badges' } } },
-        );
-      }
-
       let periodSort: any;
       if (metric === 'MEALS_COOKED') periodSort = { numberOfMealsCooked: -1 };
       else if (metric === 'FOOD_SAVED') periodSort = { foodSavedInGrams: -1 };
       else if (metric === 'MONEY_SAVED') periodSort = { totalMoneySaved: -1 };
       else if (metric === 'CO2_SAVED') periodSort = { totalCo2SavedInGrams: -1 };
-      else if (metric === 'BADGES') periodSort = { badgeCount: -1 };
       else {
         periodPipeline.push({
           $addFields: {
@@ -846,18 +985,14 @@ private co2CacheKey(ingredient: string, country: string): string {
             { $sort: periodSort },
             { $skip: offset },
             { $limit: limit },
-            ...(metric !== 'BADGES'
-              ? [
-                  {
-                    $lookup: {
-                      from: 'userbadges',
-                      localField: '_id',
-                      foreignField: 'userId',
-                      as: 'badges',
-                    },
-                  },
-                ]
-              : []),
+            {
+              $lookup: {
+                from: 'userbadges',
+                localField: '_id',
+                foreignField: 'userId',
+                as: 'badges',
+              },
+            },
             {
               $project: {
                 userId: '$user._id',
@@ -964,8 +1099,6 @@ private co2CacheKey(ingredient: string, country: string): string {
       sortField = { foodSavedInGrams: -1 };
     } else if (metric === 'MONEY_SAVED') {
       sortField = { totalMoneySaved: -1 };
-    } else if (metric === 'BADGES') {
-      sortField = { badgeCount: -1 };
     } else if (metric === 'CO2_SAVED') {
       sortField = { totalCo2SavedInGrams: -1 };
     } else {
@@ -982,36 +1115,18 @@ private co2CacheKey(ingredient: string, country: string): string {
       sortField = { combinedScore: -1 };
     }
 
-    if (metric === 'BADGES') {
-      pipeline.push({
-        $lookup: {
-          from: 'userbadges',
-          localField: 'userId',
-          foreignField: 'userId',
-          as: 'badges',
-        },
-      });
-      pipeline.push({
-        $addFields: {
-          badgeCount: { $size: '$badges' },
-        },
-      });
-    }
-
     pipeline.push({ $sort: sortField });
     pipeline.push({ $skip: offset });
     pipeline.push({ $limit: limit });
 
-    if (metric !== 'BADGES') {
-      pipeline.push({
-        $lookup: {
-          from: 'userbadges',
-          localField: 'userId',
-          foreignField: 'userId',
-          as: 'badges',
-        },
-      });
-    }
+    pipeline.push({
+      $lookup: {
+        from: 'userbadges',
+        localField: 'userId',
+        foreignField: 'userId',
+        as: 'badges',
+      },
+    });
 
     pipeline.push({
       $project: {
@@ -1073,8 +1188,8 @@ private co2CacheKey(ingredient: string, country: string): string {
 
  
   async getUserRank(userId: string, options: {
-    period?: 'ALL_TIME' | 'YEARLY' | 'MONTHLY' | 'WEEKLY';
-    metric?: 'MEALS_COOKED' | 'FOOD_SAVED' | 'MONEY_SAVED' | 'CO2_SAVED' | 'BADGES' | 'BOTH';
+    period?: LeaderboardPeriodOption;
+    metric?: LeaderboardMetricOption;
   }) {
     const { period = 'ALL_TIME', metric = 'BOTH' } = options;
 
