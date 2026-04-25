@@ -36,17 +36,19 @@ export class RevenueCatWebhookController {
     }
 
     const provided = (authHeader || '').replace(/^Bearer\s+/i, '').trim();
+    const providedBuf = Buffer.from(provided, 'utf8');
+    const secretBuf = Buffer.from(secret, 'utf8');
     if (
-      provided.length === 0 ||
-      provided.length !== secret.length ||
-      !crypto.timingSafeEqual(Buffer.from(provided), Buffer.from(secret))
+      providedBuf.length === 0 ||
+      providedBuf.length !== secretBuf.length ||
+      !crypto.timingSafeEqual(providedBuf, secretBuf)
     ) {
       throw new UnauthorizedException('Invalid webhook signature');
     }
 
     const event = payload?.event ?? payload;
     this.logger.log(
-      `RC webhook type=${event?.type} app_user_id=${event?.app_user_id} product=${event?.product_id}`,
+      `RC webhook type=${event?.type} app_user_id=${event?.app_user_id} product=${event?.product_id} entitlement_ids=${JSON.stringify(event?.entitlement_ids ?? [])}`,
     );
 
     await this.subscriptionService.syncFromWebhook(payload);
