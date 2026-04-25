@@ -6,7 +6,7 @@ describe('parseCustomerInfo', () => {
       entitlements: {
         active: {
           saveful_pro: {
-            productIdentifier: 'saveful_hero_monthly',
+            productIdentifier: 'saveful.hero.monthly',
             expirationDate: '2099-05-25T00:00:00Z',
             latestPurchaseDate: '2099-04-25T00:00:00Z',
             periodType: 'TRIAL',
@@ -44,7 +44,7 @@ describe('parseCustomerInfo', () => {
       entitlements: {
         active: {
           saveful_pro: {
-            product_identifier: 'saveful_legend_monthly',
+            product_identifier: 'saveful.legend.monthly',
             expires_date: '2000-05-25T00:00:00Z',
             period_type: 'NORMAL',
           },

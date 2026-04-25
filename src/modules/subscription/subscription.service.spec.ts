@@ -52,7 +52,7 @@ describe('SubscriptionService RevenueCat webhooks', () => {
     subscriptionModel.findOne.mockResolvedValue({
       plan: 'hero',
       status: 'active',
-      productId: 'saveful_hero_monthly',
+      productId: 'saveful.hero.monthly',
       expiresAt: new Date(expiresAt),
     });
     subscriptionModel.updateOne.mockResolvedValue({ modifiedCount: 1 });
@@ -63,7 +63,7 @@ describe('SubscriptionService RevenueCat webhooks', () => {
         type: 'CANCELLATION',
         app_user_id: userId,
         event_timestamp_ms: eventAt,
-        product_id: 'saveful_hero_monthly',
+        product_id: 'saveful.hero.monthly',
         expiration_at_ms: expiresAt,
       },
     });
@@ -72,7 +72,7 @@ describe('SubscriptionService RevenueCat webhooks', () => {
     expect(appliedUpdate).toMatchObject({
       plan: 'hero',
       status: 'cancelled',
-      productId: 'saveful_hero_monthly',
+      productId: 'saveful.hero.monthly',
       willRenew: false,
       revenueCatUserId: userId,
     });

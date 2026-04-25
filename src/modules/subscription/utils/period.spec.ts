@@ -18,7 +18,7 @@ describe('subscription usage periods', () => {
         plan: 'hero',
         purchasedAt: new Date('2026-04-25T09:30:00.000Z'),
         expiresAt: new Date('2026-05-25T09:30:00.000Z'),
-        productId: 'saveful_hero_monthly',
+        productId: 'saveful.hero.monthly',
       },
       new Date('2026-05-01T00:00:00.000Z'),
     );
@@ -35,7 +35,7 @@ describe('subscription usage periods', () => {
       {
         plan: 'legend',
         expiresAt: new Date('2027-04-25T09:30:00.000Z'),
-        productId: 'saveful_legend_yearly',
+        productId: 'saveful.legend.yearly',
       },
       new Date('2026-09-01T00:00:00.000Z'),
     );

@@ -9,29 +9,16 @@ export type SubscriptionStatus =
 export const SAVEFUL_ENTITLEMENT = 'saveful_pro';
 
 export const PRODUCT_TO_PLAN: Record<string, SubscriptionPlan> = {
-  monthly: 'hero',
-  yearly: 'hero',
-  lifetime: 'legend',
+  'saveful.hero.monthly': 'hero',
+  'saveful.hero.yearly': 'hero',
 
-  saveful_hero: 'hero',
-  saveful_hero_monthly: 'hero',
-  saveful_hero_yearly: 'hero',
-  saveful_premium: 'hero',
-  saveful_premium_monthly: 'hero',
-  saveful_premium_yearly: 'hero',
-
-  saveful_legend: 'legend',
-  saveful_legend_monthly: 'legend',
-  saveful_legend_yearly: 'legend',
-  saveful_legend_lifetime: 'legend',
-  saveful_premium_plus: 'legend',
-  saveful_premium_plus_monthly: 'legend',
-  saveful_premium_plus_yearly: 'legend',
+  'saveful.legend.monthly': 'legend',
+  'saveful.legend.yearly': 'legend',
 };
 
 export const PLAN_PREFIX_RULES: Array<{ match: RegExp; plan: SubscriptionPlan }> = [
-  { match: /(legend|premium[_-]?plus|\bplus\b)/i, plan: 'legend' },
-  { match: /(hero|premium|\bpro\b)/i, plan: 'hero' },
+  { match: /legend/i, plan: 'legend' },
+  { match: /hero/i, plan: 'hero' },
 ];
 
 export const UNLIMITED = -1;
