@@ -14,6 +14,10 @@ import {
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/role.decorators';
+import {
+  RequireFeature,
+  SubscriptionGuard,
+} from '../subscription/subscription.guard';
 import { MealPlanService } from './meal-plan.service';
 import {
   GenerateMealPlanDto,
@@ -22,7 +26,7 @@ import {
 } from './dto/meal-plan.dto';
 
 @Controller('meal-plan')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, SubscriptionGuard)
 @Roles('USER')
 export class MealPlanController {
   constructor(private readonly mealPlanService: MealPlanService) {}
@@ -39,6 +43,7 @@ export class MealPlanController {
 
   /** Generate a new AI meal plan (archives the previous active plan) */
   @Post('generate')
+  @RequireFeature('smart_meal_planning')
   async generate(@Request() req, @Body() dto: GenerateMealPlanDto) {
     const userId = this.resolveUserId(req);
     const plan = await this.mealPlanService.generate(userId, dto);
@@ -83,6 +88,7 @@ export class MealPlanController {
    * Returns a pending recipe ID that will appear in the cookbook.
    */
   @Post('generate-recipe')
+  @RequireFeature('recipe_conversions')
   async generateRecipe(@Request() req, @Body() dto: GenerateRecipeFromPlanDto) {
     const userId = this.resolveUserId(req);
     const result = await this.mealPlanService.generateRecipeFromMeal(userId, dto);

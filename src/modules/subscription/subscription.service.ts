@@ -25,7 +25,7 @@ import {
   UNLIMITED,
 } from './subscription.constants';
 import { parseCustomerInfo } from './utils/parse-customer-info';
-import { currentPeriod } from './utils/period';
+import { currentUsagePeriod } from './utils/period';
 
 const toObjectId = (id: string | Types.ObjectId) =>
   typeof id === 'string' ? new Types.ObjectId(id) : id;
@@ -87,30 +87,41 @@ export class SubscriptionService {
     customerInfo: Record<string, any> | undefined,
     revenueCatUserId?: string,
   ): Promise<SubscriptionDocument> {
-    const rcSecret = this.configService.get<string>('REVENUECAT_SECRET_API_KEY');
+    const revenueCatV1ApiKey = this.getRevenueCatV1ApiKey();
     let verifiedInfo: Record<string, any> | undefined;
 
-    if (rcSecret) {
-      verifiedInfo = await this.fetchSubscriberFromRevenueCat(userId, rcSecret);
-    } else {
-      this.logger.warn(
-        'REVENUECAT_SECRET_API_KEY missing — /subscription/sync is trusting client payload. ' +
-          'Configure the secret in prod to close a subscription-spoofing bypass.',
-      );
-      const clientAppUserId =
-        customerInfo?.originalAppUserId ??
-        customerInfo?.original_app_user_id ??
-        revenueCatUserId;
-      if (clientAppUserId && String(clientAppUserId) !== String(userId)) {
-        this.logger.warn(
-          `Rejecting /sync: client app_user_id=${clientAppUserId} does not match auth user=${userId}`,
+    if (revenueCatV1ApiKey) {
+      try {
+        verifiedInfo = await this.fetchSubscriberFromRevenueCat(
+          userId,
+          revenueCatV1ApiKey,
         );
-        throw new ForbiddenException({
-          code: 'SUBSCRIPTION_MISMATCH',
-          message: 'Subscription does not belong to the authenticated user.',
-        });
+      } catch (err) {
+        if (!this.canTrustClientSyncFallback()) throw err;
+        this.logger.warn(
+          'RevenueCat server verification failed — falling back to client CustomerInfo because NODE_ENV is not production.',
+        );
+        verifiedInfo = this.trustedClientCustomerInfo(
+          userId,
+          customerInfo,
+          revenueCatUserId,
+        );
       }
-      verifiedInfo = customerInfo;
+    } else {
+      if (!this.canTrustClientSyncFallback()) {
+        throw new ServiceUnavailableException(
+          'RevenueCat server verification is not configured',
+        );
+      }
+      this.logger.warn(
+        'No RevenueCat V1-compatible API key configured — /subscription/sync is trusting client CustomerInfo because NODE_ENV is not production. ' +
+          'Set REVENUECAT_V1_API_KEY in production, or rely on RevenueCat webhooks as the authoritative source.',
+      );
+      verifiedInfo = this.trustedClientCustomerInfo(
+        userId,
+        customerInfo,
+        revenueCatUserId,
+      );
     }
 
     const parsed = parseCustomerInfo(verifiedInfo, SAVEFUL_ENTITLEMENT);
@@ -142,9 +153,70 @@ export class SubscriptionService {
     return doc!;
   }
 
+  private getRevenueCatV1ApiKey(): string | undefined {
+    const candidates = [
+      this.configService.get<string>('REVENUECAT_V1_API_KEY'),
+      this.configService.get<string>('REVENUECAT_REST_API_KEY'),
+      this.configService.get<string>('REVENUECAT_PUBLIC_API_KEY'),
+      this.configService.get<string>('REVENUECAT_SECRET_API_KEY'),
+    ]
+      .map((value) => value?.trim())
+      .filter((value): value is string => !!value);
+
+    const apiKey = candidates.find((value) => !value.startsWith('sk_'));
+    const secretKey = this.configService
+      .get<string>('REVENUECAT_SECRET_API_KEY')
+      ?.trim();
+
+    if (!apiKey && secretKey?.startsWith('sk_')) {
+      this.logger.warn(
+        'REVENUECAT_SECRET_API_KEY is an sk_ secret key, which RevenueCat rejects on API V1 /subscribers. ' +
+          'Set REVENUECAT_V1_API_KEY for /subscription/sync server verification, or use webhooks for production truth.',
+      );
+    }
+
+    return apiKey;
+  }
+
+  private canTrustClientSyncFallback(): boolean {
+    const explicit =
+      this.configService.get<string>('REVENUECAT_TRUST_CLIENT_SYNC') ??
+      this.configService.get<string>('REVENUECAT_ALLOW_CLIENT_SYNC_FALLBACK');
+
+    if (explicit != null) {
+      return ['1', 'true', 'yes'].includes(explicit.trim().toLowerCase());
+    }
+
+    const env = this.configService.get<string>('NODE_ENV') ?? process.env.NODE_ENV;
+    return env !== 'production';
+  }
+
+  private trustedClientCustomerInfo(
+    userId: string,
+    customerInfo: Record<string, any> | undefined,
+    revenueCatUserId?: string,
+  ): Record<string, any> | undefined {
+    const clientAppUserId =
+      customerInfo?.originalAppUserId ??
+      customerInfo?.original_app_user_id ??
+      revenueCatUserId;
+
+    if (clientAppUserId && String(clientAppUserId) !== String(userId)) {
+      this.logger.warn(
+        `Rejecting /sync: client app_user_id=${clientAppUserId} does not match auth user=${userId}`,
+      );
+      throw new ForbiddenException({
+        code: 'SUBSCRIPTION_MISMATCH',
+        message: 'Subscription does not belong to the authenticated user.',
+      });
+    }
+
+    return customerInfo;
+  }
+
   private async fetchSubscriberFromRevenueCat(
     userId: string,
-    rcSecret: string,
+    revenueCatV1ApiKey: string,
   ): Promise<Record<string, any>> {
     const url = `https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(userId)}`;
     const controller = new AbortController();
@@ -153,7 +225,7 @@ export class SubscriptionService {
       const res = await fetch(url, {
         method: 'GET',
         headers: {
-          Authorization: `Bearer ${rcSecret}`,
+          Authorization: `Bearer ${revenueCatV1ApiKey}`,
           'X-Platform': 'server',
           'Content-Type': 'application/json',
         },
@@ -359,10 +431,23 @@ export class SubscriptionService {
     return PLANS[plan].limits[key];
   }
 
+  async getCurrentUsagePeriod(userId: string) {
+    const sub = await this.getOrCreateSubscription(userId);
+    const plan = await this.getPlan(userId);
+    return currentUsagePeriod({
+      plan,
+      purchasedAt: sub.purchasedAt,
+      expiresAt: sub.expiresAt,
+      productId: sub.productId,
+      periodType: sub.periodType,
+    });
+  }
+
 
   async getUsage(userId: string): Promise<SubscriptionUsageDocument> {
     const uid = toObjectId(userId);
-    const { periodKey, periodStart, periodEnd } = currentPeriod();
+    const { periodKey, periodStart, periodEnd } =
+      await this.getCurrentUsagePeriod(userId);
     const usage = await this.usageModel.findOneAndUpdate(
       { userId: uid, periodKey },
       { $setOnInsert: { userId: uid, periodKey, periodStart, periodEnd } },
@@ -383,7 +468,8 @@ export class SubscriptionService {
     const limit = planDef.limits[limitKey];
 
     const uid = toObjectId(userId);
-    const { periodKey, periodStart, periodEnd } = currentPeriod();
+    const { periodKey, periodStart, periodEnd } =
+      await this.getCurrentUsagePeriod(userId);
 
     if (limit === UNLIMITED) {
       const doc = await this.usageModel.findOneAndUpdate(
@@ -465,7 +551,7 @@ export class SubscriptionService {
   ): Promise<void> {
     if (amount <= 0) return;
     const uid = toObjectId(userId);
-    const { periodKey } = currentPeriod();
+    const { periodKey } = await this.getCurrentUsagePeriod(userId);
     await this.usageModel.updateOne(
       { userId: uid, periodKey, [key]: { $gte: amount } },
       { $inc: { [key]: -amount } },
@@ -518,10 +604,6 @@ export class SubscriptionService {
     };
   }
 
-  // --------------------------------------------------------------------------
-  // Aggregate DTO for GET /api/subscription
-  // --------------------------------------------------------------------------
-
   async getSubscriptionSnapshot(userId: string) {
     const sub = await this.getOrCreateSubscription(userId);
     const plan = await this.getPlan(userId);
@@ -549,5 +631,40 @@ export class SubscriptionService {
         periodEnd: usage.periodEnd,
       },
     };
+  }
+
+  /**
+   * Persist the user's cancellation reason on the subscription doc. Apple
+   * and Google own the actual cancellation flow — this is only for product
+   * analytics and follow-up by support.
+   */
+  async recordCancelFeedback(
+    userId: string,
+    feedback: {
+      reason: string;
+      details?: string;
+      productId?: string;
+      plan?: string;
+    },
+  ): Promise<void> {
+    const uid = toObjectId(userId);
+    await this.subscriptionModel.updateOne(
+      { userId: uid },
+      {
+        $set: {
+          cancelFeedback: {
+            reason: feedback.reason,
+            details: feedback.details,
+            productId: feedback.productId,
+            plan: feedback.plan,
+            submittedAt: new Date(),
+          },
+        },
+      },
+      { upsert: true },
+    );
+    this.logger.log(
+      `Cancel feedback user=${userId} reason=${feedback.reason} plan=${feedback.plan ?? '-'}`,
+    );
   }
 }

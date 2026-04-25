@@ -11,7 +11,6 @@ import {
 } from '../../database/schemas/subscription-usage.schema';
 import { SubscriptionService } from '../subscription/subscription.service';
 import { PLANS, UNLIMITED } from '../subscription/subscription.constants';
-import { currentPeriod } from '../subscription/utils/period';
 
 export const KITCHEN_SCAN_LIFETIME_LIMIT = 5;
 
@@ -43,7 +42,8 @@ export class KitchenScanUsageService {
     const limit = this.planLimit(plan);
     const unlimited = limit === UNLIMITED;
 
-    const { periodKey, periodStart, periodEnd } = currentPeriod();
+    const { periodKey, periodStart, periodEnd } =
+      await this.subscriptionService.getCurrentUsagePeriod(userId);
     const uid = new Types.ObjectId(userId);
     const doc = await this.usageModel
       .findOneAndUpdate(
@@ -78,7 +78,8 @@ export class KitchenScanUsageService {
     const unlimited = limit === UNLIMITED;
 
     const uid = new Types.ObjectId(userId);
-    const { periodKey, periodStart, periodEnd } = currentPeriod();
+    const { periodKey, periodStart, periodEnd } =
+      await this.subscriptionService.getCurrentUsagePeriod(userId);
 
     if (unlimited) {
       const doc = await this.usageModel
@@ -115,7 +116,7 @@ export class KitchenScanUsageService {
         limit: 'kitchenScansPerMonth',
         cap: limit,
         plan,
-        message: `You have used all ${limit} of your kitchen photo scans this month on the ${planLabel} plan. Upgrade to keep scanning.`,
+        message: `You have used all ${limit} of your kitchen photo scans this billing cycle on the ${planLabel} plan. Upgrade to keep scanning.`,
       });
     };
 
@@ -147,7 +148,8 @@ export class KitchenScanUsageService {
 
   async rollback(userId: string): Promise<void> {
     const uid = new Types.ObjectId(userId);
-    const { periodKey } = currentPeriod();
+    const { periodKey } =
+      await this.subscriptionService.getCurrentUsagePeriod(userId);
     try {
       await this.usageModel
         .updateOne(

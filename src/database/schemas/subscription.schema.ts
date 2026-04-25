@@ -49,6 +49,25 @@ export class Subscription {
   @Prop({ type: Object })
   lastCustomerInfo?: Record<string, unknown>;
 
+  /** Latest user-supplied cancellation feedback (reason + free-text). */
+  @Prop({
+    type: {
+      reason: String,
+      details: String,
+      productId: String,
+      plan: String,
+      submittedAt: Date,
+    },
+    _id: false,
+  })
+  cancelFeedback?: {
+    reason: string;
+    details?: string;
+    productId?: string;
+    plan?: string;
+    submittedAt: Date;
+  };
+
   /** RevenueCat webhook event.id of the last event applied — dedup guard. */
   @Prop({ index: true })
   lastEventId?: string;

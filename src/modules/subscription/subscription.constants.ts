@@ -62,7 +62,7 @@ export const PLANS: Record<SubscriptionPlan, PlanDefinition> = {
       ingredients: 20,
       cookbooks: 5,
       shoppingLists: 5,
-      kitchenScansPerMonth: 5,
+      kitchenScansPerMonth: 0,
     },
     features: [
       'ingredient_to_meal',
@@ -82,7 +82,7 @@ export const PLANS: Record<SubscriptionPlan, PlanDefinition> = {
       ingredients: UNLIMITED,
       cookbooks: UNLIMITED,
       shoppingLists: UNLIMITED,
-      kitchenScansPerMonth: 20,
+      kitchenScansPerMonth: 0,
     },
     features: [
       'ingredient_to_meal',

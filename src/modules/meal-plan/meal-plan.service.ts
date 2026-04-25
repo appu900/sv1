@@ -28,6 +28,7 @@ import { CookbookaiProducer } from '../cookbookai/cookbookai.producer';
 import { GenerateMealPlanDto, GenerateRecipeFromPlanDto } from './dto/meal-plan.dto';
 import { UserEventService } from '../user-events/user-event.service';
 import { UserEventType } from '../../database/schemas/user-event.schema';
+import { SubscriptionService } from '../subscription/subscription.service';
 
 @Injectable()
 export class MealPlanService {
@@ -47,6 +48,7 @@ export class MealPlanService {
     private readonly userEventService: UserEventService,
     private readonly mealPlanAi: MealPlanAiService,
     private readonly cookbookProducer: CookbookaiProducer,
+    private readonly subscriptionService: SubscriptionService,
   ) {}
 
   async generate(userId: string, dto: GenerateMealPlanDto): Promise<MealPlanDocument> {
@@ -105,7 +107,17 @@ export class MealPlanService {
       inventory: inventoryForAi,
     };
 
-    const aiResult = await this.mealPlanAi.generateMealPlan(context, userId);
+    await this.subscriptionService.incrementUsage(userId, 'aiMealsUsed');
+
+    let aiResult: Awaited<ReturnType<MealPlanAiService['generateMealPlan']>>;
+    try {
+      aiResult = await this.mealPlanAi.generateMealPlan(context, userId);
+    } catch (error) {
+      await this.subscriptionService
+        .refundUsage(userId, 'aiMealsUsed')
+        .catch(() => undefined);
+      throw error;
+    }
 
     await this.mealPlanModel.updateMany(
       {
@@ -224,29 +236,52 @@ export class MealPlanService {
     const meal = day.meals.find((m) => m.slot === dto.slot);
     if (!meal) throw new NotFoundException(`Meal slot "${dto.slot}" not found on day ${dto.dayNumber}`);
 
+    if (meal.generatedRecipeId) {
+      return { recipeId: String(meal.generatedRecipeId) };
+    }
+
     if (!meal.ingredients?.length) {
       throw new BadRequestException('This meal has no ingredients to generate a recipe from');
     }
 
-    const pendingRecipe = await this.userRecipeModel.create({
-      userid: userId,
-      status: 'pending',
-      title: meal.title,
-      shortDescription: '',
-      longDescription: '',
-      heroImageUrl: '',
-      youtubeId: '',
-      portions: '',
-      prepCookTime: 0,
-      hackOrTipIds: [],
-      frameworkCategories: [],
-      useLeftoversIn: [],
-      countries: [],
-      components: [],
-      isActive: true,
-      source: 'ai_ingredients',
-      importSource: 'mealplan',
-    });
+    const currentRecipeCount = await this.userRecipeModel
+      .countDocuments({ userid: userId, isActive: { $ne: false } })
+      .exec();
+    await this.subscriptionService.enforceLiveLimit(
+      userId,
+      'cookbooks',
+      currentRecipeCount,
+      1,
+    );
+    await this.subscriptionService.incrementUsage(userId, 'aiMealsUsed');
+
+    let pendingRecipe: UserRecipeDocument;
+    try {
+      pendingRecipe = await this.userRecipeModel.create({
+        userid: userId,
+        status: 'pending',
+        title: meal.title,
+        shortDescription: '',
+        longDescription: '',
+        heroImageUrl: '',
+        youtubeId: '',
+        portions: '',
+        prepCookTime: 0,
+        hackOrTipIds: [],
+        frameworkCategories: [],
+        useLeftoversIn: [],
+        countries: [],
+        components: [],
+        isActive: true,
+        source: 'ai_ingredients',
+        importSource: 'mealplan',
+      });
+    } catch (error) {
+      await this.subscriptionService
+        .refundUsage(userId, 'aiMealsUsed')
+        .catch(() => undefined);
+      throw error;
+    }
 
     const recipeId = String(pendingRecipe._id);
 
@@ -261,13 +296,23 @@ export class MealPlanService {
       (meal.description ? ` — ${meal.description}` : '') +
       `. This is a ${slotLabel} dish from day ${dto.dayNumber} of the meal plan "${plan.title}".` +
       ` Make it practical, delicious and culturally appropriate.`;
-    await this.cookbookProducer.enqueueRecipeFromIngredients(
-      userId,
-      meal.ingredients,
-      preference,
-      recipeId,
-      country,
-    );
+    try {
+      await this.cookbookProducer.enqueueRecipeFromIngredients(
+        userId,
+        meal.ingredients,
+        preference,
+        recipeId,
+        country,
+      );
+    } catch (error) {
+      await this.subscriptionService
+        .refundUsage(userId, 'aiMealsUsed')
+        .catch(() => undefined);
+      await this.userRecipeModel
+        .deleteOne({ _id: pendingRecipe._id, userid: userId, status: 'pending' })
+        .catch(() => undefined);
+      throw error;
+    }
 
     await this.mealPlanModel.updateOne(
       {

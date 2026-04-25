@@ -137,6 +137,7 @@ export class NutritionController {
 
   @Post('foods/analyze-image')
   @HttpCode(HttpStatus.OK)
+  @RequireFeature('barcode_scanning')
   @UseGuards(ThrottlerGuard)
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @UseInterceptors(
@@ -264,6 +265,7 @@ export class NutritionController {
 
   @Post('foods/identify-food')
   @HttpCode(HttpStatus.OK)
+  @RequireFeature('barcode_scanning')
   @UseGuards(ThrottlerGuard)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @UseInterceptors(
@@ -321,6 +323,7 @@ export class NutritionController {
 
   @Post('foods/photo-quick-add')
   @HttpCode(HttpStatus.OK)
+  @RequireFeature('barcode_scanning')
   @UseGuards(ThrottlerGuard)
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @UseInterceptors(
@@ -606,6 +609,7 @@ export class NutritionController {
 
   @Post('health-profile/insights/generate')
   @HttpCode(HttpStatus.OK)
+  @RequireFeature('nutrition_coaching')
   @UseGuards(ThrottlerGuard)
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   async generateMonthlySnapshot(@Request() req: any) {
@@ -615,6 +619,7 @@ export class NutritionController {
   }
 
   @Get('health-profile/daily-recommendation')
+  @RequireFeature('nutrition_coaching')
   @UseGuards(ThrottlerGuard)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   async getDailyRecommendation(@Request() req: any) {
