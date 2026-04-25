@@ -79,9 +79,9 @@ export const PLANS: Record<SubscriptionPlan, PlanDefinition> = {
     isPaid: true,
     limits: {
       aiMealsPerMonth: 15,
-      ingredients: UNLIMITED,
-      cookbooks: UNLIMITED,
-      shoppingLists: UNLIMITED,
+      ingredients: 50,
+      cookbooks: 20,
+      shoppingLists: 50,
       kitchenScansPerMonth: 0,
     },
     features: [

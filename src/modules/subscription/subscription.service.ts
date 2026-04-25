@@ -19,7 +19,9 @@ import {
   FeatureKey,
   LimitKey,
   PLANS,
+  PLAN_PREFIX_RULES,
   PlanDefinition,
+  PRODUCT_TO_PLAN,
   SAVEFUL_ENTITLEMENT,
   SubscriptionPlan,
   UNLIMITED,
@@ -32,9 +34,26 @@ const toObjectId = (id: string | Types.ObjectId) =>
 
 export type UsageCounterKey = 'aiMealsUsed';
 
+type RevenueCatVerificationConfig =
+  | { version: 'v1'; apiKey: string }
+  | { version: 'v2'; apiKey: string; projectId: string };
+
+const REVENUECAT_V2_PRODUCT_FETCH_PERMISSIONS =
+  'project_configuration:products:read';
+
+class RevenueCatCustomerNotFoundError extends Error {
+  constructor() {
+    super('RevenueCat customer not found');
+  }
+}
+
 @Injectable()
 export class SubscriptionService {
   private readonly logger = new Logger(SubscriptionService.name);
+  private readonly revenueCatV2ProductIdentifierCache = new Map<
+    string,
+    string | undefined
+  >();
 
   constructor(
     @InjectModel(Subscription.name)
@@ -43,7 +62,6 @@ export class SubscriptionService {
     private readonly usageModel: Model<SubscriptionUsageDocument>,
     private readonly configService: ConfigService,
   ) {}
-
 
   async getOrCreateSubscription(userId: string): Promise<SubscriptionDocument> {
     const uid = toObjectId(userId);
@@ -87,25 +105,65 @@ export class SubscriptionService {
     customerInfo: Record<string, any> | undefined,
     revenueCatUserId?: string,
   ): Promise<SubscriptionDocument> {
-    const revenueCatV1ApiKey = this.getRevenueCatV1ApiKey();
+    const revenueCatConfigs = this.getRevenueCatVerificationConfigs();
     let verifiedInfo: Record<string, any> | undefined;
+    let lastVerificationError: unknown;
+    let customerNotFound = false;
 
-    if (revenueCatV1ApiKey) {
-      try {
-        verifiedInfo = await this.fetchSubscriberFromRevenueCat(
-          userId,
-          revenueCatV1ApiKey,
-        );
-      } catch (err) {
-        if (!this.canTrustClientSyncFallback()) throw err;
-        this.logger.warn(
-          'RevenueCat server verification failed — falling back to client CustomerInfo because NODE_ENV is not production.',
-        );
-        verifiedInfo = this.trustedClientCustomerInfo(
-          userId,
-          customerInfo,
-          revenueCatUserId,
-        );
+    if (revenueCatConfigs.length > 0) {
+      for (let index = 0; index < revenueCatConfigs.length; index += 1) {
+        const revenueCatConfig = revenueCatConfigs[index];
+        try {
+          verifiedInfo =
+            revenueCatConfig.version === 'v2'
+              ? await this.fetchCustomerFromRevenueCatV2(
+                  userId,
+                  revenueCatConfig.apiKey,
+                  revenueCatConfig.projectId,
+                )
+              : await this.fetchSubscriberFromRevenueCat(
+                  userId,
+                  revenueCatConfig.apiKey,
+                );
+          break;
+        } catch (err) {
+          if (err instanceof RevenueCatCustomerNotFoundError) {
+            customerNotFound = true;
+            this.logger.log(
+              `RevenueCat v${revenueCatConfig.version} customer not found for user=${userId}`,
+            );
+            continue;
+          }
+
+          lastVerificationError = err;
+          if (index < revenueCatConfigs.length - 1) {
+            this.logger.warn(
+              `RevenueCat v${revenueCatConfig.version} verification failed; trying next configured RevenueCat API key.`,
+            );
+            continue;
+          }
+        }
+      }
+
+      if (!verifiedInfo) {
+        if (customerNotFound && !lastVerificationError) {
+          verifiedInfo = this.emptyRevenueCatCustomerInfo(userId);
+        } else if (this.canTrustClientSyncFallback()) {
+          this.logger.warn(
+            'RevenueCat server verification failed — falling back to client CustomerInfo because NODE_ENV is not production.',
+          );
+          verifiedInfo = this.trustedClientCustomerInfo(
+            userId,
+            customerInfo,
+            revenueCatUserId,
+          );
+        } else if (lastVerificationError) {
+          throw lastVerificationError;
+        } else {
+          throw new ServiceUnavailableException(
+            'Unable to verify subscription with RevenueCat',
+          );
+        }
       }
     } else {
       if (!this.canTrustClientSyncFallback()) {
@@ -114,8 +172,8 @@ export class SubscriptionService {
         );
       }
       this.logger.warn(
-        'No RevenueCat V1-compatible API key configured — /subscription/sync is trusting client CustomerInfo because NODE_ENV is not production. ' +
-          'Set REVENUECAT_V1_API_KEY in production, or rely on RevenueCat webhooks as the authoritative source.',
+        'No RevenueCat server API key configured — /subscription/sync is trusting client CustomerInfo because NODE_ENV is not production. ' +
+          'Set REVENUECAT_V2_API_KEY or REVENUECAT_V1_API_KEY in production, or rely on RevenueCat webhooks as the authoritative source.',
       );
       verifiedInfo = this.trustedClientCustomerInfo(
         userId,
@@ -153,29 +211,64 @@ export class SubscriptionService {
     return doc!;
   }
 
-  private getRevenueCatV1ApiKey(): string | undefined {
-    const candidates = [
-      this.configService.get<string>('REVENUECAT_V1_API_KEY'),
-      this.configService.get<string>('REVENUECAT_REST_API_KEY'),
-      this.configService.get<string>('REVENUECAT_PUBLIC_API_KEY'),
-      this.configService.get<string>('REVENUECAT_SECRET_API_KEY'),
-    ]
-      .map((value) => value?.trim())
-      .filter((value): value is string => !!value);
-
-    const apiKey = candidates.find((value) => !value.startsWith('sk_'));
-    const secretKey = this.configService
-      .get<string>('REVENUECAT_SECRET_API_KEY')
-      ?.trim();
-
-    if (!apiKey && secretKey?.startsWith('sk_')) {
-      this.logger.warn(
-        'REVENUECAT_SECRET_API_KEY is an sk_ secret key, which RevenueCat rejects on API V1 /subscribers. ' +
-          'Set REVENUECAT_V1_API_KEY for /subscription/sync server verification, or use webhooks for production truth.',
+  private getRevenueCatVerificationConfigs(): RevenueCatVerificationConfig[] {
+    const configs: RevenueCatVerificationConfig[] = [];
+    const addConfig = (config: RevenueCatVerificationConfig) => {
+      const exists = configs.some(
+        (candidate) =>
+          candidate.version === config.version &&
+          candidate.apiKey === config.apiKey &&
+          (candidate.version !== 'v2' ||
+            config.version !== 'v2' ||
+            candidate.projectId === config.projectId),
       );
+      if (!exists) configs.push(config);
+    };
+
+    const projectId = this.getFirstConfigValue([
+      'REVENUECAT_PROJECT_ID',
+      'REVENUECAT_V2_PROJECT_ID',
+      'REVENUECAT_API_PROJECT_ID',
+    ]);
+    const explicitV2ApiKey = this.getFirstConfigValue([
+      'REVENUECAT_V2_API_KEY',
+    ]);
+    const genericApiKey = this.getFirstConfigValue([
+      'REVENUECAT_SECRET_API_KEY',
+      'REVENUECAT_REST_API_KEY',
+    ]);
+    const v2ApiKey = explicitV2ApiKey ?? genericApiKey;
+
+    if (v2ApiKey) {
+      if (projectId) {
+        addConfig({ version: 'v2', apiKey: v2ApiKey, projectId });
+      } else if (explicitV2ApiKey) {
+        this.logger.warn(
+          'REVENUECAT_V2_API_KEY is configured, but REVENUECAT_PROJECT_ID is missing. ' +
+            'Set REVENUECAT_PROJECT_ID so /subscription/sync can verify customers through RevenueCat API v2.',
+        );
+      }
     }
 
-    return apiKey;
+    const explicitV1ApiKey = this.getFirstConfigValue([
+      'REVENUECAT_V1_API_KEY',
+      'REVENUECAT_LEGACY_API_KEY',
+      'REVENUECAT_PUBLIC_API_KEY',
+    ]);
+    const v1ApiKey =
+      explicitV1ApiKey ?? (!projectId ? genericApiKey : undefined);
+    if (v1ApiKey) addConfig({ version: 'v1', apiKey: v1ApiKey });
+
+    return configs;
+  }
+
+  private getFirstConfigValue(
+    keys: string[],
+    predicate: (value: string) => boolean = () => true,
+  ): string | undefined {
+    return keys
+      .map((key) => this.configService.get<string>(key)?.trim())
+      .find((value): value is string => !!value && predicate(value));
   }
 
   private canTrustClientSyncFallback(): boolean {
@@ -187,7 +280,8 @@ export class SubscriptionService {
       return ['1', 'true', 'yes'].includes(explicit.trim().toLowerCase());
     }
 
-    const env = this.configService.get<string>('NODE_ENV') ?? process.env.NODE_ENV;
+    const env =
+      this.configService.get<string>('NODE_ENV') ?? process.env.NODE_ENV;
     return env !== 'production';
   }
 
@@ -214,6 +308,13 @@ export class SubscriptionService {
     return customerInfo;
   }
 
+  private emptyRevenueCatCustomerInfo(userId: string): Record<string, any> {
+    return {
+      originalAppUserId: userId,
+      entitlements: { active: {} },
+    };
+  }
+
   private async fetchSubscriberFromRevenueCat(
     userId: string,
     revenueCatV1ApiKey: string,
@@ -231,6 +332,9 @@ export class SubscriptionService {
         },
         signal: controller.signal,
       });
+      if (res.status === 404) {
+        throw new RevenueCatCustomerNotFoundError();
+      }
       if (!res.ok) {
         const body = await res.text().catch(() => '');
         this.logger.error(
@@ -241,15 +345,19 @@ export class SubscriptionService {
         );
       }
       const data = (await res.json()) as any;
-      // RC REST returns { subscriber: { ... } } — map to CustomerInfo shape
-      // that parseCustomerInfo understands.
+
       const sub = data?.subscriber ?? {};
       return {
         originalAppUserId: sub?.original_app_user_id ?? userId,
         entitlements: { active: sub?.entitlements ?? {} },
       };
     } catch (err) {
-      if (err instanceof ServiceUnavailableException) throw err;
+      if (
+        err instanceof ServiceUnavailableException ||
+        err instanceof RevenueCatCustomerNotFoundError
+      ) {
+        throw err;
+      }
       this.logger.error(
         `RC REST fetch failed for user=${userId}: ${(err as Error).message}`,
       );
@@ -259,6 +367,321 @@ export class SubscriptionService {
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  private async fetchCustomerFromRevenueCatV2(
+    userId: string,
+    revenueCatV2ApiKey: string,
+    projectId: string,
+  ): Promise<Record<string, any>> {
+    const subscriptions = await this.fetchRevenueCatV2ListItems(
+      `/projects/${encodeURIComponent(projectId)}/customers/${encodeURIComponent(
+        userId,
+      )}/subscriptions?limit=100`,
+      revenueCatV2ApiKey,
+    );
+
+    const activeSubscription = this.pickActiveRevenueCatV2Subscription(
+      subscriptions,
+      SAVEFUL_ENTITLEMENT,
+    );
+
+    if (activeSubscription) {
+      const productIdentifier = await this.resolveRevenueCatV2ProductIdentifier(
+        projectId,
+        revenueCatV2ApiKey,
+        activeSubscription,
+      );
+      return this.subscriptionToCustomerInfo(
+        userId,
+        activeSubscription,
+        productIdentifier,
+      );
+    }
+
+    const purchases = await this.fetchRevenueCatV2ListItems(
+      `/projects/${encodeURIComponent(projectId)}/customers/${encodeURIComponent(
+        userId,
+      )}/purchases?limit=100`,
+      revenueCatV2ApiKey,
+    );
+    const activePurchase = this.pickActiveRevenueCatV2Purchase(
+      purchases,
+      SAVEFUL_ENTITLEMENT,
+    );
+
+    if (!activePurchase) {
+      return {
+        originalAppUserId: userId,
+        entitlements: { active: {} },
+      };
+    }
+
+    const productIdentifier = await this.resolveRevenueCatV2ProductIdentifier(
+      projectId,
+      revenueCatV2ApiKey,
+      activePurchase,
+    );
+    return this.purchaseToCustomerInfo(
+      userId,
+      activePurchase,
+      productIdentifier,
+    );
+  }
+
+  private async fetchRevenueCatV2ListItems(
+    initialPath: string,
+    apiKey: string,
+  ): Promise<any[]> {
+    const items: any[] = [];
+    let path: string | undefined = initialPath;
+
+    for (let page = 0; path && page < 5; page += 1) {
+      const data = await this.fetchRevenueCatV2(path, apiKey);
+      if (Array.isArray(data?.items)) items.push(...data.items);
+      path = typeof data?.next_page === 'string' ? data.next_page : undefined;
+    }
+
+    return items;
+  }
+
+  private async fetchRevenueCatV2(
+    pathOrUrl: string,
+    apiKey: string,
+  ): Promise<Record<string, any>> {
+    const url = this.revenueCatV2Url(pathOrUrl);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5_000);
+    try {
+      const res = await fetch(url, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        signal: controller.signal,
+      });
+      if (res.status === 404) {
+        throw new RevenueCatCustomerNotFoundError();
+      }
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        this.logger.error(
+          `RC REST v2 GET ${this.redactRevenueCatUrl(url)} failed: ${res.status} ${body.slice(0, 300)}`,
+        );
+        throw new ServiceUnavailableException(
+          'Unable to verify subscription with RevenueCat',
+        );
+      }
+      return (await res.json()) as Record<string, any>;
+    } catch (err) {
+      if (
+        err instanceof ServiceUnavailableException ||
+        err instanceof RevenueCatCustomerNotFoundError
+      ) {
+        throw err;
+      }
+      this.logger.error(`RC REST v2 fetch failed: ${(err as Error).message}`);
+      throw new ServiceUnavailableException(
+        'Unable to verify subscription with RevenueCat',
+      );
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private revenueCatV2Url(pathOrUrl: string): string {
+    if (/^https?:\/\//i.test(pathOrUrl)) return pathOrUrl;
+    const path = pathOrUrl.startsWith('/v2/')
+      ? pathOrUrl.slice('/v2'.length)
+      : pathOrUrl;
+    return `https://api.revenuecat.com/v2${path.startsWith('/') ? path : `/${path}`}`;
+  }
+
+  private redactRevenueCatUrl(url: string): string {
+    return url.replace(/\/customers\/([^/?]+)/, '/customers/[customer_id]');
+  }
+
+  private pickActiveRevenueCatV2Subscription(
+    subscriptions: any[],
+    entitlementId: string,
+  ): any | undefined {
+    return subscriptions
+      .filter(
+        (subscription) =>
+          subscription?.gives_access === true &&
+          this.hasRevenueCatV2Entitlement(subscription, entitlementId),
+      )
+      .sort((left, right) => {
+        const leftEnd = this.revenueCatMs(
+          left?.current_period_ends_at ?? left?.ends_at,
+        );
+        const rightEnd = this.revenueCatMs(
+          right?.current_period_ends_at ?? right?.ends_at,
+        );
+        return rightEnd - leftEnd;
+      })[0];
+  }
+
+  private pickActiveRevenueCatV2Purchase(
+    purchases: any[],
+    entitlementId: string,
+  ): any | undefined {
+    return purchases
+      .filter(
+        (purchase) =>
+          purchase?.status === 'owned' &&
+          this.hasRevenueCatV2Entitlement(purchase, entitlementId),
+      )
+      .sort((left, right) => {
+        const leftAt = this.revenueCatMs(left?.purchased_at);
+        const rightAt = this.revenueCatMs(right?.purchased_at);
+        return rightAt - leftAt;
+      })[0];
+  }
+
+  private hasRevenueCatV2Entitlement(
+    resource: any,
+    entitlementId: string,
+  ): boolean {
+    const items = resource?.entitlements?.items;
+    if (!Array.isArray(items) || items.length === 0) {
+      return true;
+    }
+    return items.some(
+      (entitlement) =>
+        entitlement?.lookup_key === entitlementId ||
+        entitlement?.id === entitlementId,
+    );
+  }
+
+  private async resolveRevenueCatV2ProductIdentifier(
+    projectId: string,
+    apiKey: string,
+    resource: any,
+  ): Promise<string | undefined> {
+    const productId =
+      typeof resource?.product_id === 'string'
+        ? resource.product_id.trim()
+        : undefined;
+    if (!productId) return undefined;
+    if (this.mapsToKnownPlan(productId)) return productId;
+
+    const cacheKey = `${projectId}:${productId}`;
+    if (this.revenueCatV2ProductIdentifierCache.has(cacheKey)) {
+      return this.revenueCatV2ProductIdentifierCache.get(cacheKey);
+    }
+
+    try {
+      const product = await this.fetchRevenueCatV2(
+        `/projects/${encodeURIComponent(projectId)}/products/${encodeURIComponent(
+          productId,
+        )}`,
+        apiKey,
+      );
+      const storeIdentifier =
+        typeof product?.store_identifier === 'string'
+          ? product.store_identifier.trim()
+          : undefined;
+      const identifier = storeIdentifier || productId;
+      this.revenueCatV2ProductIdentifierCache.set(cacheKey, identifier);
+      return identifier;
+    } catch (err) {
+      this.logger.warn(
+        `Unable to resolve RevenueCat v2 product ${productId} to a store identifier. ` +
+          `Grant ${REVENUECAT_V2_PRODUCT_FETCH_PERMISSIONS} to improve Hero/Legend plan mapping.`,
+      );
+      this.revenueCatV2ProductIdentifierCache.set(cacheKey, productId);
+      return productId;
+    }
+  }
+
+  private mapsToKnownPlan(productId: string): boolean {
+    return (
+      !!PRODUCT_TO_PLAN[productId] ||
+      PLAN_PREFIX_RULES.some((rule) => rule.match.test(productId))
+    );
+  }
+
+  private planForProductId(
+    productId: string | undefined,
+  ): SubscriptionPlan | undefined {
+    if (!productId) return undefined;
+    if (PRODUCT_TO_PLAN[productId]) return PRODUCT_TO_PLAN[productId];
+    return PLAN_PREFIX_RULES.find((rule) => rule.match.test(productId))?.plan;
+  }
+
+  private subscriptionToCustomerInfo(
+    userId: string,
+    subscription: any,
+    productIdentifier: string | undefined,
+  ): Record<string, any> {
+    const willRenew = [
+      'will_renew',
+      'will_change_product',
+      'has_already_renewed',
+    ].includes(subscription?.auto_renewal_status);
+    const periodType = subscription?.status === 'trialing' ? 'TRIAL' : 'NORMAL';
+    const expiresAt = this.isoFromRevenueCatMs(
+      subscription?.current_period_ends_at ?? subscription?.ends_at,
+    );
+
+    return {
+      originalAppUserId:
+        subscription?.original_customer_id ??
+        subscription?.customer_id ??
+        userId,
+      entitlements: {
+        active: {
+          [SAVEFUL_ENTITLEMENT]: {
+            product_identifier: productIdentifier,
+            expires_date: expiresAt,
+            purchase_date: this.isoFromRevenueCatMs(
+              subscription?.current_period_starts_at ?? subscription?.starts_at,
+            ),
+            period_type: periodType,
+            store: subscription?.store,
+            will_renew: willRenew,
+            unsubscribe_detected_at: willRenew
+              ? null
+              : new Date().toISOString(),
+          },
+        },
+      },
+    };
+  }
+
+  private purchaseToCustomerInfo(
+    userId: string,
+    purchase: any,
+    productIdentifier: string | undefined,
+  ): Record<string, any> {
+    return {
+      originalAppUserId:
+        purchase?.original_customer_id ?? purchase?.customer_id ?? userId,
+      entitlements: {
+        active: {
+          [SAVEFUL_ENTITLEMENT]: {
+            product_identifier: productIdentifier,
+            expires_date: null,
+            purchase_date: this.isoFromRevenueCatMs(purchase?.purchased_at),
+            period_type: 'NORMAL',
+            store: purchase?.store,
+            will_renew: false,
+          },
+        },
+      },
+    };
+  }
+
+  private revenueCatMs(value: unknown): number {
+    return typeof value === 'number' ? value : 0;
+  }
+
+  private isoFromRevenueCatMs(value: unknown): string | null {
+    return typeof value === 'number' && Number.isFinite(value)
+      ? new Date(value).toISOString()
+      : null;
   }
 
   /**
@@ -316,16 +739,13 @@ export class SubscriptionService {
     }
 
     const type: string | undefined = event?.type;
-    const entitlementIds: string[] = event?.entitlement_ids || [];
+    const entitlementIds: string[] = Array.isArray(event?.entitlement_ids)
+      ? event.entitlement_ids
+      : event?.entitlement_id
+        ? [event.entitlement_id]
+        : [];
     const productId: string | undefined = event?.product_id;
 
-    /**
-     * Build the authoritative `$set` for this event. Then apply it atomically
-     * with a filter that blocks:
-     *   a) duplicate event id (idempotency) — via `lastEventId: { $ne: eventId }`
-     *   b) out-of-order events       — via `lastEventAt: { $not: { $gt: eventAt } }`
-     * `modifiedCount === 0` means one of those guards tripped; we log & skip.
-     */
     const commit = async (set: Record<string, any>) => {
       const filter: Record<string, any> = { userId: uid };
       if (eventId) filter.lastEventId = { $ne: eventId };
@@ -349,18 +769,114 @@ export class SubscriptionService {
 
     try {
       // Terminal states: explicitly downgrade regardless of entitlement snapshot.
-      if (
-        type === 'EXPIRATION' ||
-        type === 'SUBSCRIPTION_PAUSED' ||
-        type === 'REFUND' ||
-        type === 'TRANSFER'
-      ) {
+      if (type === 'EXPIRATION' || type === 'REFUND' || type === 'TRANSFER') {
         await commit({
           plan: 'basic',
-          status: type === 'SUBSCRIPTION_PAUSED' ? 'paused' : 'expired',
+          status:
+            type === 'EXPIRATION' &&
+            event?.expiration_reason === 'SUBSCRIPTION_PAUSED'
+              ? 'paused'
+              : 'expired',
           willRenew: false,
           lastCustomerInfo: event,
         });
+        return;
+      }
+      if (type === 'BILLING_ISSUE') {
+        const expiresAt = event?.expiration_at_ms
+          ? new Date(event.expiration_at_ms)
+          : existing?.expiresAt;
+        const stillPaid =
+          !!existing?.plan &&
+          existing.plan !== 'basic' &&
+          (!expiresAt || expiresAt.getTime() > Date.now());
+        await commit(
+          stillPaid
+            ? {
+                status: 'active',
+                willRenew: false,
+                expiresAt: expiresAt ?? existing?.expiresAt,
+                lastCustomerInfo: event,
+              }
+            : {
+                plan: 'basic',
+                status: 'expired',
+                willRenew: false,
+                lastCustomerInfo: event,
+              },
+        );
+        return;
+      }
+
+      // UNCANCELLATION = user re-enabled auto-renew. Restore willRenew=true
+      // and clear cancelledAt without depending on entitlement_ids, which
+      // RevenueCat does not always include in this event type.
+      if (type === 'UNCANCELLATION') {
+        const expiresAt = event?.expiration_at_ms
+          ? new Date(event.expiration_at_ms)
+          : existing?.expiresAt;
+        const paidPlan =
+          (existing?.plan && existing.plan !== 'basic'
+            ? existing.plan
+            : undefined) ?? this.planForProductId(productId);
+        if (paidPlan) {
+          await commit({
+            plan: paidPlan,
+            status: 'active',
+            productId: productId ?? existing?.productId,
+            expiresAt,
+            willRenew: true,
+            cancelledAt: undefined,
+            revenueCatUserId: appUserId,
+            lastCustomerInfo: event,
+          });
+          return;
+        }
+      }
+
+      if (type === 'SUBSCRIPTION_PAUSED' && entitlementIds.length === 0) {
+        await commit({
+          status: existing?.status === 'in_trial' ? 'in_trial' : 'active',
+          willRenew: false,
+          lastCustomerInfo: event,
+        });
+        return;
+      }
+
+      if (type === 'CANCELLATION' && entitlementIds.length === 0) {
+        const eventExpiresAt = event?.expiration_at_ms
+          ? new Date(event.expiration_at_ms)
+          : undefined;
+        const expiresAt = eventExpiresAt ?? existing?.expiresAt;
+        const existingPaidPlan =
+          existing?.plan && existing.plan !== 'basic'
+            ? existing.plan
+            : undefined;
+        const paidPlan = existingPaidPlan ?? this.planForProductId(productId);
+        const hasCurrentAccess =
+          !!paidPlan && !!expiresAt && expiresAt.getTime() > Date.now();
+
+        await commit(
+          hasCurrentAccess
+            ? {
+                plan: paidPlan,
+                status: 'cancelled',
+                productId: productId ?? existing?.productId,
+                expiresAt,
+                willRenew: false,
+                cancelledAt: eventAt,
+                revenueCatUserId: appUserId,
+                lastCustomerInfo: event,
+              }
+            : {
+                plan: 'basic',
+                status: 'expired',
+                willRenew: false,
+                cancelledAt: eventAt,
+                revenueCatUserId: appUserId,
+                lastCustomerInfo: event,
+              },
+        );
         return;
       }
 
@@ -377,7 +893,9 @@ export class SubscriptionService {
             : undefined,
           period_type: event?.period_type,
           store: event?.store,
-          will_renew: type !== 'CANCELLATION',
+          will_renew: !['CANCELLATION', 'SUBSCRIPTION_PAUSED'].includes(
+            type ?? '',
+          ),
           unsubscribe_detected_at:
             type === 'CANCELLATION' ? new Date(eventAt).toISOString() : null,
         };
@@ -443,7 +961,6 @@ export class SubscriptionService {
     });
   }
 
-
   async getUsage(userId: string): Promise<SubscriptionUsageDocument> {
     const uid = toObjectId(userId);
     const { periodKey, periodStart, periodEnd } =
@@ -456,7 +973,6 @@ export class SubscriptionService {
     return usage!;
   }
 
-  
   async incrementUsage(
     userId: string,
     key: UsageCounterKey,
@@ -493,8 +1009,6 @@ export class SubscriptionService {
       });
     };
 
-    // Conditional atomic increment. Ensure the doc exists first so the
-    // conditional upsert cannot collide with the unique index on a race.
     await this.usageModel.updateOne(
       { userId: uid, periodKey },
       { $setOnInsert: { userId: uid, periodKey, periodStart, periodEnd } },
@@ -519,8 +1033,6 @@ export class SubscriptionService {
       throw err;
     }
   }
-
-  /** Check a limit without mutating usage. Useful before showing UI. */
   async checkLimit(
     userId: string,
     key: UsageCounterKey,
@@ -539,11 +1051,6 @@ export class SubscriptionService {
     };
   }
 
-  /**
-   * Refund a metered counter (e.g. when an AI generation job fails or is
-   * cancelled so the user's monthly quota isn't burnt). Floored at 0 so we
-   * can never produce negative usage.
-   */
   async refundUsage(
     userId: string,
     key: UsageCounterKey,
@@ -633,11 +1140,6 @@ export class SubscriptionService {
     };
   }
 
-  /**
-   * Persist the user's cancellation reason on the subscription doc. Apple
-   * and Google own the actual cancellation flow — this is only for product
-   * analytics and follow-up by support.
-   */
   async recordCancelFeedback(
     userId: string,
     feedback: {

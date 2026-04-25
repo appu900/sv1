@@ -13,14 +13,18 @@ interface ActiveEntitlement {
   expires_date?: string | null;
   expirationDate?: string | null;
   purchase_date?: string;
+  purchaseDate?: string;
   latest_purchase_date?: string;
+  latestPurchaseDate?: string;
   period_type?: string;
   periodType?: string;
   store?: string;
   will_renew?: boolean;
   willRenew?: boolean;
   unsubscribe_detected_at?: string | null;
+  unsubscribeDetectedAt?: string | null;
   billing_issues_detected_at?: string | null;
+  billingIssueDetectedAt?: string | null;
 }
 
 export interface ParsedSubscription {
@@ -43,7 +47,6 @@ function toDate(value?: string | null): Date | undefined {
   return Number.isNaN(d.getTime()) ? undefined : d;
 }
 
-
 export function parseCustomerInfo(
   customerInfo: Record<string, any> | undefined | null,
   entitlementId: string = SAVEFUL_ENTITLEMENT,
@@ -53,9 +56,7 @@ export function parseCustomerInfo(
   }
 
   const entitlements =
-    customerInfo.entitlements?.active ??
-    customerInfo.entitlements ??
-    {};
+    customerInfo.entitlements?.active ?? customerInfo.entitlements ?? {};
 
   const ent: ActiveEntitlement | undefined =
     entitlements?.[entitlementId] ??
@@ -69,7 +70,7 @@ export function parseCustomerInfo(
   const productId: string | undefined =
     ent.product_identifier || ent.productIdentifier;
 
-  let plan: SubscriptionPlan = 'basic';
+  let plan: SubscriptionPlan = 'hero';
   if (productId) {
     if (PRODUCT_TO_PLAN[productId]) {
       plan = PRODUCT_TO_PLAN[productId];
@@ -80,10 +81,21 @@ export function parseCustomerInfo(
   }
 
   const expiresAt = toDate(ent.expires_date ?? ent.expirationDate ?? null);
-  const purchasedAt = toDate(ent.latest_purchase_date ?? ent.purchase_date);
-  const periodType = ent.periodType ?? ent.period_type;
+  const purchasedAt = toDate(
+    ent.latest_purchase_date ??
+      ent.latestPurchaseDate ??
+      ent.purchase_date ??
+      ent.purchaseDate,
+  );
+  const rawPeriodType = ent.periodType ?? ent.period_type;
+  const periodType =
+    typeof rawPeriodType === 'string'
+      ? rawPeriodType.toLowerCase()
+      : rawPeriodType;
   const willRenew = ent.willRenew ?? ent.will_renew ?? false;
-  const cancelledAt = toDate(ent.unsubscribe_detected_at ?? null);
+  const cancelledAt = toDate(
+    ent.unsubscribe_detected_at ?? ent.unsubscribeDetectedAt ?? null,
+  );
 
   const now = Date.now();
   let status: SubscriptionStatus = 'active';
