@@ -39,6 +39,8 @@ export interface ParsedSubscription {
   trialEndsAt?: Date;
   willRenew: boolean;
   cancelledAt?: Date;
+  /** True when the user cancelled while still inside a free trial / intro. */
+  trialCancelled?: boolean;
 }
 
 function toDate(value?: string | null): Date | undefined {
@@ -50,6 +52,7 @@ function toDate(value?: string | null): Date | undefined {
 export function parseCustomerInfo(
   customerInfo: Record<string, any> | undefined | null,
   entitlementId: string = SAVEFUL_ENTITLEMENT,
+  existingPlan?: SubscriptionPlan,
 ): ParsedSubscription {
   if (!customerInfo) {
     return { plan: 'basic', status: 'expired', willRenew: false };
@@ -70,7 +73,11 @@ export function parseCustomerInfo(
   const productId: string | undefined =
     ent.product_identifier || ent.productIdentifier;
 
-  let plan: SubscriptionPlan = 'hero';
+  // Resolve plan from productId. If the productId is missing or unmapped we
+  // fall back to the previously stored plan rather than defaulting to 'hero'
+  // — defaulting silently downgraded Legend users to Hero whenever
+  // RevenueCat returned a payload we couldn't map.
+  let plan: SubscriptionPlan | undefined;
   if (productId) {
     if (PRODUCT_TO_PLAN[productId]) {
       plan = PRODUCT_TO_PLAN[productId];
@@ -78,6 +85,10 @@ export function parseCustomerInfo(
       const rule = PLAN_PREFIX_RULES.find((r) => r.match.test(productId));
       if (rule) plan = rule.plan;
     }
+  }
+  if (!plan) {
+    plan =
+      existingPlan && existingPlan !== 'basic' ? existingPlan : 'hero';
   }
 
   const expiresAt = toDate(ent.expires_date ?? ent.expirationDate ?? null);
@@ -110,6 +121,11 @@ export function parseCustomerInfo(
   const trialEndsAt =
     periodType === 'trial' || periodType === 'intro' ? expiresAt : undefined;
 
+  const trialCancelled =
+    !!cancelledAt &&
+    !willRenew &&
+    (periodType === 'trial' || periodType === 'intro');
+
   return {
     plan: status === 'expired' ? 'basic' : plan,
     status,
@@ -122,5 +138,6 @@ export function parseCustomerInfo(
     trialEndsAt,
     willRenew,
     cancelledAt,
+    trialCancelled,
   };
 }

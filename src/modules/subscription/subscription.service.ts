@@ -93,36 +93,57 @@ export class SubscriptionService {
     return sub!;
   }
 
-  /**
-   * Returns both the subscription document and the resolved plan after
-   * applying lazy expiry. Consolidates what was previously two separate
-   * round-trips (`getOrCreateSubscription` + `getPlan`) and ensures the
-   * returned `sub` document reflects any auto-downgrade we just applied so
-   * downstream callers (e.g. `getSubscriptionSnapshot`) cannot return a
-   * stale `status` / `expiresAt` / `productId` / `willRenew` snapshot.
-   */
-  private async resolveActiveSubscription(userId: string): Promise<{
+  private async findSubscription(
+    userId: string,
+  ): Promise<SubscriptionDocument | null> {
+    const uid = toObjectId(userId);
+    return this.subscriptionModel.findOne({ userId: uid });
+  }
+
+  private synthesiseBasicSubscription(userId: string): SubscriptionDocument {
+    const uid = toObjectId(userId);
+    return {
+      userId: uid,
+      plan: 'basic' as SubscriptionPlan,
+      status: 'active',
+      willRenew: false,
+    } as SubscriptionDocument;
+  }
+
+
+  private async resolveActiveSubscription(
+    userId: string,
+    options: { readOnly?: boolean } = {},
+  ): Promise<{
     sub: SubscriptionDocument;
     plan: SubscriptionPlan;
   }> {
-    const sub = await this.getOrCreateSubscription(userId);
+    const sub = options.readOnly
+      ? (await this.findSubscription(userId)) ??
+        this.synthesiseBasicSubscription(userId)
+      : await this.getOrCreateSubscription(userId);
     if (
       sub.plan !== 'basic' &&
       sub.expiresAt &&
       sub.expiresAt.getTime() < Date.now()
     ) {
-      const expired = await this.subscriptionModel.findOneAndUpdate(
-        { _id: sub._id, plan: sub.plan },
-        {
-          $set: {
-            plan: 'basic',
-            status: 'expired',
-            willRenew: false,
+      // Only persist the lazy-expiry flip when we're not in read-only mode
+      // and we have a real saved doc to update.
+      if (!options.readOnly && (sub as any)._id) {
+        const expired = await this.subscriptionModel.findOneAndUpdate(
+          { _id: sub._id, plan: sub.plan },
+          {
+            $set: {
+              plan: 'basic',
+              status: 'expired',
+              willRenew: false,
+            },
           },
-        },
-        { new: true },
-      );
-      return { sub: expired ?? sub, plan: 'basic' };
+          { new: true },
+        );
+        return { sub: expired ?? sub, plan: 'basic' };
+      }
+      return { sub, plan: 'basic' };
     }
     return { sub, plan: sub.plan };
   }
@@ -140,14 +161,20 @@ export class SubscriptionService {
     userId: string,
     customerInfo: Record<string, any> | undefined,
     revenueCatUserId?: string,
+    options: { throwOnFailure?: boolean } = {},
   ): Promise<SubscriptionDocument> {
     const verifiedInfo = await this.verifyCustomerWithRevenueCat(userId, {
       clientCustomerInfo: customerInfo,
       revenueCatUserId,
-      throwOnFailure: true,
+      throwOnFailure: options.throwOnFailure ?? true,
     });
 
-    const parsed = parseCustomerInfo(verifiedInfo, SAVEFUL_ENTITLEMENT);
+    const existing = await this.findSubscription(userId);
+    const parsed = parseCustomerInfo(
+      verifiedInfo,
+      SAVEFUL_ENTITLEMENT,
+      existing?.plan,
+    );
     const uid = toObjectId(userId);
     const update: Record<string, any> = {
       plan: parsed.plan,
@@ -180,6 +207,22 @@ export class SubscriptionService {
     if (Object.keys(unset).length > 0) {
       ops.$unset = unset;
       for (const field of Object.keys(unset)) delete ops.$set[field];
+    }
+    // Trial consumption: once we observe a trial / intro period for a tier,
+    // record it permanently. `$min` keeps the earliest known timestamp so
+    // that re-sync events do not push the trial-consumed marker forward.
+    // The paywall uses this to suppress "Free trial" copy for tiers the
+    // user has already trialed (so cancelling a trial does NOT let them
+    // start another one).
+    if (
+      (parsed.periodType === 'trial' || parsed.periodType === 'intro') &&
+      (parsed.plan === 'hero' || parsed.plan === 'legend')
+    ) {
+      const trialAt = parsed.purchasedAt ?? new Date();
+      ops.$min = {
+        ...(ops.$min ?? {}),
+        [`trialsConsumed.${parsed.plan}`]: trialAt,
+      };
     }
     const doc = await this.subscriptionModel.findOneAndUpdate(
       { userId: uid },
@@ -578,6 +621,20 @@ export class SubscriptionService {
     subscriptions: any[],
     entitlementId: string,
   ): any | undefined {
+    // Pick the SUBSCRIPTION the user is actively on right now, not just the
+    // one with the latest end date. When a user upgrades Hero → Legend, the
+    // previous (Hero) subscription often still has a later
+    // `current_period_ends_at` (longer cycle / proration) and would be
+    // returned, hiding the just-purchased Legend. Sort by:
+    //   1. most-recent `purchased_at` / `starts_at` (newest purchase wins)
+    //   2. tier rank (legend > hero) as a tie-break
+    //   3. latest end date as a final fallback
+    const tierRank = (resource: any): number => {
+      const id = String(resource?.product_id ?? '').toLowerCase();
+      if (id.includes('legend')) return 2;
+      if (id.includes('hero')) return 1;
+      return 0;
+    };
     return subscriptions
       .filter(
         (subscription) =>
@@ -585,6 +642,17 @@ export class SubscriptionService {
           this.hasRevenueCatV2Entitlement(subscription, entitlementId),
       )
       .sort((left, right) => {
+        const leftPurchased = this.revenueCatMs(
+          left?.purchased_at ?? left?.starts_at,
+        );
+        const rightPurchased = this.revenueCatMs(
+          right?.purchased_at ?? right?.starts_at,
+        );
+        if (rightPurchased !== leftPurchased) {
+          return rightPurchased - leftPurchased;
+        }
+        const tierDelta = tierRank(right) - tierRank(left);
+        if (tierDelta !== 0) return tierDelta;
         const leftEnd = this.revenueCatMs(
           left?.current_period_ends_at ?? left?.ends_at,
         );
@@ -702,6 +770,12 @@ export class SubscriptionService {
       subscription?.current_period_ends_at ?? subscription?.ends_at,
     );
 
+    const unsubscribeDetectedAt =
+      this.isoFromRevenueCatMs(subscription?.unsubscribe_detected_at) ??
+      (subscription?.auto_renewal_status === 'unsubscribed'
+        ? new Date().toISOString()
+        : null);
+
     return {
       originalAppUserId:
         subscription?.original_customer_id ??
@@ -718,9 +792,7 @@ export class SubscriptionService {
             period_type: periodType,
             store: subscription?.store,
             will_renew: willRenew,
-            unsubscribe_detected_at: willRenew
-              ? null
-              : new Date().toISOString(),
+            unsubscribe_detected_at: unsubscribeDetectedAt,
           },
         },
       },
@@ -994,7 +1066,11 @@ export class SubscriptionService {
             { throwOnFailure: false },
           );
           if (verifiedInfo) {
-            const parsed = parseCustomerInfo(verifiedInfo, SAVEFUL_ENTITLEMENT);
+            const parsed = parseCustomerInfo(
+              verifiedInfo,
+              SAVEFUL_ENTITLEMENT,
+              existing?.plan,
+            );
             // If the verified state has no cancellation marker, explicitly
             // clear any prior `cancelledAt` so the user is not stuck in a
             // "cancelled" UI state after re-upgrading.
@@ -1064,7 +1140,11 @@ export class SubscriptionService {
         originalAppUserId: appUserId,
         entitlements: { active },
       };
-      const parsed = parseCustomerInfo(customerInfo, SAVEFUL_ENTITLEMENT);
+      const parsed = parseCustomerInfo(
+        customerInfo,
+        SAVEFUL_ENTITLEMENT,
+        existing?.plan,
+      );
       const unset: Record<string, ''> = {};
       if (!parsed.cancelledAt) unset.cancelledAt = '';
       if (!parsed.trialEndsAt) unset.trialEndsAt = '';
@@ -1294,31 +1374,56 @@ export class SubscriptionService {
   }
 
   async getSubscriptionSnapshot(userId: string) {
-   
-    const { sub, plan } = await this.resolveActiveSubscription(userId);
-    const def = PLANS[plan];
+    // Read-only: never insert a Subscription doc just to render the
+    // snapshot — that was making manual DB cleanup pointless because every
+    // app launch resurrected the row. Sync (purchase / restore / webhook)
+    // remains the only write path.
+    const { sub, plan } = await this.resolveActiveSubscription(userId, {
+      readOnly: true,
+    });
+
+    // `effectivePlan` reflects what features the user should ACTUALLY get
+    // right now, independent of the most recent product they were billed
+    // for. We drop to 'basic' immediately when the user cancelled while
+    // still inside a free-trial — the user expectation is that cancelling
+    // a trial means "I never really subscribed" and the paywall should
+    // not keep showing them as a Hero customer. Non-trial cancellations
+    // keep the grace-period behaviour (paid until `expiresAt`).
+    const isTrialPeriod =
+      sub.periodType === 'trial' || sub.periodType === 'intro';
+    const cancelledTrial =
+      sub.status === 'cancelled' && !sub.willRenew && isTrialPeriod;
+    const effectivePlan: SubscriptionPlan = cancelledTrial ? 'basic' : plan;
+    const def = PLANS[effectivePlan];
+
     const period = currentUsagePeriod({
-      plan,
+      plan: effectivePlan,
       purchasedAt: sub.purchasedAt,
       expiresAt: sub.expiresAt,
       productId: sub.productId,
       periodType: sub.periodType,
     });
+    // Read-only usage lookup — only insert if a row already exists, since a
+    // genuine increment path will create it. Returning zeros for a
+    // brand-new user is the correct snapshot.
     const uid = toObjectId(userId);
-    const usage = await this.usageModel.findOneAndUpdate(
-      { userId: uid, periodKey: period.periodKey },
-      {
-        $setOnInsert: {
-          userId: uid,
-          periodKey: period.periodKey,
-          periodStart: period.periodStart,
-          periodEnd: period.periodEnd,
-        },
-      },
-      { upsert: true, new: true, setDefaultsOnInsert: true },
-    );
+    const usageDoc = await this.usageModel.findOne({
+      userId: uid,
+      periodKey: period.periodKey,
+    });
+    const aiMealsUsed = (usageDoc as any)?.aiMealsUsed ?? 0;
+    const kitchenScansUsed = (usageDoc as any)?.kitchenScansUsed ?? 0;
+    const trialsConsumed = (sub as any)?.trialsConsumed ?? {};
     return {
-      plan,
+      // `plan` is what the rest of the app reads for gating / UI tier
+      // colours; we use the effective plan so a cancelled-trial user is
+      // treated as Basic immediately.
+      plan: effectivePlan,
+      // `billedPlan` is the most recently purchased tier — used by the
+      // Manage screen to render "Saveful Hero · Cancelled" copy while
+      // gating remains on Basic.
+      billedPlan: plan,
+      effectivePlan,
       status: sub.status,
       isPaid: def.isPaid,
       label: def.label,
@@ -1330,13 +1435,19 @@ export class SubscriptionService {
       expiresAt: sub.expiresAt,
       trialEndsAt: sub.trialEndsAt,
       willRenew: sub.willRenew,
+      cancelledAt: sub.cancelledAt,
+      trialCancelled: cancelledTrial,
+      trialsConsumed: {
+        hero: trialsConsumed.hero ?? null,
+        legend: trialsConsumed.legend ?? null,
+      },
       features: def.features,
       limits: def.limits,
       usage: {
-        aiMealsUsed: usage!.aiMealsUsed,
-        kitchenScansUsed: usage!.kitchenScansUsed ?? 0,
-        periodKey: usage!.periodKey,
-        periodEnd: usage!.periodEnd,
+        aiMealsUsed,
+        kitchenScansUsed,
+        periodKey: period.periodKey,
+        periodEnd: period.periodEnd,
       },
     };
   }

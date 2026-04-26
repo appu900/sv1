@@ -46,10 +46,16 @@ export class Subscription {
   @Prop()
   cancelledAt?: Date;
 
+  @Prop({
+    type: { hero: Date, legend: Date },
+    _id: false,
+    default: undefined,
+  })
+  trialsConsumed?: { hero?: Date; legend?: Date };
+
   @Prop({ type: Object })
   lastCustomerInfo?: Record<string, unknown>;
 
-  /** Latest user-supplied cancellation feedback (reason + free-text). */
   @Prop({
     type: {
       reason: String,
@@ -68,11 +74,9 @@ export class Subscription {
     submittedAt: Date;
   };
 
-  /** RevenueCat webhook event.id of the last event applied — dedup guard. */
   @Prop({ index: true })
   lastEventId?: string;
 
-  /** Timestamp of the last webhook event applied — stale/out-of-order guard. */
   @Prop()
   lastEventAt?: Date;
 }
