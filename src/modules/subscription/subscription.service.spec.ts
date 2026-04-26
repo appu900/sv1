@@ -46,7 +46,7 @@ describe('SubscriptionService RevenueCat configuration', () => {
 });
 
 describe('SubscriptionService RevenueCat v2 periods', () => {
-  it('converts ISO timestamp fields into a real billing usage period', () => {
+  it('parses ISO timestamp fields into a calendar-month usage period', () => {
     const { service } = createService();
 
     const customerInfo = (service as any).subscriptionToCustomerInfo(
@@ -70,25 +70,34 @@ describe('SubscriptionService RevenueCat v2 periods', () => {
       '2026-05-25T09:30:00.000Z',
     );
 
+    // Usage is always keyed by calendar month — see period.ts.
     const period = currentUsagePeriod(parsed, new Date('2026-05-01T00:00:00.000Z'));
-    expect(period.periodKey).toBe('billing:1777109400000-1779701400000');
+    expect(period.periodKey).toBe('2026-05');
   });
 
-  it('sorts active v2 subscriptions by ISO period end date', () => {
+  it('picks the most recently purchased active v2 subscription, breaking ties by tier rank', () => {
+    // Regression: the picker used to sort by `current_period_ends_at` DESC,
+    // which caused a still-running Hero subscription with a later expiry to
+    // hide a freshly-purchased Legend. The fix sorts by `purchased_at` DESC
+    // (newest purchase wins) and tier-ranks legend > hero as a tie-break.
     const { service } = createService();
 
     const selected = (service as any).pickActiveRevenueCatV2Subscription(
       [
         {
+          // Hero — bought first, but has the LATER end date.
           product_id: 'saveful.hero.monthly',
           gives_access: true,
-          current_period_ends_at: '2026-05-25T09:30:00.000Z',
+          purchased_at: '2026-04-01T09:30:00.000Z',
+          current_period_ends_at: '2026-07-25T09:30:00.000Z',
           entitlements: { items: [{ lookup_key: 'saveful_pro' }] },
         },
         {
+          // Legend — bought just now, ends sooner.
           product_id: 'saveful.legend.monthly',
           gives_access: true,
-          current_period_ends_at: '2026-06-25T09:30:00.000Z',
+          purchased_at: '2026-04-26T13:06:18.822Z',
+          current_period_ends_at: '2026-05-26T13:06:18.822Z',
           entitlements: { items: [{ lookup_key: 'saveful_pro' }] },
         },
       ],

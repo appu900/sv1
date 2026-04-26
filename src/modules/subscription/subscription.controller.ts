@@ -4,11 +4,15 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  Param,
   Post,
+  Query,
   Request,
   UseGuards,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { RolesGuard } from '../../common/guards/roles.guard';
+import { Roles } from '../../common/decorators/role.decorators';
 import { SubscriptionService } from './subscription.service';
 import { SyncSubscriptionDto } from './dto/sync-subscription.dto';
 import { CancelFeedbackDto } from './dto/cancel-feedback.dto';
@@ -55,5 +59,27 @@ export class SubscriptionController {
     const userId = resolveUserId(req);
     await this.subscriptionService.recordCancelFeedback(userId, dto);
     return { ok: true };
+  }
+
+  /**
+   * Admin-only: hard-revoke a user from the subscription system.
+   * Deletes the customer at RevenueCat and purges local Subscription /
+   * SubscriptionUsage docs. Use for refunds, banned users, or wiping
+   * test accounts.
+   *
+   *   POST /subscription/admin/revoke/:userId            (keeps trial markers)
+   *   POST /subscription/admin/revoke/:userId?purgeTrialHistory=true
+   */
+  @Post('admin/revoke/:userId')
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @HttpCode(HttpStatus.OK)
+  async adminRevoke(
+    @Param('userId') userId: string,
+    @Query('purgeTrialHistory') purgeTrialHistory?: string,
+  ) {
+    return this.subscriptionService.revokeUserSubscription(userId, {
+      purgeTrialHistory: purgeTrialHistory === 'true',
+    });
   }
 }

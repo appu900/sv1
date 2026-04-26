@@ -1186,12 +1186,6 @@ export class SubscriptionService {
       throw new ForbiddenException({
         code: 'UPGRADE_REQUIRED',
         feature,
-        // Tell the client which paid tier actually grants the feature so the
-        // paywall can highlight the right plan. We pick the lowest-ranked
-        // paid plan that includes the feature — e.g. `barcode_scanning` is
-        // legend-only, `smart_meal_planning` is hero+. This keeps the
-        // backend as the single source of truth instead of the app having
-        // to mirror the feature→plan mapping.
         requiredPlan: this.minimumPaidPlanForFeature(feature),
         currentPlan,
         message: 'Upgrade required to use this feature',
@@ -1374,21 +1368,11 @@ export class SubscriptionService {
   }
 
   async getSubscriptionSnapshot(userId: string) {
-    // Read-only: never insert a Subscription doc just to render the
-    // snapshot — that was making manual DB cleanup pointless because every
-    // app launch resurrected the row. Sync (purchase / restore / webhook)
-    // remains the only write path.
+
     const { sub, plan } = await this.resolveActiveSubscription(userId, {
       readOnly: true,
     });
 
-    // `effectivePlan` reflects what features the user should ACTUALLY get
-    // right now, independent of the most recent product they were billed
-    // for. We drop to 'basic' immediately when the user cancelled while
-    // still inside a free-trial — the user expectation is that cancelling
-    // a trial means "I never really subscribed" and the paywall should
-    // not keep showing them as a Hero customer. Non-trial cancellations
-    // keep the grace-period behaviour (paid until `expiresAt`).
     const isTrialPeriod =
       sub.periodType === 'trial' || sub.periodType === 'intro';
     const cancelledTrial =
@@ -1480,5 +1464,150 @@ export class SubscriptionService {
     this.logger.log(
       `Cancel feedback user=${userId} reason=${feedback.reason} plan=${feedback.plan ?? '-'}`,
     );
+  }
+
+
+  async revokeUserSubscription(
+    userId: string,
+    options: { purgeTrialHistory?: boolean } = {},
+  ): Promise<{
+    revenueCatDeleted: boolean;
+    localDeleted: boolean;
+    usageDeleted: number;
+    trialsRetained: { hero?: Date | null; legend?: Date | null } | null;
+  }> {
+    const uid = toObjectId(userId);
+
+    const existing = await this.findSubscription(userId);
+    const trialsConsumed = options.purgeTrialHistory
+      ? null
+      : ((existing as any)?.trialsConsumed ?? null);
+    let revenueCatDeleted = false;
+    const v2Configs = this.getRevenueCatVerificationConfigs().filter(
+      (c) => c.version === 'v2',
+    ) as Extract<RevenueCatVerificationConfig, { version: 'v2' }>[];
+    const v1Configs = this.getRevenueCatVerificationConfigs().filter(
+      (c) => c.version === 'v1',
+    ) as Extract<RevenueCatVerificationConfig, { version: 'v1' }>[];
+
+    for (const cfg of v2Configs) {
+      try {
+        await this.deleteRevenueCatV2Customer(
+          userId,
+          cfg.apiKey,
+          cfg.projectId,
+        );
+        revenueCatDeleted = true;
+      } catch (err) {
+        this.logger.warn(
+          `RC v2 delete-customer failed for user=${userId}: ${(err as Error).message}`,
+        );
+      }
+    }
+    for (const cfg of v1Configs) {
+      try {
+        await this.deleteRevenueCatV1Subscriber(userId, cfg.apiKey);
+        revenueCatDeleted = true;
+      } catch (err) {
+        this.logger.warn(
+          `RC v1 delete-subscriber failed for user=${userId}: ${(err as Error).message}`,
+        );
+      }
+    }
+
+    // 3. Purge local docs.
+    const subRes = await this.subscriptionModel.deleteOne({ userId: uid });
+    const usageRes = await this.usageModel.deleteMany({ userId: uid });
+
+    // 4. Re-attach trialsConsumed if we are preserving it. We persist a
+    //    minimal `basic` stub so the marker survives the next /sync (which
+    //    will upsert a fresh paid doc on top if RC ever re-grants the
+    //    user, and our $min on `trialsConsumed.<tier>` keeps the earliest
+    //    historical trial).
+    if (
+      trialsConsumed &&
+      (trialsConsumed.hero || trialsConsumed.legend)
+    ) {
+      await this.subscriptionModel.create({
+        userId: uid,
+        plan: 'basic',
+        status: 'active',
+        willRenew: false,
+        trialsConsumed,
+      });
+    }
+
+    this.logger.log(
+      `Revoked subscription user=${userId} rc=${revenueCatDeleted} localDeleted=${subRes.deletedCount > 0} usageDeleted=${usageRes.deletedCount} purgeTrialHistory=${!!options.purgeTrialHistory}`,
+    );
+
+    return {
+      revenueCatDeleted,
+      localDeleted: subRes.deletedCount > 0,
+      usageDeleted: usageRes.deletedCount ?? 0,
+      trialsRetained: trialsConsumed
+        ? {
+            hero: trialsConsumed.hero ?? null,
+            legend: trialsConsumed.legend ?? null,
+          }
+        : null,
+    };
+  }
+
+  private async deleteRevenueCatV1Subscriber(
+    userId: string,
+    apiKey: string,
+  ): Promise<void> {
+    const url = `https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(userId)}`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5_000);
+    try {
+      const res = await fetch(url, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'X-Platform': 'server',
+          'Content-Type': 'application/json',
+        },
+        signal: controller.signal,
+      });
+      // 404 = already gone — idempotent success.
+      if (res.status === 404) return;
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status} ${body.slice(0, 300)}`);
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private async deleteRevenueCatV2Customer(
+    userId: string,
+    apiKey: string,
+    projectId: string,
+  ): Promise<void> {
+    const url = this.revenueCatV2Url(
+      `/projects/${encodeURIComponent(projectId)}/customers/${encodeURIComponent(userId)}`,
+    );
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5_000);
+    try {
+      const res = await fetch(url, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        signal: controller.signal,
+      });
+      if (res.status === 404) return;
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status} ${body.slice(0, 300)}`);
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 }
