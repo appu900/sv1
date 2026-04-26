@@ -1,4 +1,5 @@
 import { ConfigService } from '@nestjs/config';
+import { ForbiddenException } from '@nestjs/common';
 import { Types } from 'mongoose';
 import { SubscriptionService } from './subscription.service';
 
@@ -82,5 +83,83 @@ describe('SubscriptionService RevenueCat webhooks', () => {
     expect(appliedUpdate.expiresAt.toISOString()).toBe(
       new Date(expiresAt).toISOString(),
     );
+  });
+
+  it('clears stale cancelledAt via $unset on the default webhook path (e.g. RENEWAL after a prior cancel)', async () => {
+    // Regression: Mongoose silently strips `undefined` from $set, so a
+    // RENEWAL arriving after a prior CANCELLATION used to leave the old
+    // `cancelledAt` lingering forever, making a fresh paid sub still look
+    // cancelled in the snapshot.
+    const { service, subscriptionModel } = createService();
+    const userId = new Types.ObjectId().toHexString();
+    const eventAt = Date.UTC(2026, 4, 25);
+    const expiresAt = Date.UTC(2026, 5, 25);
+
+    subscriptionModel.findOne.mockResolvedValue({
+      plan: 'hero',
+      status: 'cancelled',
+      productId: 'saveful.hero.monthly',
+      cancelledAt: new Date(Date.UTC(2026, 3, 1)),
+    });
+    subscriptionModel.updateOne.mockResolvedValue({ modifiedCount: 1 });
+
+    await service.syncFromWebhook({
+      event: {
+        id: 'event_renewal_after_cancel',
+        type: 'RENEWAL',
+        app_user_id: userId,
+        event_timestamp_ms: eventAt,
+        product_id: 'saveful.hero.monthly',
+        entitlement_ids: ['saveful_pro'],
+        expiration_at_ms: expiresAt,
+        purchased_at_ms: eventAt,
+      },
+    });
+
+    const renewalCall = subscriptionModel.updateOne.mock.calls[1];
+    const update = renewalCall[1];
+    expect(update.$unset).toEqual(
+      expect.objectContaining({ cancelledAt: '' }),
+    );
+    // $set must NOT also contain cancelledAt — would conflict with $unset.
+    expect(update.$set.cancelledAt).toBeUndefined();
+  });
+});
+
+describe('SubscriptionService feature gating', () => {
+  it('includes requiredPlan and currentPlan in 403 so the app can target the right tier', async () => {
+    const { service, subscriptionModel } = createService();
+    const userId = new Types.ObjectId().toHexString();
+
+    subscriptionModel.findOneAndUpdate.mockResolvedValue({
+      _id: new Types.ObjectId(),
+      plan: 'basic',
+      status: 'active',
+    });
+
+    await expect(
+      service.assertFeature(userId, 'barcode_scanning'),
+    ).rejects.toThrow(ForbiddenException);
+
+    try {
+      await service.assertFeature(userId, 'barcode_scanning');
+    } catch (err: any) {
+      expect(err.getResponse()).toMatchObject({
+        code: 'UPGRADE_REQUIRED',
+        feature: 'barcode_scanning',
+        requiredPlan: 'legend', // barcode_scanning is legend-only
+        currentPlan: 'basic',
+      });
+    }
+
+    try {
+      await service.assertFeature(userId, 'smart_meal_planning');
+    } catch (err: any) {
+      expect(err.getResponse()).toMatchObject({
+        code: 'UPGRADE_REQUIRED',
+        feature: 'smart_meal_planning',
+        requiredPlan: 'hero', // smart_meal_planning is in the hero feature set
+      });
+    }
   });
 });

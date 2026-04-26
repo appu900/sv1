@@ -80,20 +80,43 @@ export class SubscriptionService {
     return sub!;
   }
 
-  async getPlan(userId: string): Promise<SubscriptionPlan> {
+  /**
+   * Returns both the subscription document and the resolved plan after
+   * applying lazy expiry. Consolidates what was previously two separate
+   * round-trips (`getOrCreateSubscription` + `getPlan`) and ensures the
+   * returned `sub` document reflects any auto-downgrade we just applied so
+   * downstream callers (e.g. `getSubscriptionSnapshot`) cannot return a
+   * stale `status` / `expiresAt` / `productId` / `willRenew` snapshot.
+   */
+  private async resolveActiveSubscription(userId: string): Promise<{
+    sub: SubscriptionDocument;
+    plan: SubscriptionPlan;
+  }> {
     const sub = await this.getOrCreateSubscription(userId);
     if (
       sub.plan !== 'basic' &&
       sub.expiresAt &&
       sub.expiresAt.getTime() < Date.now()
     ) {
-      await this.subscriptionModel.updateOne(
+      const expired = await this.subscriptionModel.findOneAndUpdate(
         { _id: sub._id, plan: sub.plan },
-        { $set: { plan: 'basic', status: 'expired', willRenew: false } },
+        {
+          $set: {
+            plan: 'basic',
+            status: 'expired',
+            willRenew: false,
+          },
+        },
+        { new: true },
       );
-      return 'basic';
+      return { sub: expired ?? sub, plan: 'basic' };
     }
-    return sub.plan;
+    return { sub, plan: sub.plan };
+  }
+
+  async getPlan(userId: string): Promise<SubscriptionPlan> {
+    const { plan } = await this.resolveActiveSubscription(userId);
+    return plan;
   }
 
   getPlanDefinition(plan: SubscriptionPlan): PlanDefinition {
@@ -105,6 +128,66 @@ export class SubscriptionService {
     customerInfo: Record<string, any> | undefined,
     revenueCatUserId?: string,
   ): Promise<SubscriptionDocument> {
+    const verifiedInfo = await this.verifyCustomerWithRevenueCat(userId, {
+      clientCustomerInfo: customerInfo,
+      revenueCatUserId,
+      throwOnFailure: true,
+    });
+
+    const parsed = parseCustomerInfo(verifiedInfo, SAVEFUL_ENTITLEMENT);
+    const uid = toObjectId(userId);
+    const update: Record<string, any> = {
+      plan: parsed.plan,
+      status: parsed.status,
+      entitlement: parsed.entitlement,
+      productId: parsed.productId,
+      store: parsed.store,
+      periodType: parsed.periodType,
+      purchasedAt: parsed.purchasedAt,
+      expiresAt: parsed.expiresAt,
+      trialEndsAt: parsed.trialEndsAt,
+      willRenew: parsed.willRenew,
+      cancelledAt: parsed.cancelledAt,
+      revenueCatUserId:
+        revenueCatUserId || verifiedInfo?.originalAppUserId || userId,
+      lastCustomerInfo: verifiedInfo,
+    };
+    // Mongoose strips `undefined` from $set, so we must explicitly $unset any
+    // optional fields that the new state does not provide. Without this, a
+    // user who cancels and then re-subscribes would keep a stale `cancelledAt`
+    // marker forever, and a converted-from-trial sub would keep a stale
+    // `trialEndsAt`.
+    const unset: Record<string, ''> = {};
+    if (!parsed.cancelledAt) unset.cancelledAt = '';
+    if (!parsed.trialEndsAt) unset.trialEndsAt = '';
+    const ops: Record<string, any> = {
+      $set: update,
+      $setOnInsert: { userId: uid },
+    };
+    if (Object.keys(unset).length > 0) {
+      ops.$unset = unset;
+      for (const field of Object.keys(unset)) delete ops.$set[field];
+    }
+    const doc = await this.subscriptionModel.findOneAndUpdate(
+      { userId: uid },
+      ops,
+      { upsert: true, new: true },
+    );
+    this.logger.log(
+      `Sync sub for user=${userId} plan=${doc!.plan} status=${doc!.status} product=${doc!.productId}`,
+    );
+    return doc!;
+  } 
+
+  private async verifyCustomerWithRevenueCat(
+    userId: string,
+    options: {
+      clientCustomerInfo?: Record<string, any>;
+      revenueCatUserId?: string;
+      throwOnFailure?: boolean;
+    } = {},
+  ): Promise<Record<string, any> | undefined> {
+    const { clientCustomerInfo, revenueCatUserId, throwOnFailure } = options;
     const revenueCatConfigs = this.getRevenueCatVerificationConfigs();
     let verifiedInfo: Record<string, any> | undefined;
     let lastVerificationError: unknown;
@@ -154,12 +237,11 @@ export class SubscriptionService {
           );
           verifiedInfo = this.trustedClientCustomerInfo(
             userId,
-            customerInfo,
+            clientCustomerInfo,
             revenueCatUserId,
           );
-        } else if (lastVerificationError) {
-          throw lastVerificationError;
-        } else {
+        } else if (throwOnFailure) {
+          if (lastVerificationError) throw lastVerificationError;
           throw new ServiceUnavailableException(
             'Unable to verify subscription with RevenueCat',
           );
@@ -167,48 +249,25 @@ export class SubscriptionService {
       }
     } else {
       if (!this.canTrustClientSyncFallback()) {
-        throw new ServiceUnavailableException(
-          'RevenueCat server verification is not configured',
-        );
+        if (throwOnFailure) {
+          throw new ServiceUnavailableException(
+            'RevenueCat server verification is not configured',
+          );
+        }
+        return undefined;
       }
       this.logger.warn(
-        'No RevenueCat server API key configured — /subscription/sync is trusting client CustomerInfo because NODE_ENV is not production. ' +
+        'No RevenueCat server API key configured — falling back to client CustomerInfo because NODE_ENV is not production. ' +
           'Set REVENUECAT_V2_API_KEY or REVENUECAT_V1_API_KEY in production, or rely on RevenueCat webhooks as the authoritative source.',
       );
       verifiedInfo = this.trustedClientCustomerInfo(
         userId,
-        customerInfo,
+        clientCustomerInfo,
         revenueCatUserId,
       );
     }
 
-    const parsed = parseCustomerInfo(verifiedInfo, SAVEFUL_ENTITLEMENT);
-    const uid = toObjectId(userId);
-    const update: Record<string, any> = {
-      plan: parsed.plan,
-      status: parsed.status,
-      entitlement: parsed.entitlement,
-      productId: parsed.productId,
-      store: parsed.store,
-      periodType: parsed.periodType,
-      purchasedAt: parsed.purchasedAt,
-      expiresAt: parsed.expiresAt,
-      trialEndsAt: parsed.trialEndsAt,
-      willRenew: parsed.willRenew,
-      cancelledAt: parsed.cancelledAt,
-      revenueCatUserId:
-        revenueCatUserId || verifiedInfo?.originalAppUserId || userId,
-      lastCustomerInfo: verifiedInfo,
-    };
-    const doc = await this.subscriptionModel.findOneAndUpdate(
-      { userId: uid },
-      { $set: update, $setOnInsert: { userId: uid } },
-      { upsert: true, new: true },
-    );
-    this.logger.log(
-      `Sync sub for user=${userId} plan=${doc!.plan} status=${doc!.status} product=${doc!.productId}`,
-    );
-    return doc!;
+    return verifiedInfo;
   }
 
   private getRevenueCatVerificationConfigs(): RevenueCatVerificationConfig[] {
@@ -684,12 +743,7 @@ export class SubscriptionService {
       : null;
   }
 
-  /**
-   * Webhook path — find subscription by RC app_user_id (which we set to the
-   * user's Mongo id at configure time). Applies dedup/ordering protection
-   * using the event id and timestamp so replayed or out-of-order webhooks
-   * cannot downgrade an active user.
-   */
+ 
   async syncFromWebhook(payload: any): Promise<void> {
     const event = payload?.event ?? payload;
     const appUserId: string | undefined = event?.app_user_id;
@@ -708,8 +762,7 @@ export class SubscriptionService {
       event?.event_timestamp_ms ?? event?.purchased_at_ms ?? undefined;
     const eventAt = eventAtMs ? new Date(eventAtMs) : new Date();
 
-    // Ensure the subscription doc exists so the atomic dedup update below
-    // has a row to match.
+    
     await this.subscriptionModel.updateOne(
       { userId: uid },
       {
@@ -746,20 +799,30 @@ export class SubscriptionService {
         : [];
     const productId: string | undefined = event?.product_id;
 
-    const commit = async (set: Record<string, any>) => {
+    const commit = async (
+      set: Record<string, any>,
+      unset?: Record<string, ''>,
+    ) => {
       const filter: Record<string, any> = { userId: uid };
       if (eventId) filter.lastEventId = { $ne: eventId };
       filter.$or = [
         { lastEventAt: { $exists: false } },
         { lastEventAt: { $lte: eventAt } },
       ];
-      const res = await this.subscriptionModel.updateOne(filter, {
+    const update: Record<string, any> = {
         $set: {
           ...set,
           lastEventId: eventId,
           lastEventAt: eventAt,
         },
-      });
+      };
+      if (unset && Object.keys(unset).length > 0) {
+        update.$unset = unset;
+        for (const field of Object.keys(unset)) {
+          delete update.$set[field];
+        }
+      }
+      const res = await this.subscriptionModel.updateOne(filter, update);
       if (res.modifiedCount === 0) {
         this.logger.log(
           `RC webhook skipped (dedup/ordering) type=${event?.type} id=${eventId}`,
@@ -768,7 +831,6 @@ export class SubscriptionService {
     };
 
     try {
-      // Terminal states: explicitly downgrade regardless of entitlement snapshot.
       if (type === 'EXPIRATION' || type === 'REFUND' || type === 'TRANSFER') {
         await commit({
           plan: 'basic',
@@ -807,10 +869,6 @@ export class SubscriptionService {
         );
         return;
       }
-
-      // UNCANCELLATION = user re-enabled auto-renew. Restore willRenew=true
-      // and clear cancelledAt without depending on entitlement_ids, which
-      // RevenueCat does not always include in this event type.
       if (type === 'UNCANCELLATION') {
         const expiresAt = event?.expiration_at_ms
           ? new Date(event.expiration_at_ms)
@@ -820,16 +878,18 @@ export class SubscriptionService {
             ? existing.plan
             : undefined) ?? this.planForProductId(productId);
         if (paidPlan) {
-          await commit({
-            plan: paidPlan,
-            status: 'active',
-            productId: productId ?? existing?.productId,
-            expiresAt,
-            willRenew: true,
-            cancelledAt: undefined,
-            revenueCatUserId: appUserId,
-            lastCustomerInfo: event,
-          });
+          await commit(
+            {
+              plan: paidPlan,
+              status: 'active',
+              productId: productId ?? existing?.productId,
+              expiresAt,
+              willRenew: true,
+              revenueCatUserId: appUserId,
+              lastCustomerInfo: event,
+            },
+            { cancelledAt: '' },
+          );
           return;
         }
       }
@@ -880,11 +940,60 @@ export class SubscriptionService {
         return;
       }
 
-      // Build a minimal customer_info-like blob for parseCustomerInfo.
+      // PRODUCT_CHANGE = the user switched products inside the store
+      // (e.g. Hero → Legend, monthly → yearly, downgrade scheduled for the
+      // next renewal). The event payload alone is not always enough to know
+      // which product is currently active vs. queued for next period, so we
+      // re-verify the customer's full state with RevenueCat. If verification
+      // fails we still apply a best-effort update from the event so the user
+      // is not left on a stale plan.
+      if (type === 'PRODUCT_CHANGE') {
+        try {
+          const verifiedInfo = await this.verifyCustomerWithRevenueCat(
+            appUserId,
+            { throwOnFailure: false },
+          );
+          if (verifiedInfo) {
+            const parsed = parseCustomerInfo(verifiedInfo, SAVEFUL_ENTITLEMENT);
+            // If the verified state has no cancellation marker, explicitly
+            // clear any prior `cancelledAt` so the user is not stuck in a
+            // "cancelled" UI state after re-upgrading.
+            const unset: Record<string, ''> = {};
+            if (!parsed.cancelledAt) unset.cancelledAt = '';
+            if (!parsed.trialEndsAt) unset.trialEndsAt = '';
+            await commit(
+              {
+                plan: parsed.plan,
+                status: parsed.status,
+                entitlement: parsed.entitlement,
+                productId: parsed.productId,
+                store: parsed.store,
+                periodType: parsed.periodType,
+                purchasedAt: parsed.purchasedAt,
+                expiresAt: parsed.expiresAt,
+                trialEndsAt: parsed.trialEndsAt,
+                willRenew: parsed.willRenew,
+                cancelledAt: parsed.cancelledAt,
+                revenueCatUserId: appUserId,
+                lastCustomerInfo: verifiedInfo,
+              },
+              unset,
+            );
+            return;
+          }
+        } catch (err) {
+          this.logger.warn(
+            `RC webhook PRODUCT_CHANGE re-verification failed for user=${appUserId}: ${(err as Error).message}. Falling back to event payload.`,
+          );
+        }
+      }
+
+      const effectiveProductId: string | undefined =
+        (type === 'PRODUCT_CHANGE' && event?.new_product_id) || productId;
       const active: Record<string, any> = {};
-      if (entitlementIds.includes(SAVEFUL_ENTITLEMENT)) {
+      if (entitlementIds.includes(SAVEFUL_ENTITLEMENT) || type === 'PRODUCT_CHANGE') {
         active[SAVEFUL_ENTITLEMENT] = {
-          product_identifier: productId,
+          product_identifier: effectiveProductId,
           expires_date: event?.expiration_at_ms
             ? new Date(event.expiration_at_ms).toISOString()
             : undefined,
@@ -906,21 +1015,27 @@ export class SubscriptionService {
         entitlements: { active },
       };
       const parsed = parseCustomerInfo(customerInfo, SAVEFUL_ENTITLEMENT);
-      await commit({
-        plan: parsed.plan,
-        status: parsed.status,
-        entitlement: parsed.entitlement,
-        productId: parsed.productId,
-        store: parsed.store,
-        periodType: parsed.periodType,
-        purchasedAt: parsed.purchasedAt,
-        expiresAt: parsed.expiresAt,
-        trialEndsAt: parsed.trialEndsAt,
-        willRenew: parsed.willRenew,
-        cancelledAt: parsed.cancelledAt,
-        revenueCatUserId: appUserId,
-        lastCustomerInfo: event,
-      });
+      const unset: Record<string, ''> = {};
+      if (!parsed.cancelledAt) unset.cancelledAt = '';
+      if (!parsed.trialEndsAt) unset.trialEndsAt = '';
+      await commit(
+        {
+          plan: parsed.plan,
+          status: parsed.status,
+          entitlement: parsed.entitlement,
+          productId: parsed.productId,
+          store: parsed.store,
+          periodType: parsed.periodType,
+          purchasedAt: parsed.purchasedAt,
+          expiresAt: parsed.expiresAt,
+          trialEndsAt: parsed.trialEndsAt,
+          willRenew: parsed.willRenew,
+          cancelledAt: parsed.cancelledAt,
+          revenueCatUserId: appUserId,
+          lastCustomerInfo: event,
+        },
+        unset,
+      );
     } catch (err) {
       this.logger.error(
         `RC webhook processing failed: ${(err as Error).message}`,
@@ -936,12 +1051,28 @@ export class SubscriptionService {
   async assertFeature(userId: string, feature: FeatureKey): Promise<void> {
     const ok = await this.hasFeature(userId, feature);
     if (!ok) {
+      const currentPlan = await this.getPlan(userId);
       throw new ForbiddenException({
         code: 'UPGRADE_REQUIRED',
         feature,
+        // Tell the client which paid tier actually grants the feature so the
+        // paywall can highlight the right plan. We pick the lowest-ranked
+        // paid plan that includes the feature — e.g. `barcode_scanning` is
+        // legend-only, `smart_meal_planning` is hero+. This keeps the
+        // backend as the single source of truth instead of the app having
+        // to mirror the feature→plan mapping.
+        requiredPlan: this.minimumPaidPlanForFeature(feature),
+        currentPlan,
         message: 'Upgrade required to use this feature',
       });
     }
+  }
+
+  private minimumPaidPlanForFeature(
+    feature: FeatureKey,
+  ): Exclude<SubscriptionPlan, 'basic'> {
+    if (PLANS.hero.features.includes(feature)) return 'hero';
+    return 'legend';
   }
 
   async getLimit(userId: string, key: LimitKey): Promise<number> {
@@ -950,8 +1081,7 @@ export class SubscriptionService {
   }
 
   async getCurrentUsagePeriod(userId: string) {
-    const sub = await this.getOrCreateSubscription(userId);
-    const plan = await this.getPlan(userId);
+    const { sub, plan } = await this.resolveActiveSubscription(userId);
     return currentUsagePeriod({
       plan,
       purchasedAt: sub.purchasedAt,
@@ -1112,10 +1242,29 @@ export class SubscriptionService {
   }
 
   async getSubscriptionSnapshot(userId: string) {
-    const sub = await this.getOrCreateSubscription(userId);
-    const plan = await this.getPlan(userId);
+   
+    const { sub, plan } = await this.resolveActiveSubscription(userId);
     const def = PLANS[plan];
-    const usage = await this.getUsage(userId);
+    const period = currentUsagePeriod({
+      plan,
+      purchasedAt: sub.purchasedAt,
+      expiresAt: sub.expiresAt,
+      productId: sub.productId,
+      periodType: sub.periodType,
+    });
+    const uid = toObjectId(userId);
+    const usage = await this.usageModel.findOneAndUpdate(
+      { userId: uid, periodKey: period.periodKey },
+      {
+        $setOnInsert: {
+          userId: uid,
+          periodKey: period.periodKey,
+          periodStart: period.periodStart,
+          periodEnd: period.periodEnd,
+        },
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true },
+    );
     return {
       plan,
       status: sub.status,
@@ -1132,10 +1281,10 @@ export class SubscriptionService {
       features: def.features,
       limits: def.limits,
       usage: {
-        aiMealsUsed: usage.aiMealsUsed,
-        kitchenScansUsed: usage.kitchenScansUsed ?? 0,
-        periodKey: usage.periodKey,
-        periodEnd: usage.periodEnd,
+        aiMealsUsed: usage!.aiMealsUsed,
+        kitchenScansUsed: usage!.kitchenScansUsed ?? 0,
+        periodKey: usage!.periodKey,
+        periodEnd: usage!.periodEnd,
       },
     };
   }
