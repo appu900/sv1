@@ -22,6 +22,28 @@ describe('parseCustomerInfo', () => {
     expect(parsed.trialEndsAt?.toISOString()).toBe('2099-05-25T00:00:00.000Z');
   });
 
+  it('keeps cancelled trials paid but marks them cancelled so the app can show reactivation state', () => {
+    const parsed = parseCustomerInfo({
+      entitlements: {
+        active: {
+          saveful_pro: {
+            product_identifier: 'saveful.hero:monthly',
+            expires_date: '2099-05-25T00:00:00Z',
+            purchase_date: '2099-04-25T00:00:00Z',
+            period_type: 'TRIAL',
+            will_renew: false,
+            unsubscribe_detected_at: '2099-04-26T00:00:00Z',
+          },
+        },
+      },
+    });
+
+    expect(parsed.plan).toBe('hero');
+    expect(parsed.status).toBe('cancelled');
+    expect(parsed.trialEndsAt?.toISOString()).toBe('2099-05-25T00:00:00.000Z');
+    expect(parsed.cancelledAt?.toISOString()).toBe('2099-04-26T00:00:00.000Z');
+  });
+
   it('defaults an active premium entitlement with an unknown product to Hero', () => {
     const parsed = parseCustomerInfo({
       entitlements: {

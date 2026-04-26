@@ -101,10 +101,10 @@ export function parseCustomerInfo(
   let status: SubscriptionStatus = 'active';
   if (expiresAt && expiresAt.getTime() < now) {
     status = 'expired';
-  } else if (periodType === 'trial' || periodType === 'intro') {
-    status = 'in_trial';
   } else if (cancelledAt) {
     status = 'cancelled';
+  } else if (periodType === 'trial' || periodType === 'intro') {
+    status = 'in_trial';
   }
 
   const trialEndsAt =
