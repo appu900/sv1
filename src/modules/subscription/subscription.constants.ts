@@ -8,12 +8,21 @@ export type SubscriptionStatus =
 
 export const SAVEFUL_ENTITLEMENT = 'saveful_pro';
 
+
 export const PRODUCT_TO_PLAN: Record<string, SubscriptionPlan> = {
+
   'saveful.hero.monthly': 'hero',
   'saveful.hero.yearly': 'hero',
-
   'saveful.legend.monthly': 'legend',
   'saveful.legend.yearly': 'legend',
+
+  'saveful.hero:monthly': 'hero',
+  'saveful.hero:yearly': 'hero',
+  'saveful.legend:monthly': 'legend',
+  'saveful.legend:yearly': 'legend',
+
+  'saveful.hero': 'hero',
+  'saveful.legend': 'legend',
 };
 
 export const PLAN_PREFIX_RULES: Array<{ match: RegExp; plan: SubscriptionPlan }> = [
