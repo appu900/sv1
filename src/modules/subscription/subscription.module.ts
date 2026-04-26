@@ -13,10 +13,6 @@ import { SubscriptionController } from './subscription.controller';
 import { RevenueCatWebhookController } from './revenuecat-webhook.controller';
 import { SubscriptionGuard } from './subscription.guard';
 
-/**
- * @Global so any module can inject `SubscriptionService` and the
- * `SubscriptionGuard` without having to re-import.
- */
 @Global()
 @Module({
   imports: [

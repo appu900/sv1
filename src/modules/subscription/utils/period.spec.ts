@@ -1,11 +1,6 @@
 import { currentPeriod, currentUsagePeriod } from './period';
 
 describe('subscription usage periods', () => {
-  // Usage is keyed by calendar month for every plan. The previous
-  // `billing:<startMs>-<endMs>` scheme produced two parallel docs per user
-  // (one calendar-month, one billing-cycle) and made it impossible to
-  // reconcile counts. Limit names ("aiMealsPerMonth", "kitchenScansPerMonth")
-  // already imply calendar-month semantics, so we always emit `YYYY-MM`.
   it('keeps basic users on calendar-month periods', () => {
     const period = currentUsagePeriod(
       { plan: 'basic' },

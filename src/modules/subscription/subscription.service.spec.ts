@@ -263,7 +263,7 @@ describe('SubscriptionService feature gating', () => {
       expect(err.getResponse()).toMatchObject({
         code: 'UPGRADE_REQUIRED',
         feature: 'smart_meal_planning',
-        requiredPlan: 'hero', // smart_meal_planning is in the hero feature set
+        requiredPlan: 'hero', 
       });
     }
   });

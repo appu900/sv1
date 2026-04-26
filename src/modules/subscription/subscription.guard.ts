@@ -15,11 +15,9 @@ import { SubscriptionService } from './subscription.service';
 export const REQUIRE_FEATURE_KEY = 'subscription:require_feature';
 export const REQUIRE_PLAN_KEY = 'subscription:require_plan';
 
-/** Require a specific feature flag. Use on controller methods. */
 export const RequireFeature = (feature: FeatureKey) =>
   SetMetadata(REQUIRE_FEATURE_KEY, feature);
 
-/** Require a minimum plan (hero or legend). */
 export const RequirePlan = (plan: Exclude<SubscriptionPlan, 'basic'>) =>
   SetMetadata(REQUIRE_PLAN_KEY, plan);
 

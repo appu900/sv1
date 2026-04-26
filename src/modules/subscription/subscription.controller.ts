@@ -45,11 +45,6 @@ export class SubscriptionController {
     return this.subscriptionService.getSubscriptionSnapshot(userId);
   }
 
-  /**
-   * Records the user's cancellation reason. Apple/Google still own the
-   * actual cancellation flow — we only capture feedback for product analytics
-   * and so support can follow up if needed.
-   */
   @Post('cancel-feedback')
   @HttpCode(HttpStatus.OK)
   async cancelFeedback(
@@ -61,15 +56,6 @@ export class SubscriptionController {
     return { ok: true };
   }
 
-  /**
-   * Admin-only: hard-revoke a user from the subscription system.
-   * Deletes the customer at RevenueCat and purges local Subscription /
-   * SubscriptionUsage docs. Use for refunds, banned users, or wiping
-   * test accounts.
-   *
-   *   POST /subscription/admin/revoke/:userId            (keeps trial markers)
-   *   POST /subscription/admin/revoke/:userId?purgeTrialHistory=true
-   */
   @Post('admin/revoke/:userId')
   @UseGuards(RolesGuard)
   @Roles('admin')

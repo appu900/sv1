@@ -74,10 +74,10 @@ export const PLANS: Record<SubscriptionPlan, PlanDefinition> = {
     label: 'Saveful Hero',
     isPaid: true,
     limits: {
-      aiMealsPerMonth: 15,
-      ingredients: 50,
+      aiMealsPerMonth: 20,
+      ingredients: 20,
       cookbooks: 20,
-      shoppingLists: 50,
+      shoppingLists: 20,
       kitchenScansPerMonth: 0,
     },
     features: [
