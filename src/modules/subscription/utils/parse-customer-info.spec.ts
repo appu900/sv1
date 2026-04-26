@@ -121,7 +121,7 @@ describe('parseCustomerInfo', () => {
     expect(parsed.willRenew).toBe(false);
   });
 
-  it('flags a cancelled trial via will_renew=false alone', () => {
+  it('keeps active trials active when will_renew=false is the only cancel-like signal', () => {
     const parsed = parseCustomerInfo({
       entitlements: {
         active: {
@@ -137,7 +137,8 @@ describe('parseCustomerInfo', () => {
     });
 
     expect(parsed.plan).toBe('hero');
-    expect(parsed.status).toBe('cancelled');
-    expect(parsed.cancelledAt).toBeInstanceOf(Date);
+    expect(parsed.status).toBe('in_trial');
+    expect(parsed.cancelledAt).toBeUndefined();
+    expect(parsed.willRenew).toBe(true);
   });
 });

@@ -10,6 +10,8 @@ interface ActiveEntitlement {
   identifier?: string;
   product_identifier?: string;
   productIdentifier?: string;
+  auto_renewal_status?: string | null;
+  autoRenewalStatus?: string | null;
   expires_date?: string | null;
   expirationDate?: string | null;
   purchase_date?: string;
@@ -42,6 +44,12 @@ export interface ParsedSubscription {
   /** True when the user cancelled while still inside a free trial / intro. */
   trialCancelled?: boolean;
 }
+
+const RENEWING_AUTO_RENEWAL_STATUSES = new Set([
+  'will_renew',
+  'will_change_product',
+  'has_already_renewed',
+]);
 
 function toDate(value?: string | null): Date | undefined {
   if (!value) return undefined;
@@ -99,17 +107,40 @@ export function parseCustomerInfo(
     typeof rawPeriodType === 'string'
       ? rawPeriodType.toLowerCase()
       : rawPeriodType;
-  const hasWillRenew =
-    ent.willRenew !== undefined || ent.will_renew !== undefined;
-  const willRenew = ent.willRenew ?? ent.will_renew ?? true;
+  const isTrialPeriod = periodType === 'trial' || periodType === 'intro';
+  const rawAutoRenewalStatus = ent.autoRenewalStatus ?? ent.auto_renewal_status;
+  const autoRenewalStatus =
+    typeof rawAutoRenewalStatus === 'string'
+      ? rawAutoRenewalStatus.toLowerCase()
+      : undefined;
+  const explicitNonRenewingStatus = autoRenewalStatus
+    ? !RENEWING_AUTO_RENEWAL_STATUSES.has(autoRenewalStatus)
+    : false;
+  const rawWillRenew = ent.willRenew ?? ent.will_renew;
+  let willRenew =
+    rawWillRenew ??
+    (autoRenewalStatus ? !explicitNonRenewingStatus : undefined) ??
+    true;
   let cancelledAt = toDate(
     ent.unsubscribe_detected_at ?? ent.unsubscribeDetectedAt ?? null,
   );
 
   const now = Date.now();
   const isExpired = !!expiresAt && expiresAt.getTime() < now;
-  if (!cancelledAt && hasWillRenew && !willRenew && !isExpired) {
+  const hasBareWillRenewCancelSignal = rawWillRenew === false && !isTrialPeriod;
+  if (
+    !cancelledAt &&
+    !isExpired &&
+    (explicitNonRenewingStatus || hasBareWillRenewCancelSignal)
+  ) {
     cancelledAt = new Date(now);
+  }
+  if (isTrialPeriod && rawWillRenew === false && !cancelledAt) {
+    // Google closed-testing trials can report will_renew=false before the
+    // trial actually ends. Do not let that ambiguous flag alone downgrade an
+    // active trial to Basic; real trial cancellation must carry either an
+    // unsubscribe timestamp or explicit non-renewing auto_renewal_status.
+    willRenew = true;
   }
 
   let status: SubscriptionStatus = 'active';
@@ -121,13 +152,10 @@ export function parseCustomerInfo(
     status = 'in_trial';
   }
 
-  const trialEndsAt =
-    periodType === 'trial' || periodType === 'intro' ? expiresAt : undefined;
+  const trialEndsAt = isTrialPeriod ? expiresAt : undefined;
 
   const trialCancelled =
-    !!cancelledAt &&
-    !willRenew &&
-    (periodType === 'trial' || periodType === 'intro');
+    !!cancelledAt && !willRenew && isTrialPeriod;
 
   return {
     plan: status === 'expired' ? 'basic' : plan,

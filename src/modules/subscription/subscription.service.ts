@@ -800,6 +800,7 @@ export class SubscriptionService {
             ),
             period_type: periodType,
             store: subscription?.store,
+            auto_renewal_status: autoRenewalStatus,
             will_renew: willRenew,
             unsubscribe_detected_at: unsubscribeDetectedAt,
           },
