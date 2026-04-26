@@ -2,6 +2,8 @@ import { ConfigService } from '@nestjs/config';
 import { ForbiddenException } from '@nestjs/common';
 import { Types } from 'mongoose';
 import { SubscriptionService } from './subscription.service';
+import { parseCustomerInfo } from './utils/parse-customer-info';
+import { currentUsagePeriod } from './utils/period';
 
 function createService(config: Record<string, string | undefined> = {}) {
   const subscriptionModel = {
@@ -40,6 +42,60 @@ describe('SubscriptionService RevenueCat configuration', () => {
       { version: 'v2', apiKey: 'sk_v2_test', projectId: 'proj_test' },
       { version: 'v1', apiKey: 'sk_v1_test' },
     ]);
+  });
+});
+
+describe('SubscriptionService RevenueCat v2 periods', () => {
+  it('converts ISO timestamp fields into a real billing usage period', () => {
+    const { service } = createService();
+
+    const customerInfo = (service as any).subscriptionToCustomerInfo(
+      new Types.ObjectId().toHexString(),
+      {
+        product_id: 'rc_product_id',
+        current_period_starts_at: '2026-04-25T09:30:00.000Z',
+        current_period_ends_at: '2026-05-25T09:30:00.000Z',
+        auto_renewal_status: 'will_renew',
+        status: 'active',
+        store: 'app_store',
+      },
+      'saveful.hero.monthly',
+    );
+
+    const parsed = parseCustomerInfo(customerInfo);
+    expect(parsed.purchasedAt?.toISOString()).toBe(
+      '2026-04-25T09:30:00.000Z',
+    );
+    expect(parsed.expiresAt?.toISOString()).toBe(
+      '2026-05-25T09:30:00.000Z',
+    );
+
+    const period = currentUsagePeriod(parsed, new Date('2026-05-01T00:00:00.000Z'));
+    expect(period.periodKey).toBe('billing:1777109400000-1779701400000');
+  });
+
+  it('sorts active v2 subscriptions by ISO period end date', () => {
+    const { service } = createService();
+
+    const selected = (service as any).pickActiveRevenueCatV2Subscription(
+      [
+        {
+          product_id: 'saveful.hero.monthly',
+          gives_access: true,
+          current_period_ends_at: '2026-05-25T09:30:00.000Z',
+          entitlements: { items: [{ lookup_key: 'saveful_pro' }] },
+        },
+        {
+          product_id: 'saveful.legend.monthly',
+          gives_access: true,
+          current_period_ends_at: '2026-06-25T09:30:00.000Z',
+          entitlements: { items: [{ lookup_key: 'saveful_pro' }] },
+        },
+      ],
+      'saveful_pro',
+    );
+
+    expect(selected.product_id).toBe('saveful.legend.monthly');
   });
 });
 
@@ -123,6 +179,46 @@ describe('SubscriptionService RevenueCat webhooks', () => {
     );
     // $set must NOT also contain cancelledAt — would conflict with $unset.
     expect(update.$set.cancelledAt).toBeUndefined();
+  });
+
+  it('keeps a renewal active when RevenueCat omits entitlement ids', async () => {
+    const { service, subscriptionModel } = createService();
+    const userId = new Types.ObjectId().toHexString();
+    const eventAt = Date.UTC(2026, 4, 25);
+    const expiresAt = Date.UTC(2026, 5, 25);
+
+    subscriptionModel.findOne.mockResolvedValue({
+      plan: 'hero',
+      status: 'cancelled',
+      productId: 'saveful.hero.monthly',
+      cancelledAt: new Date(Date.UTC(2026, 3, 1)),
+    });
+    subscriptionModel.updateOne.mockResolvedValue({ modifiedCount: 1 });
+
+    await service.syncFromWebhook({
+      event: {
+        id: 'event_renewal_missing_entitlements',
+        type: 'RENEWAL',
+        app_user_id: userId,
+        event_timestamp_ms: eventAt,
+        product_id: 'saveful.hero.monthly',
+        expiration_at_ms: expiresAt,
+        purchased_at_ms: eventAt,
+      },
+    });
+
+    const renewalCall = subscriptionModel.updateOne.mock.calls[1];
+    const update = renewalCall[1];
+    expect(update.$set).toMatchObject({
+      plan: 'hero',
+      status: 'active',
+      productId: 'saveful.hero.monthly',
+      willRenew: true,
+      revenueCatUserId: userId,
+    });
+    expect(update.$unset).toEqual(
+      expect.objectContaining({ cancelledAt: '' }),
+    );
   });
 });
 

@@ -10,10 +10,10 @@ export class Subscription {
   @Prop({ type: Types.ObjectId, ref: 'User', required: true, unique: true, index: true })
   userId: Types.ObjectId;
 
-  @Prop({ required: true, default: 'basic' })
+  @Prop({ type: String, required: true, default: 'basic' })
   plan: SubscriptionPlan;
 
-  @Prop({ required: true, default: 'active' })
+  @Prop({ type: String, required: true, default: 'active' })
   status: SubscriptionStatus;
 
   @Prop({ index: true })

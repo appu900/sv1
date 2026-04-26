@@ -32,7 +32,20 @@ import { currentUsagePeriod } from './utils/period';
 const toObjectId = (id: string | Types.ObjectId) =>
   typeof id === 'string' ? new Types.ObjectId(id) : id;
 
-export type UsageCounterKey = 'aiMealsUsed';
+export type UsageCounterKey = 'aiMealsUsed' | 'kitchenScansUsed';
+
+const USAGE_COUNTER_LIMITS: Record<UsageCounterKey, LimitKey> = {
+  aiMealsUsed: 'aiMealsPerMonth',
+  kitchenScansUsed: 'kitchenScansPerMonth',
+};
+
+const WEBHOOK_ACCESS_EVENTS = new Set([
+  'INITIAL_PURCHASE',
+  'RENEWAL',
+  'NON_RENEWING_PURCHASE',
+  'SUBSCRIPTION_EXTENDED',
+  'TEMPORARY_ENTITLEMENT_GRANT',
+]);
 
 type RevenueCatVerificationConfig =
   | { version: 'v1'; apiKey: string }
@@ -670,6 +683,10 @@ export class SubscriptionService {
     return PLAN_PREFIX_RULES.find((rule) => rule.match.test(productId))?.plan;
   }
 
+  private isAccessWebhookEvent(type: string | undefined): boolean {
+    return !!type && WEBHOOK_ACCESS_EVENTS.has(type);
+  }
+
   private subscriptionToCustomerInfo(
     userId: string,
     subscription: any,
@@ -734,13 +751,33 @@ export class SubscriptionService {
   }
 
   private revenueCatMs(value: unknown): number {
-    return typeof value === 'number' ? value : 0;
+    return this.revenueCatDate(value)?.getTime() ?? 0;
   }
 
   private isoFromRevenueCatMs(value: unknown): string | null {
-    return typeof value === 'number' && Number.isFinite(value)
-      ? new Date(value).toISOString()
-      : null;
+    return this.revenueCatDate(value)?.toISOString() ?? null;
+  }
+
+  private revenueCatDate(value: unknown): Date | null {
+    if (value instanceof Date && Number.isFinite(value.getTime())) {
+      return value;
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      const ms = Math.abs(value) < 1_000_000_000_000 ? value * 1000 : value;
+      const date = new Date(ms);
+      return Number.isFinite(date.getTime()) ? date : null;
+    }
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed) return null;
+      const numeric = Number(trimmed);
+      if (Number.isFinite(numeric)) {
+        return this.revenueCatDate(numeric);
+      }
+      const date = new Date(trimmed);
+      return Number.isFinite(date.getTime()) ? date : null;
+    }
+    return null;
   }
 
  
@@ -912,7 +949,10 @@ export class SubscriptionService {
           existing?.plan && existing.plan !== 'basic'
             ? existing.plan
             : undefined;
-        const paidPlan = existingPaidPlan ?? this.planForProductId(productId);
+        const paidPlan =
+          existingPaidPlan ??
+          this.planForProductId(productId) ??
+          this.planForProductId(existing?.productId);
         const hasCurrentAccess =
           !!paidPlan && !!expiresAt && expiresAt.getTime() > Date.now();
 
@@ -989,9 +1029,19 @@ export class SubscriptionService {
       }
 
       const effectiveProductId: string | undefined =
-        (type === 'PRODUCT_CHANGE' && event?.new_product_id) || productId;
+        (type === 'PRODUCT_CHANGE' && event?.new_product_id) ||
+        productId ||
+        existing?.productId;
       const active: Record<string, any> = {};
-      if (entitlementIds.includes(SAVEFUL_ENTITLEMENT) || type === 'PRODUCT_CHANGE') {
+      const shouldSetActiveEntitlement =
+        entitlementIds.includes(SAVEFUL_ENTITLEMENT) ||
+        type === 'PRODUCT_CHANGE' ||
+        (entitlementIds.length === 0 &&
+          this.isAccessWebhookEvent(type) &&
+          (!!effectiveProductId ||
+            (!!existing?.plan && existing.plan !== 'basic')));
+
+      if (shouldSetActiveEntitlement) {
         active[SAVEFUL_ENTITLEMENT] = {
           product_identifier: effectiveProductId,
           expires_date: event?.expiration_at_ms
@@ -1040,6 +1090,7 @@ export class SubscriptionService {
       this.logger.error(
         `RC webhook processing failed: ${(err as Error).message}`,
       );
+      throw err;
     }
   }
 
@@ -1110,7 +1161,7 @@ export class SubscriptionService {
   ): Promise<number> {
     const plan = await this.getPlan(userId);
     const planDef = PLANS[plan];
-    const limitKey: LimitKey = 'aiMealsPerMonth';
+    const limitKey = USAGE_COUNTER_LIMITS[key];
     const limit = planDef.limits[limitKey];
 
     const uid = toObjectId(userId);
@@ -1168,9 +1219,10 @@ export class SubscriptionService {
     key: UsageCounterKey,
   ): Promise<{ used: number; limit: number; remaining: number }> {
     const plan = await this.getPlan(userId);
-    const limit = PLANS[plan].limits.aiMealsPerMonth;
+    const limitKey = USAGE_COUNTER_LIMITS[key];
+    const limit = PLANS[plan].limits[limitKey];
     const usage = await this.getUsage(userId);
-    const used = (usage as any)[key] as number;
+    const used = ((usage as any)[key] ?? 0) as number;
     return {
       used,
       limit,
