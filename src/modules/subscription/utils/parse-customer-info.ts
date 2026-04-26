@@ -73,10 +73,6 @@ export function parseCustomerInfo(
   const productId: string | undefined =
     ent.product_identifier || ent.productIdentifier;
 
-  // Resolve plan from productId. If the productId is missing or unmapped we
-  // fall back to the previously stored plan rather than defaulting to 'hero'
-  // — defaulting silently downgraded Legend users to Hero whenever
-  // RevenueCat returned a payload we couldn't map.
   let plan: SubscriptionPlan | undefined;
   if (productId) {
     if (PRODUCT_TO_PLAN[productId]) {
@@ -104,13 +100,18 @@ export function parseCustomerInfo(
       ? rawPeriodType.toLowerCase()
       : rawPeriodType;
   const willRenew = ent.willRenew ?? ent.will_renew ?? false;
-  const cancelledAt = toDate(
+  let cancelledAt = toDate(
     ent.unsubscribe_detected_at ?? ent.unsubscribeDetectedAt ?? null,
   );
 
   const now = Date.now();
+  const isExpired = !!expiresAt && expiresAt.getTime() < now;
+  if (!cancelledAt && !willRenew && !isExpired) {
+    cancelledAt = new Date(now);
+  }
+
   let status: SubscriptionStatus = 'active';
-  if (expiresAt && expiresAt.getTime() < now) {
+  if (isExpired) {
     status = 'expired';
   } else if (cancelledAt) {
     status = 'cancelled';

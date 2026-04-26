@@ -52,6 +52,7 @@ describe('parseCustomerInfo', () => {
             product_identifier: 'prod_unknown_from_revenuecat_v2',
             expires_date: '2099-05-25T00:00:00Z',
             period_type: 'NORMAL',
+            will_renew: true,
           },
         },
       },
@@ -76,5 +77,47 @@ describe('parseCustomerInfo', () => {
 
     expect(parsed.plan).toBe('basic');
     expect(parsed.status).toBe('expired');
+  });
+
+  it('marks a non-renewing active entitlement as cancelled even when RC omits unsubscribe_detected_at', () => {
+    const parsed = parseCustomerInfo({
+      entitlements: {
+        active: {
+          saveful_pro: {
+            product_identifier: 'saveful.legend:yearly',
+            expires_date: '2099-05-25T00:00:00Z',
+            purchase_date: '2098-05-25T00:00:00Z',
+            period_type: 'NORMAL',
+            will_renew: false,
+            unsubscribe_detected_at: null,
+          },
+        },
+      },
+    });
+
+    expect(parsed.plan).toBe('legend');
+    expect(parsed.status).toBe('cancelled');
+    expect(parsed.cancelledAt).toBeInstanceOf(Date);
+    expect(parsed.willRenew).toBe(false);
+  });
+
+  it('flags a cancelled trial via will_renew=false alone', () => {
+    const parsed = parseCustomerInfo({
+      entitlements: {
+        active: {
+          saveful_pro: {
+            product_identifier: 'saveful.hero:monthly',
+            expires_date: '2099-05-25T00:00:00Z',
+            purchase_date: '2099-04-25T00:00:00Z',
+            period_type: 'TRIAL',
+            will_renew: false,
+          },
+        },
+      },
+    });
+
+    expect(parsed.plan).toBe('hero');
+    expect(parsed.status).toBe('cancelled');
+    expect(parsed.cancelledAt).toBeInstanceOf(Date);
   });
 });

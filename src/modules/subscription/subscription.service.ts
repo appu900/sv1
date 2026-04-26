@@ -772,7 +772,8 @@ export class SubscriptionService {
 
     const unsubscribeDetectedAt =
       this.isoFromRevenueCatMs(subscription?.unsubscribe_detected_at) ??
-      (subscription?.auto_renewal_status === 'unsubscribed'
+      (!willRenew &&
+      (!expiresAt || new Date(expiresAt).getTime() > Date.now())
         ? new Date().toISOString()
         : null);
 
