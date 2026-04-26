@@ -760,11 +760,18 @@ export class SubscriptionService {
     subscription: any,
     productIdentifier: string | undefined,
   ): Record<string, any> {
-    const willRenew = [
+    const autoRenewalStatus =
+      typeof subscription?.auto_renewal_status === 'string'
+        ? subscription.auto_renewal_status
+        : null;
+    const renewingStatuses = [
       'will_renew',
       'will_change_product',
       'has_already_renewed',
-    ].includes(subscription?.auto_renewal_status);
+    ];
+    const willRenew = autoRenewalStatus
+      ? renewingStatuses.includes(autoRenewalStatus)
+      : true;
     const periodType = subscription?.status === 'trialing' ? 'TRIAL' : 'NORMAL';
     const expiresAt = this.isoFromRevenueCatMs(
       subscription?.current_period_ends_at ?? subscription?.ends_at,
@@ -772,7 +779,8 @@ export class SubscriptionService {
 
     const unsubscribeDetectedAt =
       this.isoFromRevenueCatMs(subscription?.unsubscribe_detected_at) ??
-      (!willRenew &&
+      (autoRenewalStatus &&
+      !willRenew &&
       (!expiresAt || new Date(expiresAt).getTime() > Date.now())
         ? new Date().toISOString()
         : null);

@@ -75,6 +75,28 @@ describe('SubscriptionService RevenueCat v2 periods', () => {
     expect(period.periodKey).toBe('2026-05');
   });
 
+  it('does not treat an active v2 trial as cancelled when auto_renewal_status is missing', () => {
+    const { service } = createService();
+
+    const customerInfo = (service as any).subscriptionToCustomerInfo(
+      new Types.ObjectId().toHexString(),
+      {
+        product_id: 'saveful.hero:monthly',
+        current_period_starts_at: '2026-04-25T09:30:00.000Z',
+        current_period_ends_at: '2099-05-25T09:30:00.000Z',
+        status: 'trialing',
+        store: 'play_store',
+      },
+      'saveful.hero:monthly',
+    );
+
+    const parsed = parseCustomerInfo(customerInfo);
+    expect(parsed.plan).toBe('hero');
+    expect(parsed.status).toBe('in_trial');
+    expect(parsed.cancelledAt).toBeUndefined();
+    expect(parsed.willRenew).toBe(true);
+  });
+
   it('picks the most recently purchased active v2 subscription, breaking ties by tier rank', () => {
     // Regression: the picker used to sort by `current_period_ends_at` DESC,
     // which caused a still-running Hero subscription with a later expiry to

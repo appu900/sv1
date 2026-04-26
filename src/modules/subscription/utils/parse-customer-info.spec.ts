@@ -22,6 +22,26 @@ describe('parseCustomerInfo', () => {
     expect(parsed.trialEndsAt?.toISOString()).toBe('2099-05-25T00:00:00.000Z');
   });
 
+  it('keeps active trials active when RevenueCat omits will_renew', () => {
+    const parsed = parseCustomerInfo({
+      entitlements: {
+        active: {
+          saveful_pro: {
+            product_identifier: 'saveful.hero:monthly',
+            expires_date: '2099-05-25T00:00:00Z',
+            purchase_date: '2099-04-25T00:00:00Z',
+            period_type: 'TRIAL',
+          },
+        },
+      },
+    });
+
+    expect(parsed.plan).toBe('hero');
+    expect(parsed.status).toBe('in_trial');
+    expect(parsed.willRenew).toBe(true);
+    expect(parsed.cancelledAt).toBeUndefined();
+  });
+
   it('keeps cancelled trials paid but marks them cancelled so the app can show reactivation state', () => {
     const parsed = parseCustomerInfo({
       entitlements: {

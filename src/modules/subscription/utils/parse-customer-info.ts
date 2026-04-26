@@ -99,14 +99,16 @@ export function parseCustomerInfo(
     typeof rawPeriodType === 'string'
       ? rawPeriodType.toLowerCase()
       : rawPeriodType;
-  const willRenew = ent.willRenew ?? ent.will_renew ?? false;
+  const hasWillRenew =
+    ent.willRenew !== undefined || ent.will_renew !== undefined;
+  const willRenew = ent.willRenew ?? ent.will_renew ?? true;
   let cancelledAt = toDate(
     ent.unsubscribe_detected_at ?? ent.unsubscribeDetectedAt ?? null,
   );
 
   const now = Date.now();
   const isExpired = !!expiresAt && expiresAt.getTime() < now;
-  if (!cancelledAt && !willRenew && !isExpired) {
+  if (!cancelledAt && hasWillRenew && !willRenew && !isExpired) {
     cancelledAt = new Date(now);
   }
 
