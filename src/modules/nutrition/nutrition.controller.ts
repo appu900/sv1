@@ -26,6 +26,7 @@ import {
   RequireFeature,
   SubscriptionGuard,
 } from '../subscription/subscription.guard';
+import { SubscriptionService } from '../subscription/subscription.service';
 import { FoodItemService } from './food-item.service';
 import { UserCustomFoodService } from './user-custom-food.service';
 import { NutritionService } from './nutrition.service';
@@ -83,6 +84,7 @@ export class NutritionController {
     private readonly barcodeLookup: BarcodeLookupService,
     private readonly productImageAnalysis: ProductImageAnalysisService,
     private readonly imageUpload: ImageUploadService,
+    private readonly subscriptionService: SubscriptionService,
     @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
   ) {}
 
@@ -125,14 +127,35 @@ export class NutritionController {
   async lookupBarcode(@Request() req: any, @Body() dto: BarcodeLookupDto) {
     const userId = this.resolveUserId(req);
     const country = await this.resolveUserCountry(userId);
-    const result = await this.barcodeLookup.lookupForCountry(dto.barcode, country);
-    if (!result) {
-      this.logger.warn(`Barcode ${dto.barcode} not found in any data source`);
-      throw new NotFoundException(
-        `No product found for barcode ${dto.barcode}`,
+
+    let usageReserved = false;
+    try {
+      await this.subscriptionService.incrementUsage(userId, 'kitchenScansUsed');
+      usageReserved = true;
+
+      const result = await this.barcodeLookup.lookupForCountry(
+        dto.barcode,
+        country,
       );
+      if (!result) {
+        this.logger.warn(`Barcode ${dto.barcode} not found in any data source`);
+        throw new NotFoundException(
+          `No product found for barcode ${dto.barcode}`,
+        );
+      }
+      return result;
+    } catch (error) {
+      if (usageReserved) {
+        await this.subscriptionService
+          .refundUsage(userId, 'kitchenScansUsed')
+          .catch((refundError) => {
+            this.logger.warn(
+              `Failed to refund barcode scan usage for user ${userId}: ${(refundError as Error)?.message}`,
+            );
+          });
+      }
+      throw error;
     }
-    return result;
   }
 
   @Post('foods/analyze-image')
