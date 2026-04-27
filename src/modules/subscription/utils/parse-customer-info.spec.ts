@@ -121,7 +121,7 @@ describe('parseCustomerInfo', () => {
     expect(parsed.willRenew).toBe(false);
   });
 
-  it('keeps active trials active when will_renew=false is the only cancel-like signal', () => {
+  it('keeps Google Play trials active when will_renew=false is the only cancel-like signal', () => {
     const parsed = parseCustomerInfo({
       entitlements: {
         active: {
@@ -130,6 +130,7 @@ describe('parseCustomerInfo', () => {
             expires_date: '2099-05-25T00:00:00Z',
             purchase_date: '2099-04-25T00:00:00Z',
             period_type: 'TRIAL',
+            store: 'play_store',
             will_renew: false,
           },
         },
