@@ -141,4 +141,27 @@ describe('parseCustomerInfo', () => {
     expect(parsed.cancelledAt).toBeUndefined();
     expect(parsed.willRenew).toBe(true);
   });
+
+  it('marks App Store trials cancelled when will_renew=false is the only cancel-like signal', () => {
+    const parsed = parseCustomerInfo({
+      entitlements: {
+        active: {
+          saveful_pro: {
+            product_identifier: 'saveful.hero:monthly',
+            expires_date: '2099-05-25T00:00:00Z',
+            purchase_date: '2099-04-25T00:00:00Z',
+            period_type: 'TRIAL',
+            store: 'app_store',
+            will_renew: false,
+          },
+        },
+      },
+    });
+
+    expect(parsed.plan).toBe('hero');
+    expect(parsed.status).toBe('cancelled');
+    expect(parsed.cancelledAt).toBeInstanceOf(Date);
+    expect(parsed.willRenew).toBe(false);
+    expect(parsed.trialCancelled).toBe(true);
+  });
 });

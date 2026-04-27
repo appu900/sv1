@@ -108,6 +108,13 @@ export function parseCustomerInfo(
       ? rawPeriodType.toLowerCase()
       : rawPeriodType;
   const isTrialPeriod = periodType === 'trial' || periodType === 'intro';
+  const store =
+    typeof ent.store === 'string' ? ent.store.toLowerCase() : undefined;
+  const isAppleStore =
+    store === 'app_store' ||
+    store === 'apple_appstore' ||
+    store === 'apple_app_store' ||
+    store === 'mac_app_store';
   const rawAutoRenewalStatus = ent.autoRenewalStatus ?? ent.auto_renewal_status;
   const autoRenewalStatus =
     typeof rawAutoRenewalStatus === 'string'
@@ -127,7 +134,8 @@ export function parseCustomerInfo(
 
   const now = Date.now();
   const isExpired = !!expiresAt && expiresAt.getTime() < now;
-  const hasBareWillRenewCancelSignal = rawWillRenew === false && !isTrialPeriod;
+  const hasBareWillRenewCancelSignal =
+    rawWillRenew === false && (!isTrialPeriod || isAppleStore);
   if (
     !cancelledAt &&
     !isExpired &&
@@ -138,8 +146,9 @@ export function parseCustomerInfo(
   if (isTrialPeriod && rawWillRenew === false && !cancelledAt) {
     // Google closed-testing trials can report will_renew=false before the
     // trial actually ends. Do not let that ambiguous flag alone downgrade an
-    // active trial to Basic; real trial cancellation must carry either an
-    // unsubscribe timestamp or explicit non-renewing auto_renewal_status.
+    // active non-Apple trial to Basic; real trial cancellation must carry
+    // either an unsubscribe timestamp, an explicit non-renewing
+    // auto_renewal_status, or an App Store trial will_renew=false signal.
     willRenew = true;
   }
 
