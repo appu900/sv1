@@ -45,6 +45,104 @@ describe('SubscriptionService RevenueCat configuration', () => {
   });
 });
 
+describe('SubscriptionService customer info sync safety', () => {
+  it('does not downgrade an unexpired paid subscription when CustomerInfo resolves empty', async () => {
+    const { service, subscriptionModel } = createService();
+    const userId = new Types.ObjectId().toHexString();
+    const existing = {
+      _id: new Types.ObjectId(),
+      plan: 'legend',
+      status: 'in_trial',
+      productId: 'saveful.legend.monthly',
+      expiresAt: new Date('2099-05-25T00:00:00.000Z'),
+      willRenew: true,
+    };
+
+    jest.spyOn(service as any, 'verifyCustomerWithRevenueCat').mockResolvedValue({
+      originalAppUserId: userId,
+      entitlements: { active: {} },
+    });
+    subscriptionModel.findOne.mockResolvedValue(existing);
+
+    const result = await service.syncFromCustomerInfo(
+      userId,
+      { entitlements: { active: {} } },
+      userId,
+    );
+
+    expect(result).toBe(existing);
+    expect(subscriptionModel.findOneAndUpdate).not.toHaveBeenCalled();
+  });
+
+  it('still downgrades a paid subscription when its known expiry has passed', async () => {
+    const { service, subscriptionModel } = createService();
+    const userId = new Types.ObjectId().toHexString();
+    const saved = {
+      _id: new Types.ObjectId(),
+      plan: 'basic',
+      status: 'expired',
+      willRenew: false,
+    };
+
+    jest.spyOn(service as any, 'verifyCustomerWithRevenueCat').mockResolvedValue({
+      originalAppUserId: userId,
+      entitlements: { active: {} },
+    });
+    subscriptionModel.findOne.mockResolvedValue({
+      _id: new Types.ObjectId(),
+      plan: 'hero',
+      status: 'active',
+      productId: 'saveful.hero.monthly',
+      expiresAt: new Date('2000-05-25T00:00:00.000Z'),
+      willRenew: true,
+    });
+    subscriptionModel.findOneAndUpdate.mockResolvedValue(saved);
+
+    const result = await service.syncFromCustomerInfo(
+      userId,
+      { entitlements: { active: {} } },
+      userId,
+    );
+
+    expect(result).toBe(saved);
+    const update = subscriptionModel.findOneAndUpdate.mock.calls[0][1];
+    expect(update.$set).toMatchObject({
+      plan: 'basic',
+      status: 'expired',
+      willRenew: false,
+    });
+  });
+
+  it('rejects an anonymous RevenueCat identity in the trusted client fallback', () => {
+    const { service } = createService();
+    const userId = new Types.ObjectId().toHexString();
+    expect(() =>
+      (service as any).trustedClientCustomerInfo(
+        userId,
+        {
+          originalAppUserId: '$RCAnonymousID:abc123',
+          entitlements: { active: {} },
+        },
+        '$RCAnonymousID:abc123',
+      ),
+    ).toThrow(ForbiddenException);
+  });
+
+  it('rejects a client CustomerInfo whose app_user_id does not match the auth user', () => {
+    const { service } = createService();
+    const userId = new Types.ObjectId().toHexString();
+    expect(() =>
+      (service as any).trustedClientCustomerInfo(
+        userId,
+        {
+          originalAppUserId: new Types.ObjectId().toHexString(),
+          entitlements: { active: {} },
+        },
+      ),
+    ).toThrow(ForbiddenException);
+  });
+});
+
 describe('SubscriptionService RevenueCat v2 periods', () => {
   it('parses ISO timestamp fields into a calendar-month usage period', () => {
     const { service } = createService();

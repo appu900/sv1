@@ -175,6 +175,12 @@ export class SubscriptionService {
       SAVEFUL_ENTITLEMENT,
       existing?.plan,
     );
+    if (this.shouldPreserveUnexpiredPaidSubscription(existing, parsed)) {
+      this.logger.warn(
+        `Ignoring empty subscription sync for user=${userId}; existing paid access expires at ${existing!.expiresAt!.toISOString()}`,
+      );
+      return existing!;
+    }
     const uid = toObjectId(userId);
     const update: Record<string, any> = {
       plan: parsed.plan,
@@ -234,6 +240,22 @@ export class SubscriptionService {
     );
     return doc!;
   } 
+
+  private shouldPreserveUnexpiredPaidSubscription(
+    existing: SubscriptionDocument | null,
+    parsed: ReturnType<typeof parseCustomerInfo>,
+  ): boolean {
+    return (
+      !!existing &&
+      existing.plan !== 'basic' &&
+      !!existing.expiresAt &&
+      existing.expiresAt.getTime() > Date.now() &&
+      parsed.plan === 'basic' &&
+      parsed.status === 'expired' &&
+      !parsed.entitlement &&
+      !parsed.productId
+    );
+  }
 
   private async verifyCustomerWithRevenueCat(
     userId: string,
@@ -409,6 +431,19 @@ export class SubscriptionService {
       customerInfo?.originalAppUserId ??
       customerInfo?.original_app_user_id ??
       revenueCatUserId;
+
+    if (
+      typeof clientAppUserId === 'string' &&
+      clientAppUserId.startsWith('$RCAnonymousID:')
+    ) {
+      this.logger.warn(
+        `Rejecting /sync: anonymous RevenueCat user ${clientAppUserId} for auth user=${userId}`,
+      );
+      throw new ForbiddenException({
+        code: 'SUBSCRIPTION_ANONYMOUS',
+        message: 'Anonymous RevenueCat identity cannot be synced.',
+      });
+    }
 
     if (clientAppUserId && String(clientAppUserId) !== String(userId)) {
       this.logger.warn(
