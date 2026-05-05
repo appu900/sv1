@@ -23,6 +23,7 @@ import { SurveyConfigDocument } from 'src/database/schemas/survey-config.schema'
 @Injectable()
 export class TrackSurveyService {
   private readonly logger = new Logger(TrackSurveyService.name);
+  private readonly surveyIntervalMs = 7 * 24 * 60 * 60 * 1000;
 
   constructor(
     @InjectModel(TrackSurvey.name)
@@ -62,11 +63,13 @@ export class TrackSurveyService {
     return weekStart;
   }
 
-  private getNextSurveyDate(surveyDay: number): Date {
-    const currentWeekStart = this.getWeekStart(surveyDay);
-    const nextWeek = new Date(currentWeekStart);
-    nextWeek.setDate(nextWeek.getDate() + 7);
-    return nextWeek;
+  private getNextSurveyDateFromCompletion(completedAt: Date | string): Date {
+    const completed = new Date(completedAt);
+    if (Number.isNaN(completed.getTime())) {
+      return new Date(Date.now() + this.surveyIntervalMs);
+    }
+
+    return new Date(completed.getTime() + this.surveyIntervalMs);
   }
 
   private calculateSavingsWithConfig(
@@ -130,7 +133,7 @@ export class TrackSurveyService {
 
     const lastSurvey = await this.trackSurveyModel
       .findOne({ userId: userIdObj })
-      .sort({ surveyWeek: -1 })
+      .sort({ completedAt: -1, surveyWeek: -1 })
       .lean();
 
     const totalSurveys = await this.trackSurveyModel.countDocuments({
@@ -147,25 +150,18 @@ export class TrackSurveyService {
       };
     }
 
-    const surveyDay = this.normalizeSurveyDay(
-      lastSurvey.surveyDay,
-      lastSurvey.surveyWeek,
-    );
-    const currentWeekStart = this.getWeekStart(surveyDay);
-    const lastSurveyWeek = new Date(lastSurvey.surveyWeek);
-
-    const eligible = currentWeekStart.getTime() > lastSurveyWeek.getTime();
-
-    const nextSurveyDate = this.getNextSurveyDate(surveyDay);
+    const lastCompletedAt = lastSurvey.completedAt ?? lastSurvey.createdAt ?? lastSurvey.surveyWeek;
+    const nextSurveyDate = this.getNextSurveyDateFromCompletion(lastCompletedAt);
+    const eligible = Date.now() >= nextSurveyDate.getTime();
 
     return {
       eligible,
       next_survey_date: nextSurveyDate.toISOString(),
-      last_survey_date: lastSurvey.completedAt.toISOString(),
+      last_survey_date: new Date(lastCompletedAt).toISOString(),
       surveys_count: totalSurveys,
       message: eligible
         ? (uiCfg?.eligibilityMessage || 'Ready to take this week\'s survey!')
-        : (uiCfg?.notEligibleMessage || 'You\'ve already completed this week\'s survey'),
+        : (uiCfg?.notEligibleMessage || 'Your next survey is not due yet'),
     };
   }
 
@@ -177,7 +173,7 @@ export class TrackSurveyService {
 
     const latestSurvey = await this.trackSurveyModel
       .findOne({ userId: userIdObj })
-      .sort({ surveyWeek: -1 })
+      .sort({ completedAt: -1, surveyWeek: -1 })
       .lean();
 
     const surveyDay = this.normalizeSurveyDay(
