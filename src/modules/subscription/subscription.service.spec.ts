@@ -244,10 +244,56 @@ describe('SubscriptionService RevenueCat v2 periods', () => {
           entitlements: { items: [{ lookup_key: 'saveful_pro' }] },
         },
       ],
-      'saveful_pro',
+      new Set(['saveful_pro']),
     );
 
     expect(selected.product_id).toBe('saveful.legend.monthly');
+  });
+
+  it('matches v2 entitlement items by the internal id resolved from the entitlement registry', async () => {
+    const { service } = createService();
+    const userId = new Types.ObjectId().toHexString();
+
+    jest
+      .spyOn(service as any, 'fetchRevenueCatV2ListItems')
+      .mockImplementation(async (pathArg: unknown) => {
+        const path = String(pathArg);
+        if (path.includes('/entitlements')) {
+          return [
+            {
+              id: 'entl_saveful_internal',
+              lookup_key: 'saveful_pro',
+            },
+          ];
+        }
+        if (path.includes('/subscriptions')) {
+          return [
+            {
+              product_id: 'saveful.legend.monthly',
+              gives_access: true,
+              purchased_at: '2026-05-05T10:00:00.000Z',
+              current_period_starts_at: '2026-05-05T10:00:00.000Z',
+              current_period_ends_at: '2026-05-12T10:00:00.000Z',
+              status: 'trialing',
+              store: 'app_store',
+              entitlements: {
+                items: [{ entitlement_id: 'entl_saveful_internal' }],
+              },
+            },
+          ];
+        }
+        return [];
+      });
+
+    const customerInfo = await (service as any).fetchCustomerFromRevenueCatV2(
+      userId,
+      'sk_test',
+      'proj_test',
+    );
+
+    expect(
+      customerInfo.entitlements.active.saveful_pro.product_identifier,
+    ).toBe('saveful.legend.monthly');
   });
 });
 

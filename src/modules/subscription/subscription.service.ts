@@ -67,6 +67,10 @@ export class SubscriptionService {
     string,
     string | undefined
   >();
+  private readonly revenueCatV2EntitlementReferenceCache = new Map<
+    string,
+    ReadonlySet<string>
+  >();
 
   constructor(
     @InjectModel(Subscription.name)
@@ -588,6 +592,12 @@ export class SubscriptionService {
     revenueCatV2ApiKey: string,
     projectId: string,
   ): Promise<Record<string, any>> {
+    const entitlementReferences =
+      await this.resolveRevenueCatV2EntitlementReferences(
+        projectId,
+        revenueCatV2ApiKey,
+        SAVEFUL_ENTITLEMENT,
+      );
     const subscriptions = await this.fetchRevenueCatV2ListItems(
       `/projects/${encodeURIComponent(projectId)}/customers/${encodeURIComponent(
         userId,
@@ -597,7 +607,7 @@ export class SubscriptionService {
 
     const activeSubscription = this.pickActiveRevenueCatV2Subscription(
       subscriptions,
-      SAVEFUL_ENTITLEMENT,
+      entitlementReferences,
     );
 
     if (activeSubscription) {
@@ -621,7 +631,7 @@ export class SubscriptionService {
     );
     const activePurchase = this.pickActiveRevenueCatV2Purchase(
       purchases,
-      SAVEFUL_ENTITLEMENT,
+      entitlementReferences,
     );
 
     if (!activePurchase) {
@@ -718,16 +728,8 @@ export class SubscriptionService {
 
   private pickActiveRevenueCatV2Subscription(
     subscriptions: any[],
-    entitlementId: string,
+    entitlementReferences: ReadonlySet<string>,
   ): any | undefined {
-    // Pick the SUBSCRIPTION the user is actively on right now, not just the
-    // one with the latest end date. When a user upgrades Hero → Legend, the
-    // previous (Hero) subscription often still has a later
-    // `current_period_ends_at` (longer cycle / proration) and would be
-    // returned, hiding the just-purchased Legend. Sort by:
-    //   1. most-recent `purchased_at` / `starts_at` (newest purchase wins)
-    //   2. tier rank (legend > hero) as a tie-break
-    //   3. latest end date as a final fallback
     const tierRank = (resource: any): number => {
       const id = String(resource?.product_id ?? '').toLowerCase();
       if (id.includes('legend')) return 2;
@@ -738,7 +740,7 @@ export class SubscriptionService {
       .filter(
         (subscription) =>
           subscription?.gives_access === true &&
-          this.hasRevenueCatV2Entitlement(subscription, entitlementId),
+          this.hasRevenueCatV2Entitlement(subscription, entitlementReferences),
       )
       .sort((left, right) => {
         const leftPurchased = this.revenueCatMs(
@@ -764,13 +766,13 @@ export class SubscriptionService {
 
   private pickActiveRevenueCatV2Purchase(
     purchases: any[],
-    entitlementId: string,
+    entitlementReferences: ReadonlySet<string>,
   ): any | undefined {
     return purchases
       .filter(
         (purchase) =>
           purchase?.status === 'owned' &&
-          this.hasRevenueCatV2Entitlement(purchase, entitlementId),
+          this.hasRevenueCatV2Entitlement(purchase, entitlementReferences),
       )
       .sort((left, right) => {
         const leftAt = this.revenueCatMs(left?.purchased_at);
@@ -781,17 +783,77 @@ export class SubscriptionService {
 
   private hasRevenueCatV2Entitlement(
     resource: any,
-    entitlementId: string,
+    entitlementReferences: ReadonlySet<string>,
   ): boolean {
     const items = resource?.entitlements?.items;
     if (!Array.isArray(items) || items.length === 0) {
       return true;
     }
-    return items.some(
-      (entitlement) =>
-        entitlement?.lookup_key === entitlementId ||
-        entitlement?.id === entitlementId,
-    );
+
+    let sawLookupKey = false;
+    for (const entitlement of items) {
+      const lookupKey = this.revenueCatString(
+        entitlement?.lookup_key ?? entitlement?.lookupKey,
+      );
+      if (lookupKey) sawLookupKey = true;
+      const candidates = [
+        lookupKey,
+        this.revenueCatString(entitlement?.id),
+        this.revenueCatString(
+          entitlement?.entitlement_id ?? entitlement?.entitlementId,
+        ),
+      ].filter((value): value is string => !!value);
+      if (candidates.some((candidate) => entitlementReferences.has(candidate))) {
+        return true;
+      }
+    }
+
+    return !sawLookupKey && entitlementReferences.size === 1;
+  }
+
+  private async resolveRevenueCatV2EntitlementReferences(
+    projectId: string,
+    apiKey: string,
+    lookupKey: string,
+  ): Promise<ReadonlySet<string>> {
+    const cacheKey = `${projectId}:${lookupKey}`;
+    const cached = this.revenueCatV2EntitlementReferenceCache.get(cacheKey);
+    if (cached) return cached;
+
+    const references = new Set<string>([lookupKey]);
+    try {
+      const entitlements = await this.fetchRevenueCatV2ListItems(
+        `/projects/${encodeURIComponent(projectId)}/entitlements?limit=100`,
+        apiKey,
+      );
+      for (const entitlement of entitlements) {
+        const candidates = [
+          this.revenueCatString(
+            entitlement?.lookup_key ?? entitlement?.lookupKey,
+          ),
+          this.revenueCatString(entitlement?.id),
+          this.revenueCatString(
+            entitlement?.entitlement_id ?? entitlement?.entitlementId,
+          ),
+        ].filter((value): value is string => !!value);
+        if (candidates.includes(lookupKey)) {
+          for (const candidate of candidates) references.add(candidate);
+        }
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Unable to resolve RevenueCat v2 entitlement references for ${lookupKey}: ${(err as Error).message}`,
+      );
+    }
+
+    this.revenueCatV2EntitlementReferenceCache.set(cacheKey, references);
+    return references;
+  }
+
+  private revenueCatString(value: unknown): string | undefined {
+    return typeof value === 'string' && value.trim().length > 0
+      ? value.trim()
+      : undefined;
   }
 
   private async resolveRevenueCatV2ProductIdentifier(
