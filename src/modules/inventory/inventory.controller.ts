@@ -330,9 +330,11 @@ export class InventoryController {
     return {
       parsedItems: parsedItems.map((item) => ({
         ...item,
-        expiresAt: new Date(
-          now + item.expiryDays * 24 * 60 * 60 * 1000,
-        ).toISOString(),
+        expiresAt:
+          item.expiresAt ??
+          new Date(
+            now + item.expiryDays * 24 * 60 * 60 * 1000,
+          ).toISOString(),
         source: InventoryItemSource.SHOPPING_LIST_PHOTO,
       })),
       imagesProcessed: images.length,
@@ -372,10 +374,6 @@ export class InventoryController {
     );
 
     const parsedItems = await this.inventoryAiService.parseVoiceTranscript(transcript, country, userId);
-
-    // Enforce the plan `ingredients` cap against the live count. Without
-    // this, the /from-shopping-list route bypasses the cap that /batch and
-    // /voice-confirm already enforce.
     const current = await this.inventoryService.countActiveItems(userId);
     const quota = await this.subscriptionService.enforceLiveLimit(
       userId,

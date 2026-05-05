@@ -28,6 +28,7 @@ export interface ParsedVoiceItem {
   unit: string;
   storageLocation: StorageLocation;
   expiryDays: number;
+  expiresAt?: string;
   confidence: number; 
 }
 
@@ -286,6 +287,8 @@ Return JSON:
     }));
 
     const startedAt = Date.now();
+    const scanDate = new Date();
+    const scanDateIso = scanDate.toISOString().slice(0, 10);
     let aiResponse: any = null;
     try {
       const response = await this.openai.chat.completions.create({
@@ -305,10 +308,12 @@ STRICT RULES:
 4. For receipts: read the line items — quantity is usually written as a count or weight. Skip totals, taxes, and non-food lines.
 5. Match each item to the CLOSEST name from the provided ingredient database list. Translate regional/Hindi terms to English (e.g., "aloo"→"Potato", "dhaniya"→"Coriander"). If nothing matches, keep the original English name.
 6. Determine storageLocation: "pantry" for dry goods, grains, oils, spices, canned goods, unopened packaged foods; "fridge" for fresh produce, dairy, eggs, opened condiments, deli items, fresh meat/seafood; "freezer" for frozen items; "other" only if genuinely unclear.
-7. Estimate expiryDays from the item type and storage location (e.g. leafy greens 5, root veg 14, rice 365, milk 7, frozen meat 90).
-8. confidence: 0-1, how sure you are about the identification + quantity.
-9. Do NOT invent items. If a photo is too blurry / unclear, skip it or return an empty array.
-10. Max 40 items total.
+7. Today / scan date is ${scanDateIso}. If a product/package shows a real printed "best before", "use by", "expiry", or "expiration" date for that exact item, return it as expiresAt in YYYY-MM-DD format and set expiryBasis="printed_date". This is the most important expiry signal.
+8. A receipt transaction date, purchase date, print date, or payment date is NOT an expiry date. Never use a receipt date as expiresAt and never set expiryDays=0 or 1 just because the receipt date is today.
+9. If no real printed expiry date is visible, set expiresAt=null and estimate expiryDays dynamically from the item type, packaging, storageLocation, and whether it appears unopened/shelf-stable/fresh/frozen. For canned/tinned unopened pantry goods, use normal shelf-stable expectations rather than the receipt date.
+10. confidence: 0-1, how sure you are about the identification + quantity + expiry estimate.
+11. Do NOT invent items. If a photo is too blurry / unclear, skip it or return an empty array.
+12. Max 40 items total.
 
 KNOWN INGREDIENTS IN DATABASE (match to these when possible):
 ${ingredientNames.join(', ')}
@@ -331,6 +336,8 @@ Return JSON EXACTLY in this shape:
       "quantity": 2,
       "unit": "pack",
       "storageLocation": "fridge",
+      "expiresAt": null,
+      "expiryBasis": "estimated_shelf_life",
       "expiryDays": 30,
       "confidence": 0.9
     }
@@ -432,6 +439,16 @@ Return JSON EXACTLY in this shape:
         ].includes(item?.storageLocation)
           ? (item.storageLocation as StorageLocation)
           : StorageLocation.PANTRY;
+        const explicitExpiryDate = this.parseExplicitExpiryDate(
+          item?.expiresAt,
+        );
+        const parsedExpiryDays = Number(item?.expiryDays);
+        if (!explicitExpiryDate && !Number.isFinite(parsedExpiryDays)) {
+          continue;
+        }
+        const expiryDays = explicitExpiryDate
+          ? this.daysBetween(scanDate, explicitExpiryDate)
+          : Math.max(1, Math.min(1825, Math.floor(parsedExpiryDays)));
 
         results.push({
           ingredientId,
@@ -439,9 +456,8 @@ Return JSON EXACTLY in this shape:
           quantity: Number.isFinite(qty) && qty > 0 ? qty : 1,
           unit: typeof item?.unit === 'string' && item.unit.trim() ? item.unit.trim().slice(0, 20) : 'piece',
           storageLocation: storage,
-          expiryDays: Number.isFinite(Number(item?.expiryDays))
-            ? Math.max(1, Math.min(1825, Math.floor(Number(item.expiryDays))))
-            : 7,
+          expiryDays,
+          expiresAt: explicitExpiryDate?.toISOString(),
           confidence: Math.max(
             0,
             Math.min(1, Number(item?.confidence) || 0.5),
@@ -497,6 +513,34 @@ Return JSON EXACTLY in this shape:
       }
       throw error;
     }
+  }
+
+  private parseExplicitExpiryDate(value: unknown): Date | undefined {
+    if (typeof value !== 'string' || !value.trim()) return undefined;
+    const trimmed = value.trim();
+    if (trimmed.toLowerCase() === 'null') return undefined;
+
+    const dateOnlyMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
+    const parsedDate = dateOnlyMatch
+      ? new Date(`${dateOnlyMatch[1]}-${dateOnlyMatch[2]}-${dateOnlyMatch[3]}T12:00:00.000Z`)
+      : new Date(trimmed);
+
+    return Number.isNaN(parsedDate.getTime()) ? undefined : parsedDate;
+  }
+
+  private daysBetween(from: Date, to: Date): number {
+    const fromStart = new Date(from);
+    fromStart.setHours(0, 0, 0, 0);
+    const toStart = new Date(to);
+    toStart.setHours(0, 0, 0, 0);
+
+    return Math.max(
+      0,
+      Math.min(
+        1825,
+        Math.round((toStart.getTime() - fromStart.getTime()) / (24 * 60 * 60 * 1000)),
+      ),
+    );
   }
 
   private async matchRecipesToInventory(
