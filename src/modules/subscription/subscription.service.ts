@@ -181,6 +181,10 @@ export class SubscriptionService {
       );
       return existing!;
     }
+    const shouldResetUsage = this.shouldResetUsageForPaidActivation(
+      existing,
+      parsed.plan,
+    );
     const uid = toObjectId(userId);
     const update: Record<string, any> = {
       plan: parsed.plan,
@@ -238,6 +242,15 @@ export class SubscriptionService {
     this.logger.log(
       `Sync sub for user=${userId} plan=${doc!.plan} status=${doc!.status} product=${doc!.productId}`,
     );
+    if (shouldResetUsage) {
+      await this.resetCurrentPeriodMeteredUsage(userId, {
+        plan: doc!.plan,
+        purchasedAt: doc!.purchasedAt,
+        expiresAt: doc!.expiresAt,
+        productId: doc!.productId,
+        periodType: doc!.periodType,
+      });
+    }
     return doc!;
   } 
 
@@ -254,6 +267,57 @@ export class SubscriptionService {
       parsed.status === 'expired' &&
       !parsed.entitlement &&
       !parsed.productId
+    );
+  }
+
+  private hasCurrentPaidAccess(
+    sub: SubscriptionDocument | null | undefined,
+  ): boolean {
+    if (!sub || sub.plan === 'basic') return false;
+    if (sub.status === 'expired' || sub.status === 'paused') return false;
+    if (sub.expiresAt && sub.expiresAt.getTime() <= Date.now()) return false;
+
+    const isTrialPeriod =
+      sub.periodType === 'trial' || sub.periodType === 'intro';
+    if (sub.status === 'cancelled' && !sub.willRenew && isTrialPeriod) {
+      return false;
+    }
+
+    return true;
+  }
+
+  private shouldResetUsageForPaidActivation(
+    existing: SubscriptionDocument | null | undefined,
+    nextPlan: SubscriptionPlan | undefined,
+  ): boolean {
+    if (nextPlan !== 'hero' && nextPlan !== 'legend') return false;
+    return !this.hasCurrentPaidAccess(existing);
+  }
+
+  private async resetCurrentPeriodMeteredUsage(
+    userId: string,
+    source: {
+      plan?: SubscriptionPlan | null;
+      purchasedAt?: Date | null;
+      expiresAt?: Date | null;
+      productId?: string | null;
+      periodType?: string | null;
+    },
+  ): Promise<void> {
+    const uid = toObjectId(userId);
+    const { periodKey, periodStart, periodEnd } = currentUsagePeriod(source);
+    await this.usageModel.updateOne(
+      { userId: uid, periodKey },
+      {
+        $set: {
+          aiMealsUsed: 0,
+          kitchenScansUsed: 0,
+          periodStart,
+          periodEnd,
+        },
+        $setOnInsert: { userId: uid, periodKey },
+      },
+      { upsert: true },
     );
   }
 
@@ -957,6 +1021,10 @@ export class SubscriptionService {
       set: Record<string, any>,
       unset?: Record<string, ''>,
     ) => {
+      const shouldResetUsage = this.shouldResetUsageForPaidActivation(
+        existing,
+        set.plan,
+      );
       const filter: Record<string, any> = { userId: uid };
       if (eventId) filter.lastEventId = { $ne: eventId };
       filter.$or = [
@@ -981,6 +1049,14 @@ export class SubscriptionService {
         this.logger.log(
           `RC webhook skipped (dedup/ordering) type=${event?.type} id=${eventId}`,
         );
+      } else if (shouldResetUsage) {
+        await this.resetCurrentPeriodMeteredUsage(appUserId, {
+          plan: set.plan,
+          purchasedAt: set.purchasedAt ?? existing?.purchasedAt,
+          expiresAt: set.expiresAt ?? existing?.expiresAt,
+          productId: set.productId ?? existing?.productId,
+          periodType: set.periodType ?? existing?.periodType,
+        });
       }
     };
 

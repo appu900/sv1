@@ -249,6 +249,65 @@ export class NutritionService {
     });
   }
 
+  async getLoggingStreak(userId: string): Promise<{
+    currentStreak: number;
+    longestStreak: number;
+    todayLogged: boolean;
+    lastLoggedDate: string | null;
+    streakStartDate: string | null;
+    nextMilestone: number;
+  }> {
+    const today = await this.todayISO(userId);
+    const docs = await this.dailyModel
+      .find({
+        userId: new Types.ObjectId(userId),
+        date: { $lte: today },
+      })
+      .select('date entries._id totals.kcal waterIntake.total_ml targets.kcal')
+      .sort({ date: 1 })
+      .lean()
+      .exec();
+
+    const loggedDates = new Set(
+      docs
+        .filter((doc: any) => this.isLoggedStreakDay(doc))
+        .map((doc: any) => doc.date),
+    );
+    const sortedLoggedDates = [...loggedDates].sort();
+    const todayLogged = loggedDates.has(today);
+    const yesterday = addDaysISO(today, -1);
+    const anchorDate = todayLogged ? today : yesterday;
+
+    let currentStreak = 0;
+    let cursor = anchorDate;
+    while (loggedDates.has(cursor)) {
+      currentStreak += 1;
+      cursor = addDaysISO(cursor, -1);
+    }
+
+    let longestStreak = 0;
+    let activeRun = 0;
+    let previousDate: string | null = null;
+    for (const date of sortedLoggedDates) {
+      activeRun = previousDate && addDaysISO(previousDate, 1) === date
+        ? activeRun + 1
+        : 1;
+      longestStreak = Math.max(longestStreak, activeRun);
+      previousDate = date;
+    }
+
+    return {
+      currentStreak,
+      longestStreak,
+      todayLogged,
+      lastLoggedDate: sortedLoggedDates.at(-1) ?? null,
+      streakStartDate: currentStreak > 0
+        ? addDaysISO(anchorDate, -(currentStreak - 1))
+        : null,
+      nextMilestone: nextStreakMilestone(currentStreak),
+    };
+  }
+
   async deleteEntry(
     userId: string,
     entryId: string,
@@ -760,6 +819,13 @@ export class NutritionService {
         .every((value) => Number.isFinite(value));
   }
 
+  private isLoggedStreakDay(doc: any): boolean {
+    const target = doc?.targets?.kcal ?? 0;
+    const actual = doc?.totals?.kcal ?? 0;
+    if (target <= 0) return false;
+    return actual >= target;
+  }
+
   private async todayISO(userId: string): Promise<string> {
     const user = await this.userModel
       .findById(userId)
@@ -772,4 +838,16 @@ export class NutritionService {
 
 function round(n: number): number {
   return Math.round(n * 10) / 10;
+}
+
+function addDaysISO(date: string, days: number): string {
+  const [year, month, day] = date.split('-').map(Number);
+  const value = new Date(Date.UTC(year, month - 1, day + days));
+  return value.toISOString().slice(0, 10);
+}
+
+function nextStreakMilestone(currentStreak: number): number {
+  const milestones = [3, 7, 14, 30, 60, 100, 180, 365];
+  return milestones.find((milestone) => milestone > currentStreak)
+    ?? currentStreak + 30;
 }

@@ -513,6 +513,12 @@ export class NutritionController {
     return { days };
   }
 
+  @Get('streak')
+  async getLoggingStreak(@Request() req: any) {
+    const userId = this.resolveUserId(req);
+    return this.nutritionService.getLoggingStreak(userId);
+  }
+
 
   @Patch('log/:entryId')
   async updateEntry(

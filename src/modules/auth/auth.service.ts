@@ -296,7 +296,7 @@ export class AuthService {
   async login(dto: UserLoginDto) {
     const user = await this.userService.findByEmail(dto.email);
     if (!user) {
-      throw new UnauthorizedException('Invalid Credentials');
+      throw new UnauthorizedException('No account found with this email. Please sign up to get started.');
     }
     const isPasswordValid = await this.verifyAndMigratePassword(
       dto.password,
@@ -304,7 +304,7 @@ export class AuthService {
       user._id.toString(),
     );
     if (!isPasswordValid)
-      throw new UnauthorizedException('Invalid Credentials');
+      throw new UnauthorizedException('Incorrect password. Please try again or use Forgot Password.');
     const sessionId = nanoid();
     await this.redis.setSession(sessionId, user._id.toString(), 60 * 60 * 24 * 7);
     await this.redis.addUserSession(user._id.toString(), sessionId, 60 * 60 * 24 * 7);
@@ -426,12 +426,12 @@ export class AuthService {
     const user = await this.userService.findByEmail(dto.email);
     if (!user) {
       this.logger.warn(`[ForgotPassword] Email not found: ${dto.email}`);
-      return { success: true, message: 'If this email is registered, a reset code has been sent.' };
+      throw new BadRequestException('No account found with this email. Please check the address or sign up.');
     }
 
     if (user.role !== UserRole.USER) {
       this.logger.warn(`[ForgotPassword] Non-user role attempted reset: ${user.role}`);
-      return { success: true, message: 'If this email is registered, a reset code has been sent.' };
+      throw new BadRequestException('No account found with this email. Please check the address or sign up.');
     }
 
     const otp = this.generateOTP();

@@ -150,10 +150,6 @@ export class HealthProfileService {
     return profile.toObject() as HealthProfileDocument;
   }
 
-  /**
-   * Update any fields of the active profile, recalculate targets,
-   * clear stale monthly snapshots, and sync daily targets.
-   */
   async updateProfile(
     userId: string,
     dto: UpdateHealthProfileDto,
@@ -195,15 +191,14 @@ export class HealthProfileService {
     const tz = await this.getUserTz(userId);
     profile.timeline = this.buildTimeline(recalcDto, { targets, rationale }, tz);
 
-
-    await this.dailyModel.deleteMany({
-      userId: new Types.ObjectId(userId),
-    }).exec();
-
-    profile.monthlySnapshots = [];
+    for (const snapshot of profile.monthlySnapshots ?? []) {
+      snapshot.cacheKey = '';
+      snapshot.aiRecommendations = [];
+    }
     profile.markModified('monthlySnapshots');
 
     await profile.save();
+    await this.syncDailyTargets(userId, targets);
 
     return profile.toObject() as HealthProfileDocument;
   }
