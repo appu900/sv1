@@ -20,6 +20,7 @@
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "seed:admin": "ts-node -r tsconfig-paths/register src/seeds/admin.seed.ts",
     "seed:demo-user": "ts-node -r tsconfig-paths/register src/seeds/demo-user.seed.ts",
+    "seed:ingredient-seasonality": "ts-node -r tsconfig-paths/register scripts/generate-ingredient-seasonality.ts",
     "check:subscription-periods": "ts-node -r tsconfig-paths/register scripts/check-subscription-periods.ts"
   },
   "dependencies": {

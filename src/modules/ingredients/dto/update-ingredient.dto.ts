@@ -5,10 +5,25 @@ import {
   IsBoolean,
   IsEnum,
   IsArray,
+  IsObject,
   Min,
 } from 'class-validator';
 import { Transform } from 'class-transformer';
 import { IngredientTheme, Month } from '../../../database/schemas/ingredient.schema';
+
+function parseJsonObject(value: unknown) {
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? parsed
+        : {};
+    } catch {
+      return {};
+    }
+  }
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
 
 export class UpdateIngredientDto {
   @IsOptional()
@@ -111,6 +126,11 @@ export class UpdateIngredientDto {
     return Array.isArray(value) ? value : [];
   })
   inSeason?: Month[];
+
+  @IsOptional()
+  @IsObject()
+  @Transform(({ value }) => parseJsonObject(value))
+  seasonByCountry?: Record<string, Month[]>;
 
   @IsOptional()
   @IsString()

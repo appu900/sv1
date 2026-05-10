@@ -66,6 +66,9 @@ export class Ingredient {
   @Prop({ type: [{ type: String, enum: Object.values(Month) }], default: [] })
   inSeason: Month[];
 
+  @Prop({ type: MongooseSchema.Types.Mixed, default: {} })
+  seasonByCountry: Record<string, Month[]>;
+
   @Prop({ type: Types.ObjectId, ref: 'Stickers' })
   stickerId?: Types.ObjectId;
 
@@ -90,3 +93,4 @@ IngredientSchema.index({ aliases: 1 });
 IngredientSchema.index({ categoryId: 1 });
 IngredientSchema.index({ hasPage: 1 });
 IngredientSchema.index({ suitableDiets: 1 });
+IngredientSchema.index({ countries: 1, hasPage: 1 });

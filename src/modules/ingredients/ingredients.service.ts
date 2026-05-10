@@ -14,6 +14,7 @@ import {
 import {
   Ingredient,
   IngredientDocument,
+  Month,
 } from 'src/database/schemas/ingredient.schema';
 import { RedisService } from 'src/redis/redis.service';
 import { CreateCatgoryDto } from './dto/ingrediants.category.dto';
@@ -24,6 +25,34 @@ import { ImageUploadService } from '../image-upload/image-upload.service';
 import { SqsService } from 'src/sqs/sqs.service';
 import { CacheInvalidationEvent } from 'src/contracts/cache-invalidation.event';
 import { WINSTON_MODULE_PROVIDER } from 'nest-winston';
+
+const VALID_MONTHS = new Set<string>(Object.values(Month));
+
+function sanitizeSeasonByCountry(value: Record<string, Month[]> | undefined) {
+  const result: Record<string, Month[]> = {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return result;
+
+  for (const [country, months] of Object.entries(value)) {
+    const normalizedCountry = country.trim();
+    if (!normalizedCountry || !Array.isArray(months)) continue;
+
+    const uniqueMonths = Array.from(
+      new Set(
+        months
+          .map((month) => String(month).trim())
+          .filter((month) => VALID_MONTHS.has(month)),
+      ),
+    ) as Month[];
+
+    result[normalizedCountry] = uniqueMonths;
+  }
+
+  return result;
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 @Injectable()
 export class IngredientsService implements OnModuleInit {
   private readonly logger = new Logger(IngredientsService.name);
@@ -45,7 +74,7 @@ export class IngredientsService implements OnModuleInit {
       await this.redisService.delByPattern('Ingredients:all*');
       console.log('[IngredientsService] All ingredient caches flushed on startup');
     } catch (e) {
-      console.warn('[IngredientsService] Could not flush ingredient caches on startup:', e?.message);
+      console.warn('[IngredientsService] Could not flush ingredient caches on startup:', getErrorMessage(e));
     }
   }
 
@@ -184,6 +213,10 @@ export class IngredientsService implements OnModuleInit {
 
       if (dto.inSeason && dto.inSeason.length > 0) {
         ingredientData.inSeason = dto.inSeason;
+      }
+
+      if (dto.seasonByCountry !== undefined) {
+        ingredientData.seasonByCountry = sanitizeSeasonByCountry(dto.seasonByCountry);
       }
 
       if (dto.stickerId && Types.ObjectId.isValid(dto.stickerId)) {
@@ -417,6 +450,10 @@ export class IngredientsService implements OnModuleInit {
       updateData.inSeason = dto.inSeason;
     }
 
+    if (dto.seasonByCountry !== undefined) {
+      updateData.seasonByCountry = sanitizeSeasonByCountry(dto.seasonByCountry);
+    }
+
     if (dto.stickerId !== undefined) {
       if (dto.stickerId && Types.ObjectId.isValid(dto.stickerId)) {
         updateData.stickerId = new Types.ObjectId(dto.stickerId);
@@ -497,7 +534,7 @@ export class IngredientsService implements OnModuleInit {
       try {
         await this.imageuploadService.deleteFile(deletedIngredient.heroImageUrl);
       } catch (error) {
-        this.logger.warn(`Failed to delete image for ingredient ${id}: ${error.message}`);
+        this.logger.warn(`Failed to delete image for ingredient ${id}: ${getErrorMessage(error)}`);
       }
     }
 
