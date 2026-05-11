@@ -18,6 +18,7 @@ import {
 } from 'src/database/schemas/device-token.schema';
 import {
   Notification,
+  NotificationChannel,
   NotificationDocument,
   NotificationPriority,
   NotificationStatus,
@@ -51,6 +52,7 @@ export interface SendNotificationInput {
   topic?: string;
   isBroadcast?: boolean;
   scheduledAt?: string;
+  targetPlatform?: 'all' | 'ios' | 'android';
 }
 
 @Injectable()
@@ -150,7 +152,7 @@ export class NotificationService {
   async send(
     input: SendNotificationInput,
     createdBy?: string,
-  ): Promise<{ notificationId: string; message: string }> {
+  ): Promise<{ notificationId: string; message: string; targetCount: number }> {
     if (
       !input.isBroadcast &&
       (!input.targetUserIds || input.targetUserIds.length === 0) &&
@@ -179,19 +181,37 @@ export class NotificationService {
     }
 
     const priority = (input.priority ?? 'normal') as NotificationPriority;
+    const isBroadcast = input.isBroadcast ?? false;
+    const targetUserObjectIds =
+      input.targetUserIds?.map((id) => new Types.ObjectId(id)) ?? [];
+    const targetPlatform = input.targetPlatform ?? 'all';
+    const tokenFilter = this.buildTargetTokenFilter({
+      isBroadcast,
+      targetUserObjectIds,
+      targetPlatform,
+    });
+    const targetCount = await this.tokenModel.countDocuments(tokenFilter);
+
+    if (targetCount === 0) {
+      throw new BadRequestException(
+        'No active mobile device tokens found for this audience',
+      );
+    }
 
     const notif = await this.notifModel.create({
       title: input.title,
       body: input.body,
       data: input.data,
+      channel: NotificationChannel.PUSH,
       deepLink: input.deepLink,
       imageUrl: input.imageUrl,
       priority,
       priorityWeight: PRIORITY_WEIGHT[priority] ?? 1,
-      targetUserIds:
-        input.targetUserIds?.map((id) => new Types.ObjectId(id)) ?? [],
+      targetUserIds: targetUserObjectIds,
       topic: input.topic,
-      isBroadcast: input.isBroadcast ?? false,
+      isBroadcast,
+      targetPlatform,
+      totalTargets: targetCount,
       scheduledAt: input.scheduledAt ? new Date(input.scheduledAt) : undefined,
       createdBy: createdBy ? new Types.ObjectId(createdBy) : undefined,
       status: NotificationStatus.QUEUED,
@@ -211,15 +231,74 @@ export class NotificationService {
     this.logger.info('Notification queued to BullMQ', {
       service: 'NotificationService',
       notificationId: notif._id,
-      isBroadcast: input.isBroadcast,
-      targetCount: input.targetUserIds?.length ?? 'broadcast',
+      isBroadcast,
+      targetCount,
+      targetPlatform,
       scheduled: !!input.scheduledAt,
     });
 
     return {
       notificationId: String(notif._id),
+      targetCount,
       message: input.scheduledAt
-        ? `Notification scheduled for ${input.scheduledAt}`
+        ? `Notification scheduled for ${input.scheduledAt} to ${targetCount} mobile devices`
+        : `Notification queued for delivery to ${targetCount} mobile devices`,
+    };
+  }
+
+  private buildTargetTokenFilter({
+    isBroadcast,
+    targetUserObjectIds,
+    targetPlatform,
+  }: {
+    isBroadcast: boolean;
+    targetUserObjectIds: Types.ObjectId[];
+    targetPlatform: 'all' | 'ios' | 'android';
+  }): Record<string, unknown> {
+    const filter: Record<string, unknown> = { isActive: true };
+
+    if (!isBroadcast && targetUserObjectIds.length > 0) {
+      filter.userId = { $in: targetUserObjectIds };
+    } else if (!isBroadcast) {
+      filter._id = { $exists: false };
+    }
+
+    if (targetPlatform !== 'all') {
+      filter.platform = targetPlatform as TokenPlatform;
+    }
+
+    return filter;
+  }
+
+  async dispatchExisting(id: string): Promise<{ message: string }> {
+    const notif = await this.notifModel.findById(id).exec();
+    if (!notif) {
+      throw new NotFoundException('Notification not found');
+    }
+
+    const delayMs = notif.scheduledAt
+      ? Math.max(0, new Date(notif.scheduledAt).getTime() - Date.now())
+      : 0;
+
+    await this.notifModel.findByIdAndUpdate(id, {
+      $set: { status: NotificationStatus.QUEUED },
+    });
+
+    await this.producer.enqueueNotification(
+      id,
+      notif.priority || 'normal',
+      delayMs > 0 ? delayMs : undefined,
+    );
+
+    this.logger.info('Existing notification dispatched to BullMQ', {
+      service: 'NotificationService',
+      notificationId: id,
+      scheduled: !!notif.scheduledAt,
+    });
+
+    return {
+      message: notif.scheduledAt
+        ? `Notification scheduled for ${notif.scheduledAt.toISOString()}`
         : 'Notification queued for delivery',
     };
   }

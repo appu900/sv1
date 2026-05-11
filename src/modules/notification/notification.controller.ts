@@ -14,6 +14,7 @@ import { WINSTON_MODULE_PROVIDER } from 'nest-winston';
 import { Logger } from 'winston';
 import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
 import { RolesGuard } from 'src/common/guards/roles.guard';
+import { AdminServiceKeyGuard } from 'src/common/guards/admin-service-key.guard';
 import { GetUser } from 'src/common/decorators/Get.user.decorator';
 import { Roles } from 'src/common/decorators/role.decorators';
 import { NotificationService } from './notification.service';
@@ -83,12 +84,30 @@ export class NotificationController {
     return this.notificationService.send(dto, user.userId);
   }
 
+  /**
+   * Admin-dashboard service-to-service endpoint.
+   * Dispatches a notification that was already created in MongoDB (by the admin UI)
+   * into the BullMQ queue for actual delivery via Firebase / Expo.
+   * Auth: X-Admin-Service-Key header (no JWT required).
+   */
+  @Post('dispatch/:id')
+  @UseGuards(AdminServiceKeyGuard)
+  async dispatchNotification(@Param('id') id: string) {
+    return this.notificationService.dispatchExisting(id);
+  }
+
 
 
   @Get('stats')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN')
   async getStats() {
+    return this.notificationService.getStats();
+  }
+
+  @Get('admin/stats')
+  @UseGuards(AdminServiceKeyGuard)
+  async getAdminStats() {
     return this.notificationService.getStats();
   }
 

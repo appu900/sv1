@@ -318,6 +318,11 @@ export class NotificationWorker extends WorkerHost {
       return [];
     }
 
+    const targetPlatform = (notif as any).targetPlatform;
+    if (targetPlatform && targetPlatform !== 'all') {
+      filter.platform = targetPlatform;
+    }
+
     const tokens: TokenWithType[] = [];
     const cursor = this.tokenModel
       .find(filter)

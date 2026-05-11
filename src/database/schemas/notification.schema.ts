@@ -16,7 +16,12 @@ export enum NotificationPriority {
   HIGH = 'high',
 }
 
-/** Numeric weight for DB sorting (higher = more urgent) */
+export enum NotificationChannel {
+  PUSH = 'push',
+  EMAIL = 'email',
+  NEWSLETTER = 'newsletter',
+}
+
 export const PRIORITY_WEIGHT: Record<NotificationPriority, number> = {
   [NotificationPriority.LOW]: 0,
   [NotificationPriority.NORMAL]: 1,
@@ -33,6 +38,9 @@ export class Notification {
 
   @Prop({ type: Object })
   data?: Record<string, string>;
+
+  @Prop({ enum: NotificationChannel, default: NotificationChannel.PUSH, index: true })
+  channel?: NotificationChannel;
 
   @Prop()
   deepLink?: string;
@@ -67,6 +75,9 @@ export class Notification {
 
   @Prop({ default: false })
   isBroadcast: boolean;
+
+  @Prop({ enum: ['all', 'ios', 'android'], default: 'all' })
+  targetPlatform?: 'all' | 'ios' | 'android';
 
   @Prop({ default: 0 })
   totalTargets: number;

@@ -53,4 +53,8 @@ export class SendNotificationDto {
   @IsOptional()
   @IsDateString()
   scheduledAt?: string;
+
+  @IsOptional()
+  @IsEnum(['all', 'ios', 'android'])
+  targetPlatform?: 'all' | 'ios' | 'android';
 }
