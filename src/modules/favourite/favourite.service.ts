@@ -3,13 +3,16 @@ import {
   NotFoundException,
   BadRequestException,
   ForbiddenException,
-  ConflictException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Favourite, FavouriteDocument } from 'src/database/schemas/favourite.schema';
 import { Recipe, RecipeDocument } from 'src/database/schemas/recipe.schema';
 import { Hacks, HackDocument } from 'src/database/schemas/hacks.schema';
+import {
+  UserFoodAnalyticsProfile,
+  UserFoodAnalyticalProfileDocument,
+} from 'src/database/schemas/user.food.analyticsProfile.schema';
 import { CreateFavouriteDto } from './dto/create-favourite.dto';
 
 @Injectable()
@@ -21,29 +24,116 @@ export class FavouriteService {
     private readonly recipeModel: Model<RecipeDocument>,
     @InjectModel(Hacks.name)
     private readonly hackModel: Model<HackDocument>,
+    @InjectModel(UserFoodAnalyticsProfile.name)
+    private readonly userFoodAnalyticsProfileModel: Model<UserFoodAnalyticalProfileDocument>,
   ) {}
+
+  private async syncSavedItemsForUser(
+    userObjectId: Types.ObjectId,
+    favourites?: Array<{ type: string; framework_id: string }>,
+    options?: { upsert?: boolean },
+  ) {
+    const savedFavourites = favourites
+      ? favourites.filter(
+          favourite =>
+            favourite.type === 'framework' || favourite.type === 'hack',
+        )
+      : await this.favouriteModel
+          .find({
+            userId: userObjectId,
+            type: { $in: ['framework', 'hack'] },
+          })
+          .select('framework_id type')
+          .lean();
+
+    const savedRecipeIds = savedFavourites
+      .filter(favourite => favourite.type === 'framework')
+      .map(favourite => favourite.framework_id)
+      .filter(id => Types.ObjectId.isValid(id))
+      .map(id => new Types.ObjectId(id));
+
+    const savedHackIds = savedFavourites
+      .filter(favourite => favourite.type === 'hack')
+      .map(favourite => favourite.framework_id)
+      .filter(id => Types.ObjectId.isValid(id))
+      .map(id => new Types.ObjectId(id));
+
+    await this.userFoodAnalyticsProfileModel.updateOne(
+      { userId: userObjectId },
+      {
+        ...(options?.upsert ? { $setOnInsert: { userId: userObjectId } } : {}),
+        $set: {
+          savedRecipes: savedRecipeIds,
+          savedHacks: savedHackIds,
+        },
+      },
+      options?.upsert ? { upsert: true } : undefined,
+    );
+  }
 
   async create(userId: string, createFavouriteDto: CreateFavouriteDto) {
     if (!Types.ObjectId.isValid(userId)) {
       throw new BadRequestException('Invalid user ID');
     }
 
+    const userObjectId = new Types.ObjectId(userId);
+
     // Check if already exists
     const existing = await this.favouriteModel.findOne({
-      userId: new Types.ObjectId(userId),
+      userId: userObjectId,
       framework_id: createFavouriteDto.framework_id,
       type: createFavouriteDto.type,
     });
 
     if (existing) {
-      throw new ConflictException('This item is already saved');
+      if (
+        createFavouriteDto.type === 'framework' ||
+        createFavouriteDto.type === 'hack'
+      ) {
+        await this.syncSavedItemsForUser(userObjectId, undefined, {
+          upsert: true,
+        });
+      }
+
+      return {
+        favourite: {
+          id: existing._id.toString(),
+          type: existing.type,
+          framework_id: existing.framework_id,
+        },
+      };
     }
 
-    const favourite = await this.favouriteModel.create({
-      userId: new Types.ObjectId(userId),
+    let favourite = await this.favouriteModel.create({
+      userId: userObjectId,
       framework_id: createFavouriteDto.framework_id,
       type: createFavouriteDto.type,
+    }).catch(async error => {
+      if (error?.code !== 11000) {
+        throw error;
+      }
+
+      const duplicate = await this.favouriteModel.findOne({
+        userId: userObjectId,
+        framework_id: createFavouriteDto.framework_id,
+        type: createFavouriteDto.type,
+      });
+
+      if (!duplicate) {
+        throw error;
+      }
+
+      return duplicate;
     });
+
+    if (
+      createFavouriteDto.type === 'framework' ||
+      createFavouriteDto.type === 'hack'
+    ) {
+      await this.syncSavedItemsForUser(userObjectId, undefined, {
+        upsert: true,
+      });
+    }
 
     return {
       favourite: {
@@ -59,10 +149,14 @@ export class FavouriteService {
       throw new BadRequestException('Invalid user ID');
     }
 
+    const userObjectId = new Types.ObjectId(userId);
+
     const favourites = await this.favouriteModel
-      .find({ userId: new Types.ObjectId(userId) })
+      .find({ userId: userObjectId })
       .sort({ createdAt: -1 })
       .lean();
+
+    await this.syncSavedItemsForUser(userObjectId, favourites);
 
     return {
       favourites: favourites.map((fav) => ({
@@ -77,6 +171,12 @@ export class FavouriteService {
     if (!Types.ObjectId.isValid(favouriteId)) {
       throw new BadRequestException('Invalid favourite ID');
     }
+
+    if (!Types.ObjectId.isValid(userId)) {
+      throw new BadRequestException('Invalid user ID');
+    }
+
+    const userObjectId = new Types.ObjectId(userId);
 
     const favourite = await this.favouriteModel.findById(
       new Types.ObjectId(favouriteId),
@@ -93,6 +193,10 @@ export class FavouriteService {
 
     await this.favouriteModel.deleteOne({ _id: new Types.ObjectId(favouriteId) });
 
+    if (favourite.type === 'framework' || favourite.type === 'hack') {
+      await this.syncSavedItemsForUser(userObjectId);
+    }
+
     return { success: true };
   }
 
@@ -101,10 +205,14 @@ export class FavouriteService {
       throw new BadRequestException('Invalid user ID');
     }
 
+    const userObjectId = new Types.ObjectId(userId);
+
     const favourites = await this.favouriteModel
-      .find({ userId: new Types.ObjectId(userId) })
+      .find({ userId: userObjectId })
       .sort({ createdAt: -1 })
       .lean();
+
+    await this.syncSavedItemsForUser(userObjectId, favourites);
 
     const frameworkIds = favourites
       .filter(f => f.type === 'framework')
@@ -144,8 +252,7 @@ export class FavouriteService {
       thumbnailImageUrl: h.thumbnailImageUrl,
       heroImageUrl: h.heroImageUrl,
     }));
-
-    // Preserve favourite ordering: map back to favourites ordering
+    
     const byId = new Map<string, any>();
     recipeItems.forEach(i => byId.set(i.id, i));
     hackItems.forEach(i => byId.set(i.id, i));

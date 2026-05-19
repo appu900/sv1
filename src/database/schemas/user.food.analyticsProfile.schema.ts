@@ -14,11 +14,14 @@ export class UserFoodAnalyticsProfile{
     @Prop({default:0, index:true})
     totalAppSessions:number;
 
-    @Prop({default:[]})
+    @Prop({ default: [], type: [Types.ObjectId] })
     savedRecipes:Types.ObjectId[]
 
-    @Prop({default:[], type:[String]})
-    cookedRecipes:string[]  
+    @Prop({ default: [], type: [Types.ObjectId] })
+    savedHacks:Types.ObjectId[]
+
+    @Prop({ default: [], type: [Types.ObjectId] })
+    cookedRecipes:Types.ObjectId[]  
     @Prop({default:0})
     totalMoneySaved:number;
 

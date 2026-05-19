@@ -28,6 +28,10 @@ import { UserEventService } from '../user-events/user-event.service';
 import { RecipeViewService } from '../user-events/recipe-view.service';
 import { UserEventType } from 'src/database/schemas/user-event.schema';
 import { MetricsService } from './metrics.service';
+import {
+  normalizeObjectIdArray,
+  toObjectId,
+} from 'src/modules/analytics/utils/object-id-array.util';
 
 @Injectable()
 export class AnalyticsListner {
@@ -74,6 +78,12 @@ export class AnalyticsListner {
     void this.recipeViewService.incrementCookCount(event.frameworkId);
 
     try {
+      const userObjectId = toObjectId(event.userId);
+      if (!userObjectId) {
+        this.logger.warn(`Skipping analytics profile update for invalid userId=${event.userId}`);
+        return;
+      }
+
       const updateOperation: any = {
         $inc: {
           foodSavedInGrams: event.foodSavedInGrams,
@@ -84,13 +94,34 @@ export class AnalyticsListner {
       };
 
       if (event.frameworkId) {
-        updateOperation.$addToSet = {
-          cookedRecipes: event.frameworkId,
-        };
+        const existingProfile = await this.profileModel.collection.findOne(
+          { userId: userObjectId },
+          { projection: { _id: 1, cookedRecipes: 1 } },
+        );
+
+        const normalizedCookedRecipes = normalizeObjectIdArray(
+          existingProfile?.cookedRecipes,
+        );
+
+        if (existingProfile?._id && normalizedCookedRecipes.changed) {
+          await this.profileModel.updateOne(
+            { _id: existingProfile._id },
+            { $set: { cookedRecipes: normalizedCookedRecipes.objectIds } },
+          );
+        }
+
+        const cookedRecipeId = toObjectId(event.frameworkId);
+        if (cookedRecipeId) {
+          updateOperation.$addToSet = {
+            cookedRecipes: cookedRecipeId,
+          };
+        } else {
+          this.logger.warn(`Skipping cookedRecipes update for invalid frameworkId=${event.frameworkId}`);
+        }
       }
 
       await this.profileModel.findOneAndUpdate(
-        { userId: new Types.ObjectId(event.userId) },
+        { userId: userObjectId },
         updateOperation,
         { upsert: true, new: true },
       );

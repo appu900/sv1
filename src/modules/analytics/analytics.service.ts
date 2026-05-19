@@ -20,6 +20,7 @@ import { UserBadge, UserBadgeDocument } from 'src/database/schemas/user-badge.sc
 import { RedisService } from 'src/redis/redis.service';
 import { normalizeCountry } from '../../utils/countries.util';
 import { fallbackPriceInLocalCurrency, fallbackCo2SavedKg } from './utils/fallback-pricing.util';
+import { normalizeObjectIdArray } from 'src/modules/analytics/utils/object-id-array.util';
 
 type LeaderboardPeriodOption = 'ALL_TIME' | 'YEARLY' | 'MONTHLY' | 'WEEKLY' | 'DAILY';
 type LeaderboardMetricOption = 'MEALS_COOKED' | 'FOOD_SAVED' | 'MONEY_SAVED' | 'BADGES' | 'CO2_SAVED' | 'BOTH';
@@ -42,6 +43,12 @@ export interface PriceCalculationResult {
   country: string;
   priceInLocalCurrency: number;
 }
+
+type RawCookedRecipesProfile = {
+  _id?: Types.ObjectId;
+  cookedRecipes?: unknown[];
+  numberOfMealsCooked?: number;
+} | null;
 
 export interface Co2CalculationResult {
   ingredient: string;
@@ -651,32 +658,51 @@ private co2CacheKey(ingredient: string, country: string): string {
   }
   
 
-  async getUserCookedRecipes(userId: string) {
-    const profile = await this.userFoodAnallyticsProfileModel
-      .findOne({ userId: new Types.ObjectId(userId) })
-      .select('cookedRecipes numberOfMealsCooked')
-      .lean();
-    
-    return { 
-      cookedRecipes: profile?.cookedRecipes || [],
+  private async getNormalizedCookedRecipesProfile(userId: string) {
+    const profile = (await this.userFoodAnallyticsProfileModel.collection.findOne(
+      { userId: new Types.ObjectId(userId) },
+      { projection: { cookedRecipes: 1, numberOfMealsCooked: 1 } },
+    )) as RawCookedRecipesProfile;
+
+    const normalizedCookedRecipes = normalizeObjectIdArray(
+      profile?.cookedRecipes,
+    );
+
+    if (profile?._id && normalizedCookedRecipes.changed) {
+      await this.userFoodAnallyticsProfileModel.updateOne(
+        { _id: profile._id },
+        { $set: { cookedRecipes: normalizedCookedRecipes.objectIds } },
+      );
+    }
+
+    return {
+      cookedRecipeIds: normalizedCookedRecipes.stringIds,
+      cookedRecipeObjectIds: normalizedCookedRecipes.objectIds,
       numberOfMealsCooked: profile?.numberOfMealsCooked || 0,
     };
   }
 
+
+  async getUserCookedRecipes(userId: string) {
+    const { cookedRecipeIds, numberOfMealsCooked } =
+      await this.getNormalizedCookedRecipesProfile(userId);
+    
+    return { 
+      cookedRecipes: cookedRecipeIds,
+      numberOfMealsCooked,
+    };
+  }
+
   async getUserCookedRecipesDetails(userId: string) {
-    const profile = await this.userFoodAnallyticsProfileModel
-      .findOne({ userId: new Types.ObjectId(userId) })
-      .select('cookedRecipes')
-      .lean();
+    const { cookedRecipeIds, cookedRecipeObjectIds } =
+      await this.getNormalizedCookedRecipesProfile(userId);
 
-    const cookedIds: string[] = profile?.cookedRecipes || [];
-
-    if (!cookedIds.length) {
+    if (!cookedRecipeIds.length) {
       return { cookedRecipes: [] };
     }
 
     const recipes = await this.recipeModel
-      .find({ _id: { $in: cookedIds.map(id => new Types.ObjectId(id)) } })
+      .find({ _id: { $in: cookedRecipeObjectIds } })
       .select('title heroImageUrl shortDescription')
       .lean();
 
@@ -688,7 +714,7 @@ private co2CacheKey(ingredient: string, country: string): string {
     }));
 
     // Preserve the recent ordering (last 3)
-    const idOrder = cookedIds.slice(-3);
+  const idOrder = cookedRecipeIds.slice(-3);
     const map = new Map(items.map(i => [i.id, i]));
     const orderedRecent = idOrder.map(id => map.get(id)).filter(Boolean);
 

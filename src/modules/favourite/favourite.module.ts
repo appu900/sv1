@@ -5,6 +5,10 @@ import { FavouriteController } from './favourite.controller';
 import { Favourite, FavouriteSchema } from 'src/database/schemas/favourite.schema';
 import { Recipe, RecipeSchema } from 'src/database/schemas/recipe.schema';
 import { Hacks, HackSchema } from 'src/database/schemas/hacks.schema';
+import {
+  UserFoodAnalyticalProfileSchema,
+  UserFoodAnalyticsProfile,
+} from 'src/database/schemas/user.food.analyticsProfile.schema';
 
 @Module({
   imports: [
@@ -12,6 +16,10 @@ import { Hacks, HackSchema } from 'src/database/schemas/hacks.schema';
       { name: Favourite.name, schema: FavouriteSchema },
       { name: Recipe.name, schema: RecipeSchema },
       { name: Hacks.name, schema: HackSchema },
+      {
+        name: UserFoodAnalyticsProfile.name,
+        schema: UserFoodAnalyticalProfileSchema,
+      },
     ]),
   ],
   controllers: [FavouriteController],
