@@ -29,7 +29,7 @@ app.enableCors({
     ];
 
     // Allow expo dev
-    if (origin.startsWith('exp://') || origin.startsWith('http://192.168.')) {
+    if (origin.startsWith('exp://') || origin.startsWith('http://192.168.') || origin.startsWith('http://10.')) {
       return callback(null, true);
     }
 

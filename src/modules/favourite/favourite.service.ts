@@ -214,12 +214,28 @@ export class FavouriteService {
 
     await this.syncSavedItemsForUser(userObjectId, favourites);
 
-    const frameworkIds = favourites
-      .filter(f => f.type === 'framework')
-      .map(f => f.framework_id);
-    const hackIds = favourites
-      .filter(f => f.type === 'hack')
-      .map(f => f.framework_id);
+    const savedFavourites = favourites
+      .filter(f => f.type === 'framework' || f.type === 'hack')
+      .map(f => ({
+        ...f,
+        framework_id: f.framework_id?.toString(),
+      }))
+      .filter(f => Types.ObjectId.isValid(f.framework_id));
+
+    const frameworkIds = [
+      ...new Set(
+        savedFavourites
+          .filter(f => f.type === 'framework')
+          .map(f => f.framework_id),
+      ),
+    ];
+    const hackIds = [
+      ...new Set(
+        savedFavourites
+          .filter(f => f.type === 'hack')
+          .map(f => f.framework_id),
+      ),
+    ];
 
     const [recipes, hacks] = await Promise.all([
       frameworkIds.length
@@ -257,7 +273,7 @@ export class FavouriteService {
     recipeItems.forEach(i => byId.set(i.id, i));
     hackItems.forEach(i => byId.set(i.id, i));
 
-    const ordered = favourites
+    const ordered = savedFavourites
       .map(f => byId.get(f.framework_id))
       .filter(Boolean);
 
