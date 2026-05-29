@@ -23,6 +23,7 @@
     "seed:ingredient-seasonality": "ts-node -r tsconfig-paths/register scripts/generate-ingredient-seasonality.ts",
     "check:subscription-periods": "ts-node -r tsconfig-paths/register scripts/check-subscription-periods.ts",
     "backfill:cooked-recipes-objectids": "ts-node -r tsconfig-paths/register scripts/backfill-cooked-recipes-objectids.ts",
+    "backfill:legacy-insights": "ts-node -r tsconfig-paths/register scripts/backfill-legacy-insights.ts",
     "sync:unsubscribed-users": "ts-node -r tsconfig-paths/register scripts/sync-unsubscribed-users.ts"
   },
   "dependencies": {
