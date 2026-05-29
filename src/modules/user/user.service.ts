@@ -154,5 +154,18 @@ export class UserService {
     }
   }
 
+  async updateEmailMarketing(userId: string, isUserSubscribed: boolean): Promise<{ ok: boolean }> {
+    if (!Types.ObjectId.isValid(userId)) {
+      throw new BadRequestException('Invalid userId');
+    }
+    const result = await this.userModel.findByIdAndUpdate(
+      new Types.ObjectId(userId),
+      { $set: { isUserSubscribed } },
+      { new: true },
+    );
+    if (!result) throw new NotFoundException('User not found');
+    return { ok: true };
+  }
+
  
 }

@@ -513,6 +513,7 @@ export class AuthService {
       tastePreference: user.dietaryProfile?.tastePrefrence || [],
       
       dietaryProfile: user.dietaryProfile,
+      isUserSubscribed: user.isUserSubscribed !== false,
     };
   }
 

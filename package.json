@@ -22,7 +22,8 @@
     "seed:demo-user": "ts-node -r tsconfig-paths/register src/seeds/demo-user.seed.ts",
     "seed:ingredient-seasonality": "ts-node -r tsconfig-paths/register scripts/generate-ingredient-seasonality.ts",
     "check:subscription-periods": "ts-node -r tsconfig-paths/register scripts/check-subscription-periods.ts",
-    "backfill:cooked-recipes-objectids": "ts-node -r tsconfig-paths/register scripts/backfill-cooked-recipes-objectids.ts"
+    "backfill:cooked-recipes-objectids": "ts-node -r tsconfig-paths/register scripts/backfill-cooked-recipes-objectids.ts",
+    "sync:unsubscribed-users": "ts-node -r tsconfig-paths/register scripts/sync-unsubscribed-users.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.958.0",

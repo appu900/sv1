@@ -4,6 +4,7 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  Patch,
   Post,
   Put,
   UnauthorizedException,
@@ -43,5 +44,17 @@ export class UserController {
     const userId = user.userId;
     if (!userId) throw new UnauthorizedException();
     return this.userService.updateTimezone(userId, body.timezone);
+  }
+
+  @Patch('email-marketing')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async updateEmailMarketing(
+    @Body() body: { isUserSubscribed: boolean },
+    @GetUser() user: any,
+  ) {
+    const userId = user.userId;
+    if (!userId) throw new UnauthorizedException();
+    return this.userService.updateEmailMarketing(userId, body.isUserSubscribed);
   }
 }

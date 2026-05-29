@@ -33,6 +33,9 @@ export class User {
   @Prop({})
   pincode?:string
 
+  @Prop({default:true})
+  isUserSubscribed?:boolean
+
   @Prop({type:UserDietaryProfile})
   dietaryProfile?:UserDietaryProfile
 }
