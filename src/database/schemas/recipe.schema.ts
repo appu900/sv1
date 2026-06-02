@@ -123,6 +123,9 @@ export class Recipe {
   @Prop({ type: [{ type: Types.ObjectId, ref: 'HackOrTip' }], default: [] })
   hackOrTipIds: Types.ObjectId[];
 
+  @Prop({ type: [{ type: Types.ObjectId, ref: 'User' }], default: [] })
+  chefIds: Types.ObjectId[];
+
   @Prop()
   heroImageUrl?: string; 
 

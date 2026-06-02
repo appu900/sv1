@@ -199,6 +199,9 @@ export class RecipeService implements OnModuleInit {
         hackOrTipIds: (createRecipeDto.hackOrTipIds || [])
           .filter(id => id && Types.ObjectId.isValid(id))
           .map(id => new Types.ObjectId(id)),
+        chefIds: (createRecipeDto.chefIds || [])
+          .filter(id => id && Types.ObjectId.isValid(id))
+          .map(id => new Types.ObjectId(id)),
         frameworkCategories: validFrameworkCategories,
         useLeftoversIn: (createRecipeDto.useLeftoversIn || [])
           .filter(id => id && Types.ObjectId.isValid(id))
@@ -290,6 +293,7 @@ export class RecipeService implements OnModuleInit {
       const recipes = await this.recipeModel
         .find(matchQuery)
         .populate('hackOrTipIds', 'title type shortDescription')
+        .populate('chefIds', 'name email role')
         .populate('stickerId', 'title imageUrl description')
         .populate('frameworkCategories', 'name imageUrl')
         .populate('sponsorId', 'title logo logoBlackAndWhite broughtToYouBy tagline')
@@ -354,6 +358,7 @@ export class RecipeService implements OnModuleInit {
     const recipe = await this.recipeModel
       .findById(id)
       .populate('hackOrTipIds', 'title type shortDescription')
+      .populate('chefIds', 'name email role')
       .populate('stickerId', 'title imageUrl description')
       .populate('frameworkCategories', 'name imageUrl')
       .populate('sponsorId', 'title logo logoBlackAndWhite broughtToYouBy tagline')
@@ -424,6 +429,7 @@ export class RecipeService implements OnModuleInit {
     const recipe = await this.recipeModel
       .findOne({ isActive: true, title: { $regex: new RegExp(`^${titlePattern}$`, 'i') } })
       .populate('hackOrTipIds', 'title type shortDescription')
+      .populate('chefIds', 'name email role')
       .populate('stickerId', 'title imageUrl description')
       .populate('frameworkCategories', 'name imageUrl')
       .populate('sponsorId', 'title logo logoBlackAndWhite broughtToYouBy tagline')
@@ -495,6 +501,7 @@ export class RecipeService implements OnModuleInit {
     const recipes = await this.recipeModel
       .find(matchQuery)
       .populate('hackOrTipIds', 'title type shortDescription')
+      .populate('chefIds', 'name email role')
       .populate('stickerId', 'title imageUrl description')
       .populate('frameworkCategories', 'name imageUrl')
       .populate('sponsorId', 'title logo logoBlackAndWhite broughtToYouBy tagline')
@@ -558,6 +565,7 @@ export class RecipeService implements OnModuleInit {
     const recipes = await this.recipeModel
       .find(matchQuery)
       .populate('hackOrTipIds', 'title type shortDescription')
+      .populate('chefIds', 'name email role')
       .populate('stickerId', 'title imageUrl description')
       .populate('frameworkCategories', 'name imageUrl')
       .populate('sponsorId', 'title logo logoBlackAndWhite broughtToYouBy tagline')
@@ -645,6 +653,12 @@ export class RecipeService implements OnModuleInit {
 
       if (updateRecipeDto.hackOrTipIds) {
         updateData.hackOrTipIds = updateRecipeDto.hackOrTipIds
+          .filter(id => id && Types.ObjectId.isValid(id))
+          .map((id) => new Types.ObjectId(id));
+      }
+
+      if (updateRecipeDto.chefIds) {
+        updateData.chefIds = updateRecipeDto.chefIds
           .filter(id => id && Types.ObjectId.isValid(id))
           .map((id) => new Types.ObjectId(id));
       }

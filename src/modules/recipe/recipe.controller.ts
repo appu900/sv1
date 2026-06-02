@@ -55,6 +55,7 @@ export class RecipeController {
       'components',
       'frameworkCategories',
       'hackOrTipIds',
+      'chefIds',
       'useLeftoversIn',
     ];
 
@@ -258,6 +259,7 @@ export class RecipeController {
       'components',
       'frameworkCategories',
       'hackOrTipIds',
+      'chefIds',
       'useLeftoversIn',
     ];
 

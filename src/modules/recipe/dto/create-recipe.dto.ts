@@ -202,6 +202,11 @@ export class CreateRecipeDto {
 
   @IsOptional()
   @IsArray()
+  @IsString({ each: true })
+  chefIds?: string[];
+
+  @IsOptional()
+  @IsArray()
   useLeftoversIn?: string[];
 
   @IsArray()
