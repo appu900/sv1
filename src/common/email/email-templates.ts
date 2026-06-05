@@ -1,3 +1,5 @@
+import { buildEmailDeepLink } from './app-deep-links';
+
 const LIGHT_MODE_META = `
 <meta name="color-scheme" content="light">
 <meta name="supported-color-schemes" content="light">`;
@@ -121,7 +123,7 @@ export function welcomeTemplate(userName: string): string {
             <div class="feature-row">• No pressure</div>
           </div>
           <p class="soft">If you've got <strong>60 seconds</strong>, that's all you need to get started.</p>
-          <div class="cta"><a href="https://saveful.com">Open Saveful and add what's in your fridge</a></div>
+          <div class="cta"><a href="${buildEmailDeepLink('inventory')}">Open Saveful and add what's in your fridge</a></div>
           <p class="soft">Saveful helps you save money, save food, and save time - using what you already have.</p>
           <p class="signoff">With Saveful, you've got this.<br>- The Saveful Team</p>
           ${LOGO_BLOCK}

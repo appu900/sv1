@@ -244,7 +244,14 @@ export class QantasService {
   async getFFN(userId: string): Promise<QantasFFNResponseDto | null> {
     const userIdObj = new Types.ObjectId(userId);
     const ffn = await this.qantasFFNModel
-      .findOne({ userId: userIdObj, isDeleted: false, isLinked: true })
+      .findOne({
+        userId: userIdObj,
+        isDeleted: false,
+        $or: [
+          { isLinked: true },
+          { linkStatus: QantasLinkStatus.ACTIVE },
+        ],
+      })
       .lean();
     if (!ffn) return null;
 
@@ -567,7 +574,8 @@ export class QantasService {
       userId: doc.userId.toString(),
       memberId: doc.memberId,
       surname: doc.surname,
-      isLinked: doc.isLinked ?? false,
+      isLinked:
+        doc.isLinked === true || doc.linkStatus === QantasLinkStatus.ACTIVE,
       linkStatus: doc.linkStatus ?? QantasLinkStatus.FAILED,
       linkedAt: doc.linkedAt?.toISOString?.() ?? doc.linkedAt,
       isRewarded: doc.isRewarded ?? false,

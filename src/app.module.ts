@@ -41,6 +41,7 @@ import { MealPlanModule } from './modules/meal-plan/meal-plan.module';
 import { UserEventsModule } from './modules/user-events/user-events.module';
 import { AIInteractionModule } from './modules/ai-interaction/ai-interaction.module';
 import { SubscriptionModule } from './modules/subscription/subscription.module';
+import { DeeplinkModule } from './modules/deeplink/deeplink.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
@@ -116,6 +117,7 @@ import { SubscriptionModule } from './modules/subscription/subscription.module';
     UserEventsModule,
     AIInteractionModule,
     SubscriptionModule,
+    DeeplinkModule,
   ],
   controllers: [AppController],
   providers: [AppService],
