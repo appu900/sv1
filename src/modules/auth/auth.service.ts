@@ -24,6 +24,7 @@ import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { SavefulPreferencesDto } from './dto/saveful-preferences.dto';
 
 import { UserEventService } from '../user-events/user-event.service';
 import { UserEventType } from '../../database/schemas/user-event.schema';
@@ -513,8 +514,17 @@ export class AuthService {
       tastePreference: user.dietaryProfile?.tastePrefrence || [],
       
       dietaryProfile: user.dietaryProfile,
+      savefulPreferences: user.savefulPreferences || null,
       isUserSubscribed: user.isUserSubscribed !== false,
     };
+  }
+
+  async updateSavefulPreferences(userId: string, dto: SavefulPreferencesDto) {
+    if (!Types.ObjectId.isValid(userId))
+      throw new BadRequestException('Invalid userId');
+
+    await this.userService.updateSavefulPreferences(dto, userId);
+    return this.getProfile(userId);
   }
 
   async updateProfile(userId: string, dto: UpdateProfileDto) {
@@ -591,7 +601,8 @@ export class AuthService {
         dietary_requirements: [],
         allergies: user.dietaryProfile?.otherAllergies ?? [],
         taste_preference: user.dietaryProfile?.tastePrefrence ?? [],
-        track_survey_day: 'monday',
+        track_survey_day: user.savefulPreferences?.weeklySurveyDay ?? 'monday',
+        saveful_preferences: user.savefulPreferences ?? undefined,
       },
     };
   }

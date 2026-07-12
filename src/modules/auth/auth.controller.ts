@@ -17,6 +17,7 @@ import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { SavefulPreferencesDto } from './dto/saveful-preferences.dto';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 
 @Controller('auth')
@@ -99,6 +100,15 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   async updateDietaryProfile(@Body() dto: UserProfileDto, @GetUser() user: any) {
     return this.userService.updateProfile(dto, user.userId);
+  }
+
+  @Put('saveful-preferences')
+  @UseGuards(JwtAuthGuard)
+  async updateSavefulPreferences(
+    @Body() dto: SavefulPreferencesDto,
+    @GetUser() user: any,
+  ) {
+    return this.authservice.updateSavefulPreferences(user.userId, dto);
   }
 
   @Put('profile')

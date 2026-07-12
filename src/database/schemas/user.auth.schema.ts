@@ -1,6 +1,7 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document, Types } from 'mongoose';
 import { UserDietaryProfile } from './user-dietary-profile.schema';
+import { UserSavefulPreferences } from './user-saveful-preferences.schema';
 
 export enum UserRole {
   ADMIN = 'ADMIN',
@@ -38,6 +39,9 @@ export class User {
 
   @Prop({type:UserDietaryProfile})
   dietaryProfile?:UserDietaryProfile
+
+  @Prop({ type: UserSavefulPreferences })
+  savefulPreferences?: UserSavefulPreferences;
 }
 
 export type UserDocument = User & Document;

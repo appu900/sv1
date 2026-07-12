@@ -9,10 +9,18 @@ import { InjectModel } from '@nestjs/mongoose';
 import { isValidObjectId, Model, Types } from 'mongoose';
 import { User, UserDocument } from 'src/database/schemas/user.auth.schema';
 import { UserProfileDto } from './dto/user.profile.dto';
+import { SavefulPreferencesDto } from '../auth/dto/saveful-preferences.dto';
 import {
   UserFoodAnalyticalProfileDocument,
   UserFoodAnalyticsProfile,
 } from 'src/database/schemas/user.food.analyticsProfile.schema';
+import {
+  UserDietaryProfile,
+} from 'src/database/schemas/user-dietary-profile.schema';
+import {
+  UserSavefulPreferences,
+} from 'src/database/schemas/user-saveful-preferences.schema';
+import { deriveSavefulPreferences } from '../auth/saveful-preferences.utils';
 
 @Injectable()
 export class UserService {
@@ -64,17 +72,24 @@ export class UserService {
     const user = await this.userModel.findById(new Types.ObjectId(userId));
     if (!user) throw new BadRequestException('can not perform this operation');
 
+    const existingDietaryProfile = user.dietaryProfile ?? ({} as Partial<UserDietaryProfile>);
     const updateData: any = {
       dietaryProfile: {
-        vegType: dto.vegType || 'OMNI',
-        dairyFree: dto.dairyFree ?? false,
-        nutFree: dto.nutFree ?? false,
-        glutenFree: dto.glutenFree ?? false,
-        hasDiabetes: dto.hasDiabetes ?? false,
-        otherAllergies: dto.otherAllergies || [],
-        noOfAdults: dto.noOfAdults ?? 0,
-        noOfChildren: dto.noOfChildren ?? 0,
-        tastePrefrence: [],
+        vegType: dto.vegType ?? existingDietaryProfile.vegType ?? 'OMNI',
+        dairyFree:
+          dto.dairyFree ?? existingDietaryProfile.dairyFree ?? false,
+        nutFree: dto.nutFree ?? existingDietaryProfile.nutFree ?? false,
+        glutenFree:
+          dto.glutenFree ?? existingDietaryProfile.glutenFree ?? false,
+        hasDiabetes:
+          dto.hasDiabetes ?? existingDietaryProfile.hasDiabetes ?? false,
+        otherAllergies:
+          dto.otherAllergies ?? existingDietaryProfile.otherAllergies ?? [],
+        noOfAdults:
+          dto.noOfAdults ?? existingDietaryProfile.noOfAdults ?? 0,
+        noOfChildren:
+          dto.noOfChildren ?? existingDietaryProfile.noOfChildren ?? 0,
+        tastePrefrence: existingDietaryProfile.tastePrefrence ?? [],
       },
     };
 
@@ -92,6 +107,58 @@ export class UserService {
 
     const result = await this.userModel
       .findByIdAndUpdate(userId, { $set: updateData }, { new: true })
+      .lean();
+    if (!result) {
+      throw new BadRequestException('can not perform this operation');
+    }
+    return result;
+  }
+
+  async updateSavefulPreferences(dto: SavefulPreferencesDto, userId: string) {
+    if (!Types.ObjectId.isValid(userId))
+      throw new BadRequestException('invalid userId');
+    const user = await this.userModel.findById(new Types.ObjectId(userId));
+    if (!user) throw new BadRequestException('can not perform this operation');
+
+    const existingPreferences =
+      user.savefulPreferences ?? ({} as Partial<UserSavefulPreferences>);
+    const focusAreas = dto.focusAreas ?? existingPreferences.focusAreas ?? [];
+    const cadence = dto.cadence ?? existingPreferences.cadence;
+    const selectedExperience =
+      dto.selectedExperience ?? existingPreferences.selectedExperience;
+    const weeklySurveyDay =
+      dto.weeklySurveyDay ?? existingPreferences.weeklySurveyDay;
+    const derivedPreferences = deriveSavefulPreferences({
+      focusAreas,
+      cadence,
+    });
+
+    const nextSavefulPreferences = {
+      focusAreas,
+      cadence,
+      personalPlanKey:
+        derivedPreferences.personalPlanKey ??
+        existingPreferences.personalPlanKey,
+      personalPlanVersion:
+        derivedPreferences.personalPlanVersion ??
+        existingPreferences.personalPlanVersion,
+      recommendedExperience:
+        derivedPreferences.recommendedExperience ??
+        existingPreferences.recommendedExperience,
+      selectedExperience,
+      onboardingArchitectureTrack:
+        derivedPreferences.onboardingArchitectureTrack ??
+        existingPreferences.onboardingArchitectureTrack,
+      weeklySurveyDay,
+      updatedAt: new Date(),
+    };
+
+    const result = await this.userModel
+      .findByIdAndUpdate(
+        userId,
+        { $set: { savefulPreferences: nextSavefulPreferences } },
+        { new: true },
+      )
       .lean();
     if (!result) {
       throw new BadRequestException('can not perform this operation');

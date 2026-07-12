@@ -4,7 +4,7 @@ import * as mongoose from 'mongoose';
 
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
-const EMAIL = 'khanbasir5555@gmail.com';
+const EMAIL = 'soumyasenapti567@gmail.com';
 
 async function main() {
   const uri = process.env.MONGODB_URI;
