@@ -55,11 +55,26 @@ function createService(overrides: Record<string, unknown> = {}) {
     findOneAndUpdate: jest.fn(),
   };
   const cache = new Map<string, unknown>();
+  const locks = new Map<string, string>();
   const redis = {
     get: jest.fn(async (key: string) => cache.get(key) ?? null),
     set: jest.fn(async (key: string, value: unknown) => {
       cache.set(key, value);
     }),
+    setIfAbsent: jest.fn(
+      async (key: string, value: string): Promise<boolean> => {
+        if (locks.has(key)) return false;
+        locks.set(key, value);
+        return true;
+      },
+    ),
+    releaseLock: jest.fn(
+      async (key: string, value: string): Promise<boolean> => {
+        if (locks.get(key) !== value) return false;
+        locks.delete(key);
+        return true;
+      },
+    ),
   };
   const config = {
     get: jest.fn((key: string, fallback: unknown) =>
@@ -585,6 +600,8 @@ describe('PerksService', () => {
             ecard_price: '25,50',
             discount: '4.5',
             ecard_featured: '1',
+            ecard_desc: 'Long catalogue description',
+            ecard_term: 'Long catalogue terms',
           },
           {
             ecard_id: '2',
@@ -597,6 +614,24 @@ describe('PerksService', () => {
       },
     });
 
+    const summaries = await service.getCatalogue({
+      q: 'gro',
+      featured: true,
+    });
+    expect(summaries).toEqual([
+      expect.objectContaining({
+        id: '1',
+        category: 'Groceries',
+        discountPercent: 4.5,
+      }),
+    ]);
+    expect(summaries[0]).not.toHaveProperty('description');
+    expect(summaries[0]).not.toHaveProperty('terms');
+
+    await expect(service.getCatalogueCard('1')).resolves.toMatchObject({
+      description: 'Long catalogue description',
+      terms: 'Long catalogue terms',
+    });
     await expect(
       service.getCatalogue({ q: 'gro', featured: true }),
     ).resolves.toEqual([
@@ -609,6 +644,108 @@ describe('PerksService', () => {
     await service.getCatalogue({});
     expect(api.getEcards).toHaveBeenCalledTimes(1);
     expect(redis.set).toHaveBeenCalled();
+    expect(redis.releaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('coalesces concurrent catalogue misses inside one API instance', async () => {
+    let resolveCards!: (cards: Record<string, unknown>[]) => void;
+    const upstream = new Promise<Record<string, unknown>[]>((resolve) => {
+      resolveCards = resolve;
+    });
+    const { service, api } = createService({
+      api: {
+        getEcards: jest.fn(() => upstream),
+      },
+    });
+
+    const listRequest = service.getCatalogue({});
+    const detailRequest = service.getCatalogueCard('1');
+    await Promise.resolve();
+    resolveCards([{ ecard_id: '1', ecard_name: 'Grocer' }]);
+
+    await expect(listRequest).resolves.toEqual([
+      expect.objectContaining({ id: '1' }),
+    ]);
+    await expect(detailRequest).resolves.toMatchObject({ id: '1' });
+    expect(api.getEcards).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for another instance to populate the Redis cache', async () => {
+    const cached = [
+      {
+        id: '1',
+        name: 'Cached card',
+        category: null,
+        discountPercent: 0,
+        imageFilename: null,
+        imageUrl: null,
+        priceType: '',
+        availableValues: [],
+        balanceLink: null,
+        description: null,
+        terms: null,
+        deliveryFee: 0,
+        featured: false,
+      },
+    ];
+    const { service, api, redis } = createService({
+      redis: {
+        get: jest
+          .fn()
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce(cached),
+        setIfAbsent: jest.fn().mockResolvedValue(false),
+      },
+      config: {
+        get: jest.fn((key: string, fallback: unknown) =>
+          key === 'PERKS_CATALOGUE_LOCK_WAIT_MS' ? '1' : fallback,
+        ),
+      },
+    });
+
+    await expect(service.getCatalogue({})).resolves.toEqual([
+      expect.objectContaining({ id: '1' }),
+    ]);
+    expect(api.getEcards).not.toHaveBeenCalled();
+    expect(redis.releaseLock).not.toHaveBeenCalled();
+  });
+
+  it('falls back to one upstream request when Redis is unavailable', async () => {
+    const { service, api } = createService({
+      redis: {
+        get: jest.fn().mockRejectedValue(new Error('Redis unavailable')),
+        setIfAbsent: jest
+          .fn()
+          .mockRejectedValue(new Error('Redis unavailable')),
+        set: jest.fn().mockRejectedValue(new Error('Redis unavailable')),
+      },
+      api: {
+        getEcards: jest
+          .fn()
+          .mockResolvedValue([{ ecard_id: '1', ecard_name: 'Available' }]),
+      },
+    });
+
+    const [first, second] = await Promise.all([
+      service.getCatalogue({}),
+      service.getCatalogue({}),
+    ]);
+    expect(first).toEqual([expect.objectContaining({ id: '1' })]);
+    expect(second).toEqual(first);
+    expect(api.getEcards).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases the catalogue lock when the upstream request fails', async () => {
+    const { service, redis } = createService({
+      api: {
+        getEcards: jest.fn().mockRejectedValue(
+          new PerksApiError('WMAD unavailable', 503, 'WMAD_DOWN', true, false),
+        ),
+      },
+    });
+
+    await expect(service.getCatalogue({})).rejects.toBeDefined();
+    expect(redis.releaseLock).toHaveBeenCalledTimes(1);
   });
 
   it('filters the merchant wallet to the current Saveful user orders', async () => {

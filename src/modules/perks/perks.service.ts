@@ -104,6 +104,8 @@ export interface CatalogueCard {
 
 @Injectable()
 export class PerksService {
+  private catalogueRefreshPromise: Promise<CatalogueCard[]> | null = null;
+
   constructor(
     @InjectModel(User.name)
     private readonly userModel: Model<UserDocument>,
@@ -255,7 +257,7 @@ export class PerksService {
       }
       return left.name.localeCompare(right.name);
     });
-    return cards;
+    return cards.map(({ description: _description, terms: _terms, ...card }) => card);
   }
 
   async getCatalogueCard(ecardId: string) {
@@ -1024,33 +1026,119 @@ export class PerksService {
     } catch {
       // Catalogue remains available if Redis is temporarily unavailable.
     }
+
+    if (this.catalogueRefreshPromise) {
+      return this.catalogueRefreshPromise;
+    }
+
+    const refresh = this.refreshCatalogue(cacheKey);
+    this.catalogueRefreshPromise = refresh;
+    try {
+      return await refresh;
+    } finally {
+      if (this.catalogueRefreshPromise === refresh) {
+        this.catalogueRefreshPromise = null;
+      }
+    }
+  }
+
+  private async refreshCatalogue(cacheKey: string): Promise<CatalogueCard[]> {
+    const lockKey = `${cacheKey}:lock`;
+    const lockToken = randomUUID();
+    const lockTtlSeconds = 15;
+    let hasLock = false;
+
+    try {
+      hasLock = await this.redis.setIfAbsent(
+        lockKey,
+        lockToken,
+        lockTtlSeconds,
+      );
+    } catch {
+      // Redis is optional for availability; the in-process promise still
+      // prevents duplicate WMAD requests inside this API instance.
+      return this.fetchAndCacheCatalogue(cacheKey);
+    }
+
+    if (!hasLock) {
+      const waitMs = this.positiveConfigNumber(
+        'PERKS_CATALOGUE_LOCK_WAIT_MS',
+        16_000,
+      );
+      const deadline = Date.now() + waitMs;
+      while (Date.now() < deadline) {
+        await this.delay(Math.min(250, Math.max(1, deadline - Date.now())));
+        try {
+          const cached = await this.redis.get<CatalogueCard[]>(cacheKey);
+          if (cached) {
+            return cached;
+          }
+          hasLock = await this.redis.setIfAbsent(
+            lockKey,
+            lockToken,
+            lockTtlSeconds,
+          );
+          if (hasLock) {
+            break;
+          }
+        } catch {
+          return this.fetchAndCacheCatalogue(cacheKey);
+        }
+      }
+    }
+
+    try {
+      return await this.fetchAndCacheCatalogue(cacheKey);
+    } finally {
+      if (hasLock) {
+        try {
+          await this.redis.releaseLock(lockKey, lockToken);
+        } catch {
+          // The lock has a short TTL, so release failures are self-healing.
+        }
+      }
+    }
+  }
+
+  private async fetchAndCacheCatalogue(
+    cacheKey: string,
+  ): Promise<CatalogueCard[]> {
     const rawCards = await this.callUpstream(() => this.api.getEcards());
     const cards = rawCards
       .map((card) => this.mapCatalogueCard(card))
       .filter((card) => Boolean(card.id && card.name));
     try {
-      const ttl = Number(
-        this.config.get<string>('PERKS_CATALOGUE_CACHE_TTL_SECONDS', '300'),
+      const ttl = this.positiveConfigNumber(
+        'PERKS_CATALOGUE_CACHE_TTL_SECONDS',
+        300,
       );
-      await this.redis.set(
-        cacheKey,
-        cards,
-        Number.isFinite(ttl) && ttl > 0 ? ttl : 300,
-      );
+      await this.redis.set(cacheKey, cards, ttl);
     } catch {
       // A cache write failure must not fail a successful WMAD response.
     }
     return cards;
   }
 
+  private positiveConfigNumber(key: string, fallback: number): number {
+    const value = Number(this.config.get<string>(key, String(fallback)));
+    return Number.isFinite(value) && value > 0 ? value : fallback;
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   private mapCatalogueCard(card: Record<string, unknown>): CatalogueCard {
     const featured = card.ecard_featured ?? card.featured;
+    const name = this.stringValue(card.ecard_name).trim();
+    const explicitCategory = this.nullableString(
+      card.ecard_category ?? card.category ?? card.ecard_type,
+    );
     return {
       id: this.stringValue(card.ecard_id),
-      name: this.stringValue(card.ecard_name).trim(),
-      category: this.nullableString(
-        card.ecard_category ?? card.category ?? card.ecard_type,
-      ),
+      name,
+      // WMAD /ecard currently omits category fields; infer browse groups from name.
+      category: explicitCategory ?? this.inferCatalogueCategory(name),
       discountPercent:
         this.numberValue(card.discount ?? card.ecard_discount) ?? 0,
       imageFilename: this.safeImageFilename(card.ecard_image),
@@ -1065,8 +1153,104 @@ export class PerksService {
         featured === true ||
         featured === 1 ||
         String(featured).toLowerCase() === 'true' ||
-        String(featured) === '1',
+        String(featured) === '1' ||
+        (this.numberValue(card.discount ?? card.ecard_discount) ?? 0) >= 5,
     };
+  }
+
+  private inferCatalogueCategory(name: string): string {
+    const haystack = name.toLowerCase();
+    const rules: Array<{ category: string; keywords: string[] }> = [
+      {
+        category: 'groceries',
+        keywords: [
+          'woolworths',
+          'coles',
+          'aldi',
+          'iga',
+          'harris farm',
+          'supermarket',
+          'grocery',
+          'foodland',
+          'drakes',
+        ],
+      },
+      {
+        category: 'fuel',
+        keywords: [
+          'fuel',
+          'shell',
+          'caltex',
+          'ampol',
+          'petrol',
+          'bp gift',
+          '7-eleven',
+        ],
+      },
+      {
+        category: 'dining',
+        keywords: [
+          'restaurant',
+          'cafe',
+          'coffee',
+          'dining',
+          'mcdonald',
+          'kfc',
+          'hungry jack',
+          'dominos',
+          'uber eats',
+          'menulog',
+        ],
+      },
+      {
+        category: 'home',
+        keywords: [
+          'bunnings',
+          'ikea',
+          'bedroom',
+          'homewares',
+          'harvey norman',
+          'the good guys',
+          'jb hi-fi',
+          'officeworks',
+        ],
+      },
+      {
+        category: 'fashion',
+        keywords: [
+          'cotton on',
+          'country road',
+          'target',
+          'kmart',
+          'myer',
+          'david jones',
+          'uniqlo',
+          'fashion',
+          'apparel',
+        ],
+      },
+      {
+        category: 'entertainment',
+        keywords: [
+          'netflix',
+          'spotify',
+          'steam',
+          'playstation',
+          'xbox',
+          'cinema',
+          'movie',
+          'entertainment',
+          'ticket',
+          'rebel',
+        ],
+      },
+    ];
+    for (const rule of rules) {
+      if (rule.keywords.some((keyword) => haystack.includes(keyword))) {
+        return rule.category;
+      }
+    }
+    return 'other';
   }
 
   private async getOrCreateActiveCart(
