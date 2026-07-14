@@ -581,6 +581,11 @@ Return JSON EXACTLY in this shape:
     );
 
     const inventoryNames = inventoryItems.map((i) => i.name);
+    const inventoryNameByIngredientId = new Map(
+      inventoryItems
+        .filter((item) => item.ingredientId)
+        .map((item) => [item.ingredientId!.toString(), item.name]),
+    );
 
     const now = new Date();
     const threeDays = new Date();
@@ -607,6 +612,11 @@ Return JSON EXACTLY in this shape:
 
     const recipes = await this.recipeModel
       .find(recipeFilter)
+      .select(
+        '_id title shortDescription heroImageUrl prepCookTime portions ' +
+          'components.component.requiredIngredients.recommendedIngredient ' +
+          'components.component.requiredIngredients.alternativeIngredients.ingredient',
+      )
       .populate(
         'components.component.requiredIngredients.recommendedIngredient',
         'name',
@@ -622,7 +632,7 @@ Return JSON EXACTLY in this shape:
 
     for (const recipe of recipes) {
    
-      const totalSlots: number[] = [];   
+      let totalSlots = 0;
       const matchedSlotIds: string[] = [];
       const missingSlotNames: string[] = [];
       const matchedIngredientNames: string[] = [];
@@ -662,7 +672,7 @@ Return JSON EXACTLY in this shape:
               }
             }
 
-            totalSlots.push(1);
+            totalSlots += 1;
             if (slotMatched && matchedId) {
               matchedSlotIds.push(matchedId);
               if (matchedName) matchedIngredientNames.push(matchedName);
@@ -673,9 +683,9 @@ Return JSON EXACTLY in this shape:
         }
       }
 
-      if (totalSlots.length === 0) continue;
+      if (totalSlots === 0) continue;
 
-      const matchPercentage = (matchedSlotIds.length / totalSlots.length) * 100;
+      const matchPercentage = (matchedSlotIds.length / totalSlots) * 100;
 
   
       const minMatch = filterIngredientId ? 0 : 1;
@@ -698,9 +708,7 @@ Return JSON EXACTLY in this shape:
         missingIngredients: missingSlotNames,
         matchPercentage: Math.round(matchPercentage),
         expiringIngredientsUsed: expiringUsed.map(
-          (id) =>
-            inventoryItems.find((i) => i.ingredientId?.toString() === id)
-              ?.name || id,
+          (id) => inventoryNameByIngredientId.get(id) || id,
         ),
       });
     }
