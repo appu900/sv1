@@ -1,4 +1,4 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   ArrayMinSize,
@@ -12,6 +12,7 @@ import {
   IsOptional,
   IsPositive,
   IsString,
+  IsIn,
   Matches,
   Max,
   MaxLength,
@@ -19,6 +20,119 @@ import {
   ValidateIf,
   ValidateNested,
 } from 'class-validator';
+
+export enum PerksCatalogueSort {
+  NAME_ASC = 'name',
+  DISCOUNT_DESC = 'discount-desc',
+  DISCOUNT_ASC = 'discount-asc',
+}
+
+export class PerksCatalogueQueryDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  q?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  category?: string;
+
+  @IsOptional()
+  @IsEnum(PerksCatalogueSort)
+  sort?: PerksCatalogueSort;
+
+  @IsOptional()
+  @Transform(({ value }) =>
+    value === true || value === 'true'
+      ? true
+      : value === false || value === 'false'
+        ? false
+        : value,
+  )
+  @IsBoolean()
+  featured?: boolean;
+}
+
+export class PerksOrderListQueryDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit = 20;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  offset = 0;
+}
+
+export class PerksWalletQueryDto {
+  @IsOptional()
+  @IsIn(['active', 'archived'])
+  state: 'active' | 'archived' = 'active';
+}
+
+export class AddPerksFavouriteDto {
+  @IsString()
+  @Matches(/^\d+$/)
+  ecardId: string;
+}
+
+export class PerksCartItemDto {
+  @IsString()
+  @Matches(/^\d+$/)
+  ecardId: string;
+
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @IsPositive()
+  ecardValue: number;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  quantity: number;
+
+  @IsOptional()
+  @IsBoolean()
+  sendAsGift?: boolean;
+
+  @ValidateIf((value) => value.sendAsGift === true)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(120)
+  giftRecipientName?: string;
+
+  @ValidateIf((value) => value.sendAsGift === true)
+  @IsEmail()
+  giftRecipientEmail?: string;
+
+  @ValidateIf((value) => value.sendAsGift === true)
+  @IsString()
+  @Matches(/^\d+$/)
+  giftTemplateId?: string;
+}
+
+export class QuotePerksDto extends PerksCartItemDto {}
+
+export class UpdatePerksCartItemDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @IsPositive()
+  ecardValue?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  quantity?: number;
+}
 
 export class CreatePerksOrderDto {
   @IsString()

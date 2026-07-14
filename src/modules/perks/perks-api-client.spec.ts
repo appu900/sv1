@@ -71,16 +71,20 @@ describe('PerksApiClient', () => {
           message: 'Success',
           data: {
             token: 'merchant-token',
-            expire: Math.floor(Date.now() / 1000) + 7 * 24 * 60 * 60,
+            expire: 7 * 24 * 60 * 60,
           },
         }),
+      )
+      .mockImplementationOnce(() =>
+        response({ status: 200, message: 'Success', data: [] }),
       )
       .mockImplementationOnce(() =>
         response({ status: 200, message: 'Success', data: [] }),
       );
 
     await expect(client.getEcards()).resolves.toEqual([]);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await expect(client.getEcards()).resolves.toEqual([]);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(fetchMock.mock.calls[1][1].headers.Authorization).toBe(
       'Bearer merchant-token',
     );

@@ -8,9 +8,23 @@ import {
   ServiceUnavailableException,
   UnprocessableEntityException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
-import { createHash, randomBytes } from 'crypto';
+import { createHash, randomBytes, randomUUID } from 'crypto';
 import { Model, Types } from 'mongoose';
+import {
+  PerksCalculatorProfile,
+  PerksCalculatorProfileDocument,
+} from '../../database/schemas/perks-calculator-profile.schema';
+import {
+  PerksCart,
+  PerksCartDocument,
+  PerksCartStatus,
+} from '../../database/schemas/perks-cart.schema';
+import {
+  PerksFavourite,
+  PerksFavouriteDocument,
+} from '../../database/schemas/perks-favourite.schema';
 import {
   PerksMembership,
   PerksMembershipDocument,
@@ -21,11 +35,23 @@ import {
   PerksOrderDocument,
   PerksOrderStatus,
 } from '../../database/schemas/perks-order.schema';
-import { User, UserDocument } from '../../database/schemas/user.auth.schema';
 import {
+  PerksWalletMetadata,
+  PerksWalletMetadataDocument,
+} from '../../database/schemas/perks-wallet-metadata.schema';
+import { User, UserDocument } from '../../database/schemas/user.auth.schema';
+import { RedisService } from '../../redis/redis.service';
+import {
+  AddPerksFavouriteDto,
   CalculatePerksDto,
   CreatePerksOrderDto,
+  PerksCartItemDto,
+  PerksCatalogueQueryDto,
+  PerksCatalogueSort,
+  PerksOrderListQueryDto,
   PerksSpendFrequency,
+  QuotePerksDto,
+  UpdatePerksCartItemDto,
 } from './dto/perks.dto';
 import {
   PerksApiClient,
@@ -60,6 +86,22 @@ export const PERKS_CATEGORIES = [
   { key: 'hardware', name: 'Hardware', discountBps: 500 },
 ] as const;
 
+export interface CatalogueCard {
+  id: string;
+  name: string;
+  category: string | null;
+  discountPercent: number;
+  imageFilename: string | null;
+  imageUrl: string | null;
+  priceType: string;
+  availableValues: number[];
+  balanceLink: string | null;
+  description: string | null;
+  terms: string | null;
+  deliveryFee: number;
+  featured: boolean;
+}
+
 @Injectable()
 export class PerksService {
   constructor(
@@ -69,8 +111,40 @@ export class PerksService {
     private readonly membershipModel: Model<PerksMembershipDocument>,
     @InjectModel(PerksOrder.name)
     private readonly orderModel: Model<PerksOrderDocument>,
+    @InjectModel(PerksFavourite.name)
+    private readonly favouriteModel: Model<PerksFavouriteDocument>,
+    @InjectModel(PerksCart.name)
+    private readonly cartModel: Model<PerksCartDocument>,
+    @InjectModel(PerksWalletMetadata.name)
+    private readonly walletMetadataModel: Model<PerksWalletMetadataDocument>,
+    @InjectModel(PerksCalculatorProfile.name)
+    private readonly calculatorProfileModel: Model<PerksCalculatorProfileDocument>,
     private readonly api: PerksApiClient,
+    private readonly redis: RedisService,
+    private readonly config: ConfigService,
   ) {}
+
+  async getMembershipStatus(userId: string) {
+    const objectId = this.toObjectId(userId);
+    const [membership, user] = await Promise.all([
+      this.membershipModel.findOne({ userId: objectId }).lean(),
+      this.userModel.findById(objectId).lean(),
+    ]);
+    if (!user) {
+      throw new NotFoundException('Saveful user not found');
+    }
+    const status = membership
+      ? this.membershipResponse(membership)
+      : {
+          wmadUserId: null,
+          status: 'not_registered',
+          registeredAt: null,
+        };
+    return {
+      ...status,
+      missingFields: this.profileMissingFields(user),
+    };
+  }
 
   async ensureMembership(userId: string) {
     const objectId = this.toObjectId(userId);
@@ -151,21 +225,50 @@ export class PerksService {
   }
 
   async getEcards(userId: string) {
-    await this.ensureMembership(userId);
-    const cards = await this.callUpstream(() => this.api.getEcards());
-    return cards.map((card) => ({
-      id: this.stringValue(card.ecard_id),
-      name: this.stringValue(card.ecard_name),
-      discountPercent: this.numberValue(card.discount),
-      imageFilename: this.safeImageFilename(card.ecard_image),
-      imageUrl: this.cardImageUrl(card.ecard_image),
-      priceType: this.stringValue(card.ecard_pricetype),
-      availableValues: this.parseCardValues(card.ecard_price),
-      balanceLink: this.nullableString(card.ecard_balancelink),
-      description: this.nullableString(card.ecard_desc),
-      terms: this.nullableString(card.ecard_term),
-      deliveryFee: this.numberValue(card.delivery_fee),
-    }));
+    this.toObjectId(userId);
+    return this.getCatalogue({});
+  }
+
+  async getCatalogue(query: PerksCatalogueQueryDto) {
+    let cards = await this.getCachedCatalogue();
+    const q = query.q?.trim().toLowerCase();
+    const category = query.category?.trim().toLowerCase();
+    if (q) {
+      cards = cards.filter((card) =>
+        [card.name, card.category, card.description]
+          .filter(Boolean)
+          .some((value) => value!.toLowerCase().includes(q)),
+      );
+    }
+    if (category) {
+      cards = cards.filter((card) => card.category?.toLowerCase() === category);
+    }
+    if (query.featured !== undefined) {
+      cards = cards.filter((card) => card.featured === query.featured);
+    }
+    cards.sort((left, right) => {
+      if (query.sort === PerksCatalogueSort.DISCOUNT_DESC) {
+        return right.discountPercent - left.discountPercent;
+      }
+      if (query.sort === PerksCatalogueSort.DISCOUNT_ASC) {
+        return left.discountPercent - right.discountPercent;
+      }
+      return left.name.localeCompare(right.name);
+    });
+    return cards;
+  }
+
+  async getCatalogueCard(ecardId: string) {
+    if (!/^\d+$/.test(ecardId)) {
+      throw new BadRequestException('Invalid ecard ID');
+    }
+    const card = (await this.getCachedCatalogue()).find(
+      (item) => item.id === ecardId,
+    );
+    if (!card) {
+      throw new NotFoundException('Perks card not found');
+    }
+    return card;
   }
 
   async getGiftOptions(userId: string) {
@@ -188,11 +291,202 @@ export class PerksService {
     };
   }
 
+  async getFavourites(userId: string) {
+    const objectId = this.toObjectId(userId);
+    const favourites = await this.favouriteModel
+      .find({ userId: objectId })
+      .sort({ createdAt: -1 })
+      .lean();
+    if (favourites.length === 0) {
+      return [];
+    }
+    const cards = await this.getCachedCatalogue();
+    const byId = new Map(cards.map((card) => [card.id, card]));
+    return favourites.map((favourite) => ({
+      ecardId: favourite.ecardId,
+      card: byId.get(favourite.ecardId) ?? null,
+      createdAt: (favourite as { createdAt?: Date }).createdAt ?? null,
+    }));
+  }
+
+  async addFavourite(userId: string, dto: AddPerksFavouriteDto) {
+    await this.getCatalogueCard(dto.ecardId);
+    const favourite = await this.favouriteModel.findOneAndUpdate(
+      { userId: this.toObjectId(userId), ecardId: dto.ecardId },
+      {
+        $setOnInsert: { userId: this.toObjectId(userId), ecardId: dto.ecardId },
+      },
+      { new: true, upsert: true },
+    );
+    return { ecardId: favourite.ecardId };
+  }
+
+  async removeFavourite(userId: string, ecardId: string) {
+    if (!/^\d+$/.test(ecardId)) {
+      throw new BadRequestException('Invalid ecard ID');
+    }
+    await this.favouriteModel.deleteOne({
+      userId: this.toObjectId(userId),
+      ecardId,
+    });
+    return { ecardId, removed: true };
+  }
+
+  async getCart(userId: string) {
+    const cart = await this.getOrCreateActiveCart(userId);
+    return this.cartResponse(cart.toObject());
+  }
+
+  async addCartItem(userId: string, dto: PerksCartItemDto) {
+    const card = await this.getCatalogueCard(dto.ecardId);
+    this.assertCardValue(card, dto.ecardValue);
+    const cart = await this.getOrCreateActiveCart(userId);
+    const existing = cart.items.find(
+      (item) =>
+        item.ecardId === dto.ecardId &&
+        item.faceValueCents === Math.round(dto.ecardValue * 100) &&
+        item.sendAsGift === Boolean(dto.sendAsGift),
+    );
+    if (existing) {
+      existing.quantity = Math.min(100, existing.quantity + dto.quantity);
+    } else {
+      cart.items.push({
+        itemId: randomUUID(),
+        ecardId: dto.ecardId,
+        quantity: dto.quantity,
+        faceValueCents: Math.round(dto.ecardValue * 100),
+        sendAsGift: Boolean(dto.sendAsGift),
+        gift: dto.sendAsGift
+          ? {
+              recipientName: dto.giftRecipientName!,
+              recipientEmail: dto.giftRecipientEmail!,
+              templateId: dto.giftTemplateId!,
+            }
+          : null,
+      });
+    }
+    await cart.save();
+    return this.cartResponse(cart.toObject());
+  }
+
+  async updateCartItem(
+    userId: string,
+    itemId: string,
+    dto: UpdatePerksCartItemDto,
+  ) {
+    const cart = await this.getOrCreateActiveCart(userId);
+    const item = cart.items.find((candidate) => candidate.itemId === itemId);
+    if (!item) {
+      throw new NotFoundException('Cart item not found');
+    }
+    if (dto.ecardValue !== undefined) {
+      const card = await this.getCatalogueCard(item.ecardId);
+      this.assertCardValue(card, dto.ecardValue);
+      item.faceValueCents = Math.round(dto.ecardValue * 100);
+    }
+    if (dto.quantity !== undefined) {
+      item.quantity = dto.quantity;
+    }
+    await cart.save();
+    return this.cartResponse(cart.toObject());
+  }
+
+  async deleteCartItem(userId: string, itemId: string) {
+    const cart = await this.getOrCreateActiveCart(userId);
+    const length = cart.items.length;
+    cart.items = cart.items.filter((item) => item.itemId !== itemId);
+    if (cart.items.length === length) {
+      throw new NotFoundException('Cart item not found');
+    }
+    await cart.save();
+    return this.cartResponse(cart.toObject());
+  }
+
+  async quoteCart(userId: string) {
+    const cart = await this.getOrCreateActiveCart(userId);
+    return this.buildCartQuote(cart.toObject());
+  }
+
+  async quote(dto: QuotePerksDto) {
+    const card = await this.getCatalogueCard(dto.ecardId);
+    this.assertCardValue(card, dto.ecardValue);
+    return this.buildCartQuote({
+      items: [
+        {
+          itemId: 'preview',
+          ecardId: dto.ecardId,
+          quantity: dto.quantity,
+          faceValueCents: Math.round(dto.ecardValue * 100),
+          sendAsGift: Boolean(dto.sendAsGift),
+          gift: dto.sendAsGift
+            ? {
+                recipientName: dto.giftRecipientName!,
+                recipientEmail: dto.giftRecipientEmail!,
+                templateId: dto.giftTemplateId!,
+              }
+            : null,
+        },
+      ],
+    });
+  }
+
+  async listOrders(userId: string, query: PerksOrderListQueryDto) {
+    const [orders, total] = await Promise.all([
+      this.orderModel
+        .find({ userId: this.toObjectId(userId) })
+        .sort({ createdAt: -1 })
+        .skip(query.offset)
+        .limit(query.limit)
+        .lean(),
+      this.orderModel.countDocuments({ userId: this.toObjectId(userId) }),
+    ]);
+    return {
+      items: orders.map((order) => this.orderResponse(order)),
+      total,
+      limit: query.limit,
+      offset: query.offset,
+    };
+  }
+
+  async getDashboard(userId: string) {
+    const objectId = this.toObjectId(userId);
+    const [membership, favouriteCount, cart, recentOrders, calculator] =
+      await Promise.all([
+        this.membershipModel.findOne({ userId: objectId }).lean(),
+        this.favouriteModel.countDocuments({ userId: objectId }),
+        this.cartModel
+          .findOne({ userId: objectId, status: PerksCartStatus.ACTIVE })
+          .lean(),
+        this.orderModel
+          .find({ userId: objectId })
+          .sort({ createdAt: -1 })
+          .limit(5)
+          .lean(),
+        this.calculatorProfileModel.findOne({ userId: objectId }).lean(),
+      ]);
+    return {
+      membership: membership
+        ? this.membershipResponse(membership)
+        : { wmadUserId: null, status: 'not_registered', registeredAt: null },
+      favouriteCount,
+      cart: cart ? this.cartResponse(cart) : null,
+      recentOrders: recentOrders.map((order) => this.orderResponse(order)),
+      latestCalculator: calculator
+        ? {
+            inputs: calculator.inputs,
+            result: calculator.result,
+            calculatedAt: calculator.calculatedAt,
+          }
+        : null,
+    };
+  }
+
   async createOrder(
     userId: string,
     idempotencyKey: string,
     dto: CreatePerksOrderDto,
   ) {
+    this.assertIssuanceEnabled();
     await this.ensureMembership(userId);
     this.validateIdempotencyKey(idempotencyKey);
     const objectId = this.toObjectId(userId);
@@ -212,7 +506,18 @@ export class PerksService {
       return this.orderResponse(existing);
     }
 
+    const card = await this.getCatalogueCard(dto.ecardId);
+    this.assertCardValue(card, dto.ecardValue);
     const orderReference = this.createOrderReference(userId);
+    const snapshot = this.quoteLine(
+      {
+        itemId: 'single',
+        ecardId: dto.ecardId,
+        faceValueCents: Math.round(dto.ecardValue * 100),
+        quantity: dto.quantity,
+      },
+      card,
+    );
     let order: PerksOrderDocument;
     try {
       order = await this.orderModel.create({
@@ -221,6 +526,20 @@ export class PerksService {
         requestHash,
         orderReference,
         status: PerksOrderStatus.STARTED,
+        currency: 'AUD',
+        faceValueCents: snapshot.faceValueCents,
+        purchasePriceCents: snapshot.purchasePriceCents,
+        deliveryFeeCents: snapshot.deliveryFeeCents,
+        totalCents: snapshot.totalCents,
+        lines: [
+          {
+            ...snapshot,
+            lineId: 'single',
+            idempotencyKey: `${idempotencyKey}:single`,
+            orderReference,
+            status: PerksOrderStatus.STARTED,
+          },
+        ],
       });
     } catch (error) {
       if (this.isDuplicateKey(error)) {
@@ -239,6 +558,13 @@ export class PerksService {
         this.mapOrderPayload(dto, orderReference),
       );
       this.applyOrderResult(order, result);
+      if (order.lines[0]) {
+        order.lines[0].wmadOrderNumber = String(result.order_number);
+        order.lines[0].status = this.mapOrderStatus(result.order_status);
+        order.lines[0].cardUrl = result.cardurl ?? null;
+        order.lines[0].completedAt = new Date();
+      }
+      order.completedAt = new Date();
       await order.save();
       return this.orderResponse(order.toObject());
     } catch (error) {
@@ -248,9 +574,219 @@ export class PerksService {
         : PerksOrderStatus.FAILED;
       order.lastErrorCode = apiError.code;
       order.lastErrorMessage = apiError.message;
+      if (order.lines[0]) {
+        order.lines[0].status = order.status;
+        order.lines[0].lastErrorCode = apiError.code;
+        order.lines[0].lastErrorMessage = apiError.message;
+      }
       await order.save();
       this.throwUpstream(apiError, 'Could not place the gift-card order');
     }
+  }
+
+  async checkoutCart(userId: string, idempotencyKey: string) {
+    this.validateIdempotencyKey(idempotencyKey);
+    if (!this.isIssuanceEnabled()) {
+      const cart = await this.getOrCreateActiveCart(userId);
+      if (cart.items.length === 0) {
+        throw new BadRequestException('An active cart with items is required');
+      }
+      const quote = await this.buildCartQuote(cart.toObject());
+      return {
+        status: 'payment_required',
+        issuanceEnabled: false,
+        quote,
+        message:
+          'Perks checkout is ready, but payment and order issuance are not yet enabled.',
+      };
+    }
+
+    const objectId = this.toObjectId(userId);
+    const prior = await this.orderModel.findOne({
+      userId: objectId,
+      idempotencyKey,
+    });
+    if (
+      prior &&
+      [PerksOrderStatus.COMPLETED, PerksOrderStatus.PROCESSING].includes(
+        prior.status,
+      ) &&
+      prior.lines.every((line) =>
+        [PerksOrderStatus.COMPLETED, PerksOrderStatus.PROCESSING].includes(
+          line.status,
+        ),
+      )
+    ) {
+      return this.orderResponse(prior.toObject());
+    }
+
+    const cart = await this.cartModel.findOneAndUpdate(
+      {
+        userId: objectId,
+        $or: [
+          {
+            status: PerksCartStatus.ACTIVE,
+            $or: [
+              { checkoutIdempotencyKey: null },
+              { checkoutIdempotencyKey: { $exists: false } },
+              { checkoutIdempotencyKey: idempotencyKey },
+            ],
+          },
+          {
+            status: PerksCartStatus.CHECKING_OUT,
+            checkoutIdempotencyKey: idempotencyKey,
+          },
+        ],
+      },
+      {
+        $set: {
+          status: PerksCartStatus.CHECKING_OUT,
+          checkoutIdempotencyKey: idempotencyKey,
+        },
+      },
+      { new: true },
+    );
+    if (!cart) {
+      const resumable = await this.cartModel.findOne({
+        userId: objectId,
+        status: {
+          $in: [PerksCartStatus.ACTIVE, PerksCartStatus.CHECKING_OUT],
+        },
+      });
+      if (resumable?.checkoutIdempotencyKey) {
+        throw new ConflictException(
+          'Cart checkout must resume with its original Idempotency-Key',
+        );
+      }
+    }
+    if (!cart || cart.items.length === 0) {
+      throw new BadRequestException('An active cart with items is required');
+    }
+
+    let quote: Awaited<ReturnType<PerksService['buildCartQuote']>>;
+    try {
+      await this.ensureMembership(userId);
+      quote = await this.buildCartQuote(cart.toObject());
+    } catch (error) {
+      await this.releaseCartForRetry(cart);
+      throw error;
+    }
+    const requestHash = createHash('sha256')
+      .update(JSON.stringify(quote.items))
+      .digest('hex');
+    if (prior && prior.requestHash !== requestHash) {
+      await this.releaseCartForRetry(cart);
+      throw new ConflictException(
+        'Idempotency-Key was already used with a different cart',
+      );
+    }
+
+    let order = prior;
+    if (!order) {
+      const orderReference = this.createOrderReference(userId);
+      try {
+        order = await this.orderModel.create({
+          userId: objectId,
+          cartId: cart._id,
+          idempotencyKey,
+          requestHash,
+          orderReference,
+          status: PerksOrderStatus.STARTED,
+          currency: 'AUD',
+          faceValueCents: quote.totals.faceValueCents,
+          purchasePriceCents: quote.totals.purchasePriceCents,
+          deliveryFeeCents: quote.totals.deliveryFeeCents,
+          totalCents: quote.totals.totalCents,
+          lines: quote.items.map((item) => ({
+            ...item,
+            lineId: item.itemId,
+            idempotencyKey: `${idempotencyKey}:${item.itemId}`,
+            orderReference: `${orderReference}-${item.itemId.slice(0, 8)}`,
+            status: PerksOrderStatus.STARTED,
+          })),
+        });
+      } catch (error) {
+        if (!this.isDuplicateKey(error)) {
+          await this.releaseCartForRetry(cart);
+          throw error;
+        }
+        order = await this.orderModel.findOne({
+          userId: objectId,
+          idempotencyKey,
+        });
+        if (!order || order.requestHash !== requestHash) {
+          await this.releaseCartForRetry(cart);
+          throw new ConflictException('Checkout is already in progress');
+        }
+      }
+    }
+
+    if (order.lines.some((line) => line.status === PerksOrderStatus.UNKNOWN)) {
+      await this.releaseCartForRetry(cart);
+      throw new ConflictException(
+        'Checkout contains an ambiguous line and requires reconciliation',
+      );
+    }
+
+    for (const line of order.lines) {
+      if (
+        line.status === PerksOrderStatus.COMPLETED ||
+        line.status === PerksOrderStatus.PROCESSING
+      ) {
+        continue;
+      }
+      const cartItem = cart.items.find((item) => item.itemId === line.lineId);
+      if (!cartItem) {
+        throw new ConflictException('Cart changed during checkout');
+      }
+      try {
+        const result = await this.api.createOrder(
+          this.mapCartOrderPayload(cartItem, line.orderReference),
+        );
+        line.wmadOrderNumber = String(result.order_number);
+        line.status = this.mapOrderStatus(result.order_status);
+        line.cardUrl = result.cardurl ?? null;
+        line.completedAt = new Date();
+        line.lastErrorCode = null;
+        line.lastErrorMessage = null;
+        await order.save();
+      } catch (error) {
+        const apiError = this.asApiError(error);
+        line.status = apiError.ambiguous
+          ? PerksOrderStatus.UNKNOWN
+          : PerksOrderStatus.FAILED;
+        line.lastErrorCode = apiError.code;
+        line.lastErrorMessage = apiError.message;
+        order.status = line.status;
+        order.lastErrorCode = apiError.code;
+        order.lastErrorMessage = apiError.message;
+        await order.save();
+        await this.releaseCartForRetry(cart);
+        this.throwUpstream(apiError, 'Could not complete cart checkout');
+      }
+    }
+
+    const allIssued = order.lines.every((line) =>
+      [PerksOrderStatus.COMPLETED, PerksOrderStatus.PROCESSING].includes(
+        line.status,
+      ),
+    );
+    order.status = order.lines.every(
+      (line) => line.status === PerksOrderStatus.COMPLETED,
+    )
+      ? PerksOrderStatus.COMPLETED
+      : allIssued
+        ? PerksOrderStatus.PROCESSING
+        : PerksOrderStatus.FAILED;
+    order.completedAt = allIssued ? new Date() : null;
+    await order.save();
+    if (allIssued) {
+      cart.status = PerksCartStatus.CHECKED_OUT;
+      cart.orderId = order._id as Types.ObjectId;
+      cart.checkedOutAt = new Date();
+      await cart.save();
+    }
+    return this.orderResponse(order.toObject());
   }
 
   async getOrder(userId: string, orderNumber: string) {
@@ -290,29 +826,116 @@ export class PerksService {
     };
   }
 
-  async getWallet(userId: string, gifted: boolean) {
+  async getWallet(
+    userId: string,
+    gifted: boolean,
+    state: 'active' | 'archived' = 'active',
+  ) {
     await this.ensureMembership(userId);
+    const objectId = this.toObjectId(userId);
     const orders = await this.orderModel
-      .find({ userId: this.toObjectId(userId) })
-      .select({ wmadOrderNumber: 1, orderReference: 1 })
+      .find({ userId: objectId })
+      .select({
+        wmadOrderNumber: 1,
+        orderReference: 1,
+        'lines.wmadOrderNumber': 1,
+        'lines.orderReference': 1,
+      })
       .lean();
     const allowed = new Set(
       orders.flatMap((order) =>
-        [order.wmadOrderNumber, order.orderReference].filter(
-          (value): value is string => Boolean(value),
-        ),
+        [
+          order.wmadOrderNumber,
+          order.orderReference,
+          ...(order.lines ?? []).flatMap((line) => [
+            line.wmadOrderNumber,
+            line.orderReference,
+          ]),
+        ].filter((value): value is string => Boolean(value)),
       ),
     );
     const entries = await this.callUpstream(() =>
       gifted ? this.api.getGiftedWallet() : this.api.getWallet(),
     );
-    return entries
+    const mapped = entries
       .filter((entry) => {
         const number = this.stringValue(entry.order_number);
         const reference = this.stringValue(entry.order_reference);
         return allowed.has(number) || allowed.has(reference);
       })
       .map((entry) => this.mapWalletEntry(entry, gifted));
+    const metadata = await this.walletMetadataModel
+      .find({
+        userId: objectId,
+        cardKey: { $in: mapped.map((entry) => entry.cardKey) },
+      })
+      .lean();
+    const metadataByKey = new Map(
+      metadata.map((entry) => [entry.cardKey, entry]),
+    );
+    return mapped
+      .map((entry) => {
+        const local = metadataByKey.get(entry.cardKey);
+        return {
+          ...entry,
+          archived: local?.archived ?? false,
+          archivedAt: local?.archivedAt ?? null,
+        };
+      })
+      .filter((entry) => {
+        const local = metadataByKey.get(entry.cardKey);
+        return (
+          !local?.hidden &&
+          (state === 'archived' ? entry.archived : !entry.archived)
+        );
+      });
+  }
+
+  async getWalletCard(userId: string, cardKey: string) {
+    this.validateCardKey(cardKey);
+    const cards = [
+      ...(await this.getWallet(userId, false, 'active')),
+      ...(await this.getWallet(userId, false, 'archived')),
+      ...(await this.getWallet(userId, true, 'active')),
+      ...(await this.getWallet(userId, true, 'archived')),
+    ];
+    const card = cards.find((entry) => entry.cardKey === cardKey);
+    if (!card) {
+      throw new NotFoundException('Wallet card not found');
+    }
+    return card;
+  }
+
+  async setWalletArchived(userId: string, cardKey: string, archived: boolean) {
+    this.validateCardKey(cardKey);
+    await this.getWalletCard(userId, cardKey);
+    await this.walletMetadataModel.findOneAndUpdate(
+      { userId: this.toObjectId(userId), cardKey },
+      {
+        $set: {
+          archived,
+          archivedAt: archived ? new Date() : null,
+          hidden: false,
+        },
+        $setOnInsert: { userId: this.toObjectId(userId), cardKey },
+      },
+      { upsert: true, new: true },
+    );
+    return { cardKey, archived };
+  }
+
+  async hideWalletCard(userId: string, cardKey: string) {
+    this.validateCardKey(cardKey);
+    await this.getWalletCard(userId, cardKey);
+    await this.walletMetadataModel.findOneAndUpdate(
+      { userId: this.toObjectId(userId), cardKey },
+      {
+        $set: { hidden: true },
+        $setOnInsert: { userId: this.toObjectId(userId), cardKey },
+      },
+      { upsert: true },
+    );
+    return { cardKey, hidden: true };
   }
 
   getCalculatorCategories() {
@@ -359,16 +982,311 @@ export class PerksService {
     };
   }
 
-  private mapRegistration(user: User) {
-    const nameParts = user.name.trim().split(/\s+/).filter(Boolean);
+  async calculateAndSave(userId: string, dto: CalculatePerksDto) {
+    const result = this.calculate(dto);
+    const calculatedAt = new Date();
+    await this.calculatorProfileModel.findOneAndUpdate(
+      { userId: this.toObjectId(userId) },
+      {
+        $set: {
+          inputs: dto.items,
+          result,
+          calculatedAt,
+        },
+        $setOnInsert: { userId: this.toObjectId(userId) },
+      },
+      { upsert: true },
+    );
+    return { ...result, calculatedAt };
+  }
+
+  async getLatestCalculation(userId: string) {
+    const profile = await this.calculatorProfileModel
+      .findOne({ userId: this.toObjectId(userId) })
+      .lean();
+    if (!profile) {
+      return null;
+    }
+    return {
+      inputs: profile.inputs,
+      result: profile.result,
+      calculatedAt: profile.calculatedAt,
+    };
+  }
+
+  private async getCachedCatalogue(): Promise<CatalogueCard[]> {
+    const cacheKey = 'perks:catalogue:v1';
+    try {
+      const cached = await this.redis.get<CatalogueCard[]>(cacheKey);
+      if (cached) {
+        return cached;
+      }
+    } catch {
+      // Catalogue remains available if Redis is temporarily unavailable.
+    }
+    const rawCards = await this.callUpstream(() => this.api.getEcards());
+    const cards = rawCards
+      .map((card) => this.mapCatalogueCard(card))
+      .filter((card) => Boolean(card.id && card.name));
+    try {
+      const ttl = Number(
+        this.config.get<string>('PERKS_CATALOGUE_CACHE_TTL_SECONDS', '300'),
+      );
+      await this.redis.set(
+        cacheKey,
+        cards,
+        Number.isFinite(ttl) && ttl > 0 ? ttl : 300,
+      );
+    } catch {
+      // A cache write failure must not fail a successful WMAD response.
+    }
+    return cards;
+  }
+
+  private mapCatalogueCard(card: Record<string, unknown>): CatalogueCard {
+    const featured = card.ecard_featured ?? card.featured;
+    return {
+      id: this.stringValue(card.ecard_id),
+      name: this.stringValue(card.ecard_name).trim(),
+      category: this.nullableString(
+        card.ecard_category ?? card.category ?? card.ecard_type,
+      ),
+      discountPercent:
+        this.numberValue(card.discount ?? card.ecard_discount) ?? 0,
+      imageFilename: this.safeImageFilename(card.ecard_image),
+      imageUrl: this.cardImageUrl(card.ecard_image),
+      priceType: this.stringValue(card.ecard_pricetype),
+      availableValues: this.parseCardValues(card.ecard_price),
+      balanceLink: this.nullableString(card.ecard_balancelink),
+      description: this.nullableString(card.ecard_desc),
+      terms: this.nullableString(card.ecard_term),
+      deliveryFee: this.numberValue(card.delivery_fee) ?? 0,
+      featured:
+        featured === true ||
+        featured === 1 ||
+        String(featured).toLowerCase() === 'true' ||
+        String(featured) === '1',
+    };
+  }
+
+  private async getOrCreateActiveCart(
+    userId: string,
+  ): Promise<PerksCartDocument> {
+    const objectId = this.toObjectId(userId);
+    const existing = await this.cartModel.findOne({
+      userId: objectId,
+      status: {
+        $in: [PerksCartStatus.ACTIVE, PerksCartStatus.CHECKING_OUT],
+      },
+    });
+    if (existing) {
+      if (existing.status === PerksCartStatus.CHECKING_OUT) {
+        existing.status = PerksCartStatus.ACTIVE;
+        await existing.save();
+      }
+      return existing;
+    }
+    try {
+      return await this.cartModel.create({
+        userId: objectId,
+        status: PerksCartStatus.ACTIVE,
+        items: [],
+      });
+    } catch (error) {
+      if (!this.isDuplicateKey(error)) {
+        throw error;
+      }
+      const concurrent = await this.cartModel.findOne({
+        userId: objectId,
+        status: PerksCartStatus.ACTIVE,
+      });
+      if (!concurrent) {
+        throw new ConflictException('Could not create an active cart');
+      }
+      return concurrent;
+    }
+  }
+
+  private async releaseCartForRetry(cart: PerksCartDocument) {
+    cart.status = PerksCartStatus.ACTIVE;
+    await cart.save();
+  }
+
+  private cartResponse(cart: {
+    _id?: unknown;
+    status: PerksCartStatus;
+    items: Array<{
+      itemId: string;
+      ecardId: string;
+      quantity: number;
+      faceValueCents: number;
+      sendAsGift: boolean;
+      gift: Record<string, string> | null;
+    }>;
+    updatedAt?: Date;
+  }) {
+    return {
+      id: cart._id ? String(cart._id) : null,
+      status: cart.status,
+      items: cart.items.map((item) => ({
+        itemId: item.itemId,
+        ecardId: item.ecardId,
+        quantity: item.quantity,
+        ecardValue: this.currency(item.faceValueCents),
+        sendAsGift: item.sendAsGift,
+        gift: item.gift,
+      })),
+      updatedAt: cart.updatedAt ?? null,
+    };
+  }
+
+  private async buildCartQuote(cart: {
+    items: Array<{
+      itemId: string;
+      ecardId: string;
+      quantity: number;
+      faceValueCents: number;
+      sendAsGift: boolean;
+      gift: Record<string, string> | null;
+    }>;
+  }) {
+    const cards = await this.getCachedCatalogue();
+    const byId = new Map(cards.map((card) => [card.id, card]));
+    const items = cart.items.map((item) => {
+      const card = byId.get(item.ecardId);
+      if (!card) {
+        throw new UnprocessableEntityException(
+          `Card ${item.ecardId} is no longer available`,
+        );
+      }
+      this.assertCardValue(card, this.currency(item.faceValueCents));
+      return this.quoteLine(item, card);
+    });
+    return {
+      currency: 'AUD',
+      items,
+      totals: {
+        faceValueCents: items.reduce(
+          (sum, item) => sum + item.faceValueCents,
+          0,
+        ),
+        purchasePriceCents: items.reduce(
+          (sum, item) => sum + item.purchasePriceCents,
+          0,
+        ),
+        deliveryFeeCents: items.reduce(
+          (sum, item) => sum + item.deliveryFeeCents,
+          0,
+        ),
+        totalCents: items.reduce((sum, item) => sum + item.totalCents, 0),
+      },
+    };
+  }
+
+  private quoteLine(
+    item: {
+      itemId: string;
+      ecardId: string;
+      quantity: number;
+      faceValueCents: number;
+    },
+    card: CatalogueCard,
+  ) {
+    const unitPurchasePriceCents = Math.max(
+      0,
+      Math.round(
+        item.faceValueCents * (1 - Math.max(0, card.discountPercent) / 100),
+      ),
+    );
+    const deliveryFeeCents =
+      Math.round(Math.max(0, card.deliveryFee) * 100) * item.quantity;
+    return {
+      itemId: item.itemId,
+      ecardId: item.ecardId,
+      ecardName: card.name,
+      ecardImageUrl: card.imageUrl,
+      quantity: item.quantity,
+      discountBps: Math.round(card.discountPercent * 100),
+      faceValueCents: item.faceValueCents * item.quantity,
+      purchasePriceCents: unitPurchasePriceCents * item.quantity,
+      deliveryFeeCents,
+      totalCents: unitPurchasePriceCents * item.quantity + deliveryFeeCents,
+    };
+  }
+
+  private assertCardValue(card: CatalogueCard, value: number) {
+    if (
+      card.availableValues.length > 0 &&
+      !card.availableValues.some(
+        (available) => Math.round(available * 100) === Math.round(value * 100),
+      )
+    ) {
+      throw new UnprocessableEntityException(
+        `Value is not available for ${card.name}`,
+      );
+    }
+  }
+
+  private mapCartOrderPayload(
+    item: {
+      ecardId: string;
+      faceValueCents: number;
+      quantity: number;
+      sendAsGift: boolean;
+      gift: Record<string, string> | null;
+    },
+    orderReference: string,
+  ) {
+    return {
+      ecard_id: item.ecardId,
+      ecard_value: this.currency(item.faceValueCents),
+      ecard_qty: item.quantity,
+      order_reference: orderReference,
+      ecard_sendasgift: item.sendAsGift ? 1 : 0,
+      ...(item.sendAsGift
+        ? {
+            gift_templateid: item.gift?.templateId,
+            gift_recipient_name: item.gift?.recipientName,
+            gift_recipient_email: item.gift?.recipientEmail,
+          }
+        : {}),
+    };
+  }
+
+  private isIssuanceEnabled() {
+    const value = this.config.get<string | boolean>(
+      'PERKS_ORDER_ISSUANCE_ENABLED',
+      false,
+    );
+    return value === true || String(value).toLowerCase() === 'true';
+  }
+
+  private assertIssuanceEnabled() {
+    if (!this.isIssuanceEnabled()) {
+      throw new ServiceUnavailableException({
+        message: 'Perks order issuance is disabled',
+        code: 'PERKS_ORDER_ISSUANCE_DISABLED',
+      });
+    }
+  }
+
+  private profileMissingFields(user: Pick<User, 'name' | 'pincode'>) {
+    const nameParts = (user.name ?? '').trim().split(/\s+/).filter(Boolean);
     const postcode = (user.pincode ?? '').trim();
     const missingFields: string[] = [];
     if (nameParts.length < 2) {
       missingFields.push('name');
     }
-    if (!/^\d{4,}$/.test(postcode)) {
+    if (!/^\d{4}$/.test(postcode)) {
       missingFields.push('pincode');
     }
+    return missingFields;
+  }
+
+  private mapRegistration(user: User) {
+    const nameParts = user.name.trim().split(/\s+/).filter(Boolean);
+    const postcode = (user.pincode ?? '').trim();
+    const missingFields = this.profileMissingFields(user);
     if (missingFields.length > 0) {
       throw new UnprocessableEntityException({
         message: 'Complete your Saveful profile before using Perks',
@@ -454,14 +1372,46 @@ export class PerksService {
   }
 
   private mapWalletEntry(entry: Record<string, unknown>, gifted: boolean) {
+    const orderNumber = this.nullableString(entry.order_number);
+    const orderReference = this.nullableString(entry.order_reference);
+    const cardName = this.stringValue(entry.ecard_name);
+    const issuedAt =
+      this.nullableString(entry.ecard_issuedate) ??
+      this.nullableString(entry.card_senddate);
+    const cardKey = createHash('sha256')
+      .update(
+        [
+          gifted ? 'gifted' : 'owned',
+          orderNumber ?? '',
+          orderReference ?? '',
+          this.stringValue(entry.ecard_id),
+          cardName,
+          issuedAt ?? '',
+          this.stringValue(
+            entry.ecard_number ?? entry.card_number ?? entry.cardno,
+          ),
+        ].join('|'),
+      )
+      .digest('hex');
     return {
-      cardName: this.stringValue(entry.ecard_name),
+      cardKey,
+      gifted,
+      cardName,
       value: this.numberValue(entry.ecard_value),
-      issuedAt: this.nullableString(entry.ecard_issuedate),
+      issuedAt,
       expiresIn: this.nullableString(entry.ecard_expiry),
-      orderReference: this.nullableString(entry.order_reference),
-      orderNumber: this.nullableString(entry.order_number),
+      orderReference,
+      orderNumber,
       orderStatus: this.mapOrderStatus(entry.order_status),
+      cardUrl: this.nullableString(entry.cardurl ?? entry.card_url),
+      cardNumber: this.nullableString(
+        entry.ecard_number ?? entry.card_number ?? entry.cardno,
+      ),
+      pin: this.nullableString(
+        entry.ecard_pin ?? entry.card_pin ?? entry.cardpin,
+      ),
+      barcode: this.nullableString(entry.ecard_barcode ?? entry.barcode),
+      balance: this.numberValue(entry.ecard_balance ?? entry.card_balance),
       ...(gifted
         ? {
             recipientName: this.nullableString(entry.recipient_name),
@@ -471,6 +1421,12 @@ export class PerksService {
           }
         : {}),
     };
+  }
+
+  private validateCardKey(cardKey: string) {
+    if (!/^[a-f0-9]{64}$/.test(cardKey)) {
+      throw new BadRequestException('Invalid wallet card key');
+    }
   }
 
   private findCategory(value: string) {
@@ -570,6 +1526,29 @@ export class PerksService {
     status: PerksOrderStatus;
     cardUrl?: string | null;
     receiptUrl?: string | null;
+    currency?: string;
+    faceValueCents?: number;
+    purchasePriceCents?: number;
+    deliveryFeeCents?: number;
+    totalCents?: number;
+    completedAt?: Date | null;
+    lines?: Array<{
+      lineId: string;
+      ecardId: string;
+      ecardName: string;
+      ecardImageUrl?: string | null;
+      quantity: number;
+      discountBps: number;
+      faceValueCents: number;
+      purchasePriceCents: number;
+      deliveryFeeCents: number;
+      totalCents: number;
+      status: PerksOrderStatus;
+      orderReference: string;
+      wmadOrderNumber?: string | null;
+      cardUrl?: string | null;
+    }>;
+    createdAt?: Date;
   }) {
     return {
       orderReference: order.orderReference,
@@ -577,6 +1556,31 @@ export class PerksService {
       status: order.status,
       cardUrl: order.cardUrl ?? null,
       receiptUrl: order.receiptUrl ?? null,
+      currency: order.currency ?? 'AUD',
+      totals: {
+        faceValue: this.currency(order.faceValueCents ?? 0),
+        purchasePrice: this.currency(order.purchasePriceCents ?? 0),
+        deliveryFee: this.currency(order.deliveryFeeCents ?? 0),
+        total: this.currency(order.totalCents ?? 0),
+      },
+      lines: (order.lines ?? []).map((line) => ({
+        lineId: line.lineId,
+        ecardId: line.ecardId,
+        ecardName: line.ecardName,
+        ecardImageUrl: line.ecardImageUrl ?? null,
+        quantity: line.quantity,
+        discountPercent: line.discountBps / 100,
+        faceValue: this.currency(line.faceValueCents),
+        purchasePrice: this.currency(line.purchasePriceCents),
+        deliveryFee: this.currency(line.deliveryFeeCents),
+        total: this.currency(line.totalCents),
+        status: line.status,
+        orderReference: line.orderReference,
+        orderNumber: line.wmadOrderNumber ?? null,
+        cardUrl: line.cardUrl ?? null,
+      })),
+      createdAt: order.createdAt ?? null,
+      completedAt: order.completedAt ?? null,
     };
   }
 

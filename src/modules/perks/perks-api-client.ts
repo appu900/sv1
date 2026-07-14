@@ -252,12 +252,7 @@ export class PerksApiClient {
       );
     }
 
-    const parsedExpiry = Number(data.expire);
-    const expiresAt = Number.isFinite(parsedExpiry)
-      ? parsedExpiry > 1_000_000_000_000
-        ? parsedExpiry
-        : parsedExpiry * 1000
-      : Date.now() + 7 * 24 * 60 * 60 * 1000;
+    const expiresAt = this.resolveExpiry(data.expire);
     const token = { token: data.token, expiresAt };
     const ttlSeconds = Math.max(
       60,
@@ -266,6 +261,21 @@ export class PerksApiClient {
     await this.redis.set(this.tokenKey, token, ttlSeconds);
     this.logger.log('WMAD merchant token refreshed');
     return token;
+  }
+
+  private resolveExpiry(value: number | string | undefined): number {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return Date.now() + 7 * 24 * 60 * 60 * 1000;
+    }
+    if (parsed > 1_000_000_000_000) {
+      return parsed;
+    }
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    if (parsed > nowSeconds) {
+      return parsed * 1000;
+    }
+    return Date.now() + parsed * 1000;
   }
 
   private async fetchJson<T>(

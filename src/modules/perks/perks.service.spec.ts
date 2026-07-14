@@ -35,9 +35,40 @@ function createService(overrides: Record<string, unknown> = {}) {
     create: jest.fn(),
     find: jest.fn(),
   };
+  const favouriteModel = {
+    find: jest.fn(),
+    findOneAndUpdate: jest.fn(),
+    deleteOne: jest.fn(),
+    countDocuments: jest.fn(),
+  };
+  const cartModel = {
+    findOne: jest.fn(),
+    findOneAndUpdate: jest.fn(),
+    create: jest.fn(),
+  };
+  const walletMetadataModel = {
+    find: jest.fn(() => lean([])),
+    findOneAndUpdate: jest.fn(),
+  };
+  const calculatorProfileModel = {
+    findOne: jest.fn(),
+    findOneAndUpdate: jest.fn(),
+  };
+  const cache = new Map<string, unknown>();
+  const redis = {
+    get: jest.fn(async (key: string) => cache.get(key) ?? null),
+    set: jest.fn(async (key: string, value: unknown) => {
+      cache.set(key, value);
+    }),
+  };
+  const config = {
+    get: jest.fn((key: string, fallback: unknown) =>
+      key === 'PERKS_ORDER_ISSUANCE_ENABLED' ? 'true' : fallback,
+    ),
+  };
   const api = {
     registerUser: jest.fn(),
-    getEcards: jest.fn(),
+    getEcards: jest.fn().mockResolvedValue([]),
     getGiftOptions: jest.fn(),
     createOrder: jest.fn(),
     getOrderDetail: jest.fn(),
@@ -50,18 +81,36 @@ function createService(overrides: Record<string, unknown> = {}) {
   Object.assign(userModel, overrides.userModel);
   Object.assign(membershipModel, overrides.membershipModel);
   Object.assign(orderModel, overrides.orderModel);
+  Object.assign(favouriteModel, overrides.favouriteModel);
+  Object.assign(cartModel, overrides.cartModel);
+  Object.assign(walletMetadataModel, overrides.walletMetadataModel);
+  Object.assign(calculatorProfileModel, overrides.calculatorProfileModel);
+  Object.assign(redis, overrides.redis);
+  Object.assign(config, overrides.config);
 
   return {
     service: new PerksService(
       userModel as never,
       membershipModel as never,
       orderModel as never,
+      favouriteModel as never,
+      cartModel as never,
+      walletMetadataModel as never,
+      calculatorProfileModel as never,
       api as never,
+      redis as never,
+      config as never,
     ),
     userModel,
     membershipModel,
     orderModel,
+    favouriteModel,
+    cartModel,
+    walletMetadataModel,
+    calculatorProfileModel,
     api,
+    redis,
+    config,
   };
 }
 
@@ -109,9 +158,53 @@ describe('PerksService', () => {
       },
     });
 
+    try {
+      await service.ensureMembership(userId);
+      throw new Error('Expected profile validation to fail');
+    } catch (error) {
+      expect(error).toBeInstanceOf(UnprocessableEntityException);
+      expect((error as UnprocessableEntityException).getStatus()).toBe(422);
+      expect(
+        (error as UnprocessableEntityException).getResponse(),
+      ).toMatchObject({
+        missingFields: ['name', 'pincode'],
+      });
+    }
+  });
+
+  it('requires an exact four digit postcode', async () => {
+    const { service } = createService({
+      userModel: {
+        findById: jest.fn(() =>
+          lean({
+            _id: userId,
+            name: 'Long Postcode',
+            email: 'long@example.com',
+            pincode: '12345',
+          }),
+        ),
+      },
+    });
+
     await expect(service.ensureMembership(userId)).rejects.toBeInstanceOf(
       UnprocessableEntityException,
     );
+  });
+
+  it('reads membership status without registering or calling WMAD', async () => {
+    const { service, api } = createService({
+      membershipModel: {
+        findOne: jest.fn(() => lean(null)),
+      },
+    });
+
+    await expect(service.getMembershipStatus(userId)).resolves.toEqual({
+      wmadUserId: null,
+      status: 'not_registered',
+      registeredAt: null,
+      missingFields: [],
+    });
+    expect(api.registerUser).not.toHaveBeenCalled();
   });
 
   it('registers a Saveful user once and stores the WMAD identity', async () => {
@@ -256,6 +349,7 @@ describe('PerksService', () => {
       orderReference: 'SVREF',
       wmadOrderNumber: null,
       status: PerksOrderStatus.STARTED,
+      lines: [],
       lastErrorCode: null,
       lastErrorMessage: null,
       save: jest.fn(),
@@ -273,6 +367,14 @@ describe('PerksService', () => {
         create: jest.fn().mockResolvedValue(order),
       },
       api: {
+        getEcards: jest.fn().mockResolvedValue([
+          {
+            ecard_id: '340',
+            ecard_name: 'Test card',
+            ecard_price: '50',
+            discount: 5,
+          },
+        ]),
         createOrder: jest
           .fn()
           .mockRejectedValue(
@@ -290,6 +392,223 @@ describe('PerksService', () => {
     ).rejects.toMatchObject({ status: 503 });
     expect(order.status).toBe(PerksOrderStatus.UNKNOWN);
     expect(order.save).toHaveBeenCalled();
+  });
+
+  it('never calls WMAD when order issuance is disabled', async () => {
+    const { service, api } = createService({
+      config: {
+        get: jest.fn((key: string, fallback: unknown) =>
+          key === 'PERKS_ORDER_ISSUANCE_ENABLED' ? 'false' : fallback,
+        ),
+      },
+    });
+
+    await expect(
+      service.createOrder(userId, 'checkout_123', {
+        ecardId: '340',
+        ecardValue: 50,
+        quantity: 1,
+      }),
+    ).rejects.toMatchObject({ status: 503 });
+    expect(api.registerUser).not.toHaveBeenCalled();
+    expect(api.getEcards).not.toHaveBeenCalled();
+    expect(api.createOrder).not.toHaveBeenCalled();
+  });
+
+  it('returns a payment-required quote without WMAD calls when issuance is disabled', async () => {
+    const cart = {
+      status: 'active',
+      items: [
+        {
+          itemId: 'line-a',
+          ecardId: '340',
+          quantity: 2,
+          faceValueCents: 5000,
+          sendAsGift: false,
+          gift: null,
+        },
+      ],
+      save: jest.fn(),
+      toObject() {
+        return this;
+      },
+    };
+    const { service, api } = createService({
+      config: {
+        get: jest.fn((key: string, fallback: unknown) =>
+          key === 'PERKS_ORDER_ISSUANCE_ENABLED' ? 'false' : fallback,
+        ),
+      },
+      cartModel: {
+        findOne: jest.fn().mockResolvedValue(cart),
+      },
+      api: {
+        getEcards: jest.fn().mockResolvedValue([
+          {
+            ecard_id: '340',
+            ecard_name: 'Test card',
+            ecard_price: '50',
+            discount: 5,
+          },
+        ]),
+      },
+    });
+
+    await expect(
+      service.checkoutCart(userId, 'checkout_123'),
+    ).resolves.toMatchObject({
+      status: 'payment_required',
+      issuanceEnabled: false,
+      quote: {
+        totals: {
+          faceValueCents: 10000,
+          purchasePriceCents: 9500,
+          totalCents: 9500,
+        },
+      },
+    });
+    expect(api.registerUser).not.toHaveBeenCalled();
+    expect(api.createOrder).not.toHaveBeenCalled();
+    expect(cart.status).toBe('active');
+  });
+
+  it('persists and issues checkout lines one at a time', async () => {
+    const cart = {
+      _id: new Types.ObjectId(),
+      status: 'active',
+      checkoutIdempotencyKey: null,
+      orderId: null,
+      checkedOutAt: null,
+      items: [
+        {
+          itemId: 'line-a',
+          ecardId: '340',
+          quantity: 1,
+          faceValueCents: 5000,
+          sendAsGift: false,
+          gift: null,
+        },
+        {
+          itemId: 'line-b',
+          ecardId: '341',
+          quantity: 2,
+          faceValueCents: 2500,
+          sendAsGift: false,
+          gift: null,
+        },
+      ],
+      save: jest.fn(),
+      toObject() {
+        return this;
+      },
+    };
+    let order: Record<string, any>;
+    const { service, api } = createService({
+      membershipModel: {
+        findOne: jest.fn(() =>
+          lean({
+            wmadUserId: '1',
+            status: PerksMembershipStatus.ACTIVE,
+          }),
+        ),
+      },
+      cartModel: {
+        findOneAndUpdate: jest.fn().mockResolvedValue(cart),
+      },
+      orderModel: {
+        findOne: jest.fn().mockResolvedValue(null),
+        create: jest.fn(async (payload: Record<string, unknown>) => {
+          order = {
+            ...payload,
+            _id: new Types.ObjectId(),
+            lastErrorCode: null,
+            lastErrorMessage: null,
+            completedAt: null,
+            save: jest.fn(),
+            toObject() {
+              return this;
+            },
+          };
+          return order;
+        }),
+      },
+      api: {
+        getEcards: jest.fn().mockResolvedValue([
+          {
+            ecard_id: '340',
+            ecard_name: 'Card A',
+            ecard_price: '50',
+            discount: 5,
+          },
+          {
+            ecard_id: '341',
+            ecard_name: 'Card B',
+            ecard_price: '25',
+            discount: 10,
+          },
+        ]),
+        createOrder: jest
+          .fn()
+          .mockResolvedValueOnce({
+            order_number: '1001',
+            order_status: 2,
+          })
+          .mockResolvedValueOnce({
+            order_number: '1002',
+            order_status: 2,
+          }),
+      },
+    });
+
+    await expect(
+      service.checkoutCart(userId, 'checkout_lines_123'),
+    ).resolves.toMatchObject({
+      status: PerksOrderStatus.COMPLETED,
+      lines: [
+        { orderNumber: '1001', status: PerksOrderStatus.COMPLETED },
+        { orderNumber: '1002', status: PerksOrderStatus.COMPLETED },
+      ],
+    });
+    expect(api.createOrder).toHaveBeenCalledTimes(2);
+    expect(order!.save).toHaveBeenCalledTimes(3);
+    expect(cart.status).toBe('checked_out');
+  });
+
+  it('caches and filters the normalized catalogue', async () => {
+    const { service, api, redis } = createService({
+      api: {
+        getEcards: jest.fn().mockResolvedValue([
+          {
+            ecard_id: '1',
+            ecard_name: 'Grocer',
+            ecard_category: 'Groceries',
+            ecard_price: '25,50',
+            discount: '4.5',
+            ecard_featured: '1',
+          },
+          {
+            ecard_id: '2',
+            ecard_name: 'Travel',
+            ecard_category: 'Travel',
+            ecard_price: '100',
+            discount: '10',
+          },
+        ]),
+      },
+    });
+
+    await expect(
+      service.getCatalogue({ q: 'gro', featured: true }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        id: '1',
+        category: 'Groceries',
+        discountPercent: 4.5,
+      }),
+    ]);
+    await service.getCatalogue({});
+    expect(api.getEcards).toHaveBeenCalledTimes(1);
+    expect(redis.set).toHaveBeenCalled();
   });
 
   it('filters the merchant wallet to the current Saveful user orders', async () => {
@@ -320,6 +639,7 @@ describe('PerksService', () => {
             ecard_name: 'Owned card',
             order_number: '123',
             order_reference: 'SVOWNED',
+            card_senddate: '2026-07-01',
           },
           {
             ecard_name: 'Another user card',
@@ -334,7 +654,422 @@ describe('PerksService', () => {
       expect.objectContaining({
         cardName: 'Owned card',
         orderNumber: '123',
+        issuedAt: '2026-07-01',
       }),
     ]);
+  });
+
+  it('reports current profile gaps without registering membership', async () => {
+    const { service, membershipModel, api } = createService({
+      userModel: {
+        findById: jest.fn(() =>
+          lean({
+            _id: userId,
+            name: 'Cher',
+            email: 'cher@example.com',
+            pincode: '12345',
+          }),
+        ),
+      },
+    });
+
+    await expect(service.getMembershipStatus(userId)).resolves.toMatchObject({
+      status: 'not_registered',
+      missingFields: ['name', 'pincode'],
+    });
+    expect(membershipModel.findOneAndUpdate).not.toHaveBeenCalled();
+    expect(api.registerUser).not.toHaveBeenCalled();
+  });
+
+  it('uses cart cents math for single-line quote rounding', async () => {
+    const { service } = createService({
+      api: {
+        getEcards: jest.fn().mockResolvedValue([
+          {
+            ecard_id: '340',
+            ecard_name: 'Rounded card',
+            ecard_price: '19.99',
+            discount: 4.55,
+            delivery_fee: 0.1,
+          },
+        ]),
+      },
+    });
+
+    await expect(
+      service.quote({ ecardId: '340', ecardValue: 19.99, quantity: 3 }),
+    ).resolves.toMatchObject({
+      currency: 'AUD',
+      items: [
+        {
+          itemId: 'preview',
+          faceValueCents: 5997,
+          purchasePriceCents: 5724,
+          deliveryFeeCents: 30,
+          totalCents: 5754,
+        },
+      ],
+      totals: {
+        faceValueCents: 5997,
+        purchasePriceCents: 5724,
+        deliveryFeeCents: 30,
+        totalCents: 5754,
+      },
+    });
+  });
+
+  it('releases a failed partial checkout and resumes only unissued lines', async () => {
+    const cart = {
+      _id: new Types.ObjectId(),
+      status: 'active',
+      checkoutIdempotencyKey: null as string | null,
+      orderId: null,
+      checkedOutAt: null,
+      items: [
+        {
+          itemId: 'line-a',
+          ecardId: '340',
+          quantity: 1,
+          faceValueCents: 5000,
+          sendAsGift: false,
+          gift: null,
+        },
+        {
+          itemId: 'line-b',
+          ecardId: '341',
+          quantity: 1,
+          faceValueCents: 2500,
+          sendAsGift: false,
+          gift: null,
+        },
+      ],
+      save: jest.fn(),
+      toObject() {
+        return this;
+      },
+    };
+    let order: Record<string, any> | null = null;
+    const { service, api } = createService({
+      membershipModel: {
+        findOne: jest.fn(() =>
+          lean({
+            wmadUserId: '1',
+            status: PerksMembershipStatus.ACTIVE,
+          }),
+        ),
+      },
+      cartModel: {
+        findOneAndUpdate: jest.fn(async () => {
+          cart.status = 'checking_out';
+          cart.checkoutIdempotencyKey = 'resume_checkout';
+          return cart;
+        }),
+      },
+      orderModel: {
+        findOne: jest.fn(async () => order),
+        create: jest.fn(async (payload: Record<string, unknown>) => {
+          order = {
+            ...payload,
+            save: jest.fn(),
+            toObject() {
+              return this;
+            },
+          };
+          return order;
+        }),
+      },
+      api: {
+        getEcards: jest.fn().mockResolvedValue([
+          {
+            ecard_id: '340',
+            ecard_name: 'Card A',
+            ecard_price: '50',
+            discount: 5,
+          },
+          {
+            ecard_id: '341',
+            ecard_name: 'Card B',
+            ecard_price: '25',
+            discount: 5,
+          },
+        ]),
+        createOrder: jest
+          .fn()
+          .mockResolvedValueOnce({ order_number: '1001', order_status: 2 })
+          .mockRejectedValueOnce(
+            new PerksApiError('declined', 400, 'DECLINED', false, false),
+          )
+          .mockResolvedValueOnce({ order_number: '1002', order_status: 2 }),
+      },
+    });
+
+    await expect(
+      service.checkoutCart(userId, 'resume_checkout'),
+    ).rejects.toMatchObject({ status: 400 });
+    expect(cart.status).toBe('active');
+
+    await expect(
+      service.checkoutCart(userId, 'resume_checkout'),
+    ).resolves.toMatchObject({
+      status: PerksOrderStatus.COMPLETED,
+      lines: [{ orderNumber: '1001' }, { orderNumber: '1002' }],
+    });
+    expect(api.createOrder).toHaveBeenCalledTimes(3);
+    expect(cart.status).toBe('checked_out');
+  });
+
+  it('recovers an ambiguous cart for reading but never replays its line', async () => {
+    const cart = {
+      _id: new Types.ObjectId(),
+      status: 'active',
+      checkoutIdempotencyKey: null as string | null,
+      orderId: null,
+      checkedOutAt: null,
+      items: [
+        {
+          itemId: 'line-a',
+          ecardId: '340',
+          quantity: 1,
+          faceValueCents: 5000,
+          sendAsGift: false,
+          gift: null,
+        },
+      ],
+      save: jest.fn(),
+      toObject() {
+        return this;
+      },
+    };
+    let order: Record<string, any> | null = null;
+    const { service, api } = createService({
+      membershipModel: {
+        findOne: jest.fn(() =>
+          lean({
+            wmadUserId: '1',
+            status: PerksMembershipStatus.ACTIVE,
+          }),
+        ),
+      },
+      cartModel: {
+        findOneAndUpdate: jest.fn(async () => {
+          cart.status = 'checking_out';
+          cart.checkoutIdempotencyKey = 'ambiguous_checkout';
+          return cart;
+        }),
+        findOne: jest.fn().mockResolvedValue(cart),
+      },
+      orderModel: {
+        findOne: jest.fn(async () => order),
+        create: jest.fn(async (payload: Record<string, unknown>) => {
+          order = {
+            ...payload,
+            save: jest.fn(),
+            toObject() {
+              return this;
+            },
+          };
+          return order;
+        }),
+      },
+      api: {
+        getEcards: jest.fn().mockResolvedValue([
+          {
+            ecard_id: '340',
+            ecard_name: 'Card A',
+            ecard_price: '50',
+            discount: 5,
+          },
+        ]),
+        createOrder: jest
+          .fn()
+          .mockRejectedValue(
+            new PerksApiError('timed out', 503, 'TIMEOUT', true, true),
+          ),
+      },
+    });
+
+    await expect(
+      service.checkoutCart(userId, 'ambiguous_checkout'),
+    ).rejects.toMatchObject({ status: 503 });
+    expect(cart.status).toBe('active');
+    await expect(service.getCart(userId)).resolves.toMatchObject({
+      status: 'active',
+    });
+    await expect(
+      service.checkoutCart(userId, 'ambiguous_checkout'),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(api.createOrder).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovers a checking-out cart and preserves one-active-cart concurrency', async () => {
+    const recovered = {
+      _id: new Types.ObjectId(),
+      status: 'checking_out',
+      items: [],
+      save: jest.fn(),
+      toObject() {
+        return this;
+      },
+    };
+    const { service } = createService({
+      cartModel: {
+        findOne: jest.fn().mockResolvedValue(recovered),
+      },
+    });
+
+    await expect(service.getCart(userId)).resolves.toMatchObject({
+      status: 'active',
+    });
+    expect(recovered.save).toHaveBeenCalled();
+
+    const concurrent = {
+      ...recovered,
+      status: 'active',
+      save: jest.fn(),
+    };
+    const concurrentService = createService({
+      cartModel: {
+        findOne: jest
+          .fn()
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce(concurrent),
+        create: jest.fn().mockRejectedValue({ code: 11000 }),
+      },
+    }).service;
+    await expect(concurrentService.getCart(userId)).resolves.toMatchObject({
+      status: 'active',
+    });
+  });
+
+  it('verifies wallet ownership before archive or hide metadata writes', async () => {
+    const ownedKey = 'a'.repeat(64);
+    const otherKey = 'b'.repeat(64);
+    const otherUserId = new Types.ObjectId().toString();
+    const { service, walletMetadataModel } = createService();
+    jest
+      .spyOn(service, 'getWallet')
+      .mockImplementation(async (requestedUserId: string) =>
+        requestedUserId === userId
+          ? ([{ cardKey: ownedKey }] as Awaited<
+              ReturnType<PerksService['getWallet']>
+            >)
+          : [],
+      );
+
+    await expect(
+      service.setWalletArchived(userId, ownedKey, true),
+    ).resolves.toEqual({ cardKey: ownedKey, archived: true });
+    await expect(
+      service.hideWalletCard(userId, otherKey),
+    ).rejects.toMatchObject({ status: 404 });
+    await expect(
+      service.setWalletArchived(otherUserId, ownedKey, false),
+    ).rejects.toMatchObject({ status: 404 });
+    expect(walletMetadataModel.findOneAndUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it('persists calculator results for the authenticated user', async () => {
+    const calculatedAt = expect.any(Date);
+    const { service, calculatorProfileModel } = createService({
+      calculatorProfileModel: {
+        findOneAndUpdate: jest.fn().mockResolvedValue(null),
+      },
+    });
+    await expect(
+      service.calculateAndSave(userId, {
+        items: [
+          {
+            category: 'groceries',
+            amount: 10,
+            frequency: PerksSpendFrequency.WEEKLY,
+          },
+        ],
+      }),
+    ).resolves.toMatchObject({ calculatedAt });
+    expect(calculatorProfileModel.findOneAndUpdate).toHaveBeenCalledWith(
+      { userId: expect.any(Types.ObjectId) },
+      expect.objectContaining({
+        $set: expect.objectContaining({ calculatedAt: expect.any(Date) }),
+      }),
+      { upsert: true },
+    );
+  });
+
+  it('returns dashboard counts, cart totals, recent orders, and calculator data', async () => {
+    const { service } = createService({
+      membershipModel: {
+        findOne: jest.fn(() =>
+          lean({
+            wmadUserId: '1',
+            status: PerksMembershipStatus.ACTIVE,
+            registeredAt: new Date('2026-07-01'),
+          }),
+        ),
+      },
+      favouriteModel: {
+        countDocuments: jest.fn().mockResolvedValue(3),
+      },
+      cartModel: {
+        findOne: jest.fn(() =>
+          lean({
+            _id: new Types.ObjectId(),
+            status: 'active',
+            items: [
+              {
+                itemId: 'line-a',
+                ecardId: '340',
+                quantity: 2,
+                faceValueCents: 5000,
+                sendAsGift: false,
+                gift: null,
+              },
+            ],
+          }),
+        ),
+      },
+      orderModel: {
+        find: jest.fn(() => ({
+          sort: jest.fn(() => ({
+            limit: jest.fn(() =>
+              lean([
+                {
+                  orderReference: 'SVRECENT',
+                  status: PerksOrderStatus.COMPLETED,
+                  faceValueCents: 5000,
+                  purchasePriceCents: 4750,
+                  deliveryFeeCents: 0,
+                  totalCents: 4750,
+                },
+              ]),
+            ),
+          })),
+        })),
+      },
+      calculatorProfileModel: {
+        findOne: jest.fn(() =>
+          lean({
+            inputs: [{ category: 'groceries' }],
+            result: { totals: { annual: 234 } },
+            calculatedAt: new Date('2026-07-02'),
+          }),
+        ),
+      },
+    });
+
+    await expect(service.getDashboard(userId)).resolves.toMatchObject({
+      membership: { status: PerksMembershipStatus.ACTIVE },
+      favouriteCount: 3,
+      cart: {
+        status: 'active',
+        items: [{ quantity: 2, ecardValue: 50 }],
+      },
+      recentOrders: [
+        {
+          orderReference: 'SVRECENT',
+          totals: { faceValue: 50, purchasePrice: 47.5, total: 47.5 },
+        },
+      ],
+      latestCalculator: { result: { totals: { annual: 234 } } },
+    });
   });
 });
