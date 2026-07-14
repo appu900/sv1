@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
+import { randomUUID } from 'crypto';
 import { Recipe, RecipeDocument } from '../../database/schemas/recipe.schema';
 import { FrameworkCategory, FrameworkCategoryDocument } from '../../database/schemas/framework-category.schema';
 import { Ingredient, IngredientDocument } from '../../database/schemas/ingredient.schema';
@@ -16,12 +17,31 @@ import { RedisService } from '../../redis/redis.service';
 import { ImageUploadService } from '../image-upload/image-upload.service';
 import { normalizeCountry } from '../../utils/countries.util';
 
+export interface RecipeSummary {
+  _id: string;
+  title: string;
+  heroImageUrl?: string;
+  order: number;
+  frameworkCategoryIds: string[];
+  variantTags: string[];
+  sticker?: {
+    id: string;
+    imageUrl: string;
+  };
+  unsubstitutableIngredientIds: string[];
+}
+
 @Injectable()
 export class RecipeService implements OnModuleInit {
   private readonly CACHE_TTL = 1200; // 20 minutes
   private readonly CACHE_KEY_ALL = 'recipes:all';
   private readonly CACHE_KEY_SINGLE = 'recipes:single';
   private readonly CACHE_KEY_CATEGORY = 'recipes:category';
+  private readonly CACHE_KEY_SUMMARIES = 'recipes:summaries:v1';
+  private readonly summaryRefreshes = new Map<
+    string,
+    Promise<RecipeSummary[]>
+  >();
 
   constructor(
     @InjectModel(Recipe.name) private recipeModel: Model<RecipeDocument>,
@@ -241,6 +261,7 @@ export class RecipeService implements OnModuleInit {
       await this.redisService.del(this.CACHE_KEY_ALL);
       await this.redisService.delByPattern(`${this.CACHE_KEY_ALL}:country:*`);
       await this.redisService.delByPattern(`${this.CACHE_KEY_CATEGORY}:*:country:*`);
+      await this.invalidateRecipeSummaryCaches();
       // Also clear per-category caches for affected framework categories
       try {
         for (const catId of recipeData.frameworkCategories || []) {
@@ -260,8 +281,208 @@ export class RecipeService implements OnModuleInit {
     }
   }
 
- 
- 
+  async findSummaries(country?: string): Promise<RecipeSummary[]> {
+    const normalizedCountry = normalizeCountry(country);
+    const cacheKey = normalizedCountry
+      ? `${this.CACHE_KEY_SUMMARIES}:country:${normalizedCountry.toLowerCase()}`
+      : this.CACHE_KEY_SUMMARIES;
+
+    try {
+      const cached =
+        await this.redisService.get<RecipeSummary[]>(cacheKey);
+      if (cached) {
+        return cached;
+      }
+    } catch {
+      // Redis is an optimization. Keep the Make page available without it.
+    }
+
+    const activeRefresh = this.summaryRefreshes.get(cacheKey);
+    if (activeRefresh) {
+      return activeRefresh;
+    }
+
+    const refresh = this.refreshRecipeSummaries(cacheKey, normalizedCountry);
+    this.summaryRefreshes.set(cacheKey, refresh);
+    try {
+      return await refresh;
+    } finally {
+      if (this.summaryRefreshes.get(cacheKey) === refresh) {
+        this.summaryRefreshes.delete(cacheKey);
+      }
+    }
+  }
+
+  private async refreshRecipeSummaries(
+    cacheKey: string,
+    country?: string,
+  ): Promise<RecipeSummary[]> {
+    const lockKey = `${cacheKey}:lock`;
+    const lockToken = randomUUID();
+    const lockTtlSeconds = 15;
+    let hasLock = false;
+
+    try {
+      hasLock = await this.redisService.setIfAbsent(
+        lockKey,
+        lockToken,
+        lockTtlSeconds,
+      );
+    } catch {
+      return this.loadAndCacheRecipeSummaries(cacheKey, country);
+    }
+
+    if (!hasLock) {
+      const deadline = Date.now() + 16_000;
+      while (Date.now() < deadline) {
+        await this.delay(250);
+        try {
+          const cached =
+            await this.redisService.get<RecipeSummary[]>(cacheKey);
+          if (cached) {
+            return cached;
+          }
+          hasLock = await this.redisService.setIfAbsent(
+            lockKey,
+            lockToken,
+            lockTtlSeconds,
+          );
+          if (hasLock) {
+            break;
+          }
+        } catch {
+          return this.loadAndCacheRecipeSummaries(cacheKey, country);
+        }
+      }
+    }
+
+    try {
+      return await this.loadAndCacheRecipeSummaries(cacheKey, country);
+    } finally {
+      if (hasLock) {
+        try {
+          await this.redisService.releaseLock(lockKey, lockToken);
+        } catch {
+          // The lock expires automatically if Redis cannot release it.
+        }
+      }
+    }
+  }
+
+  private async loadAndCacheRecipeSummaries(
+    cacheKey: string,
+    country?: string,
+  ): Promise<RecipeSummary[]> {
+    const matchQuery: Record<string, unknown> = { isActive: true };
+    if (country) {
+      matchQuery.countries = country;
+    }
+
+    try {
+      const recipes = await this.recipeModel
+        .find(matchQuery)
+        .select(
+          '_id title heroImageUrl order frameworkCategories ' +
+            'stickerId components.variantTags ' +
+            'components.component.requiredIngredients.recommendedIngredient ' +
+            'components.component.requiredIngredients.alternativeIngredients.ingredient',
+        )
+        .populate('stickerId', 'imageUrl')
+        .sort({ order: 1 })
+        .lean()
+        .exec();
+      const summaries = recipes.map((recipe) =>
+        this.mapRecipeSummary(recipe),
+      );
+
+      try {
+        await this.redisService.set(cacheKey, summaries, this.CACHE_TTL);
+      } catch {
+        // A cache write must not hide a successful database response.
+      }
+      return summaries;
+    } catch (error) {
+      throw new BadRequestException(
+        `Failed to fetch recipe summaries: ${error.message}`,
+      );
+    }
+  }
+
+  private mapRecipeSummary(recipe: any): RecipeSummary {
+    const categoryIds: string[] = (recipe.frameworkCategories || [])
+      .map((value: unknown) => this.summaryId(value))
+      .filter((value: string) => Boolean(value));
+    const variantTags = new Set<string>();
+    const unsubstitutableIngredientIds = new Set<string>();
+
+    for (const wrapper of recipe.components || []) {
+      for (const tag of wrapper.variantTags || []) {
+        if (typeof tag === 'string' && tag.trim()) {
+          variantTags.add(tag.trim());
+        }
+      }
+      for (const component of wrapper.component || []) {
+        for (const required of component.requiredIngredients || []) {
+          if ((required.alternativeIngredients || []).length === 0) {
+            const ingredientId = this.summaryId(
+              required.recommendedIngredient,
+            );
+            if (ingredientId) {
+              unsubstitutableIngredientIds.add(ingredientId);
+            }
+          }
+        }
+      }
+    }
+
+    const stickerId = this.summaryId(recipe.stickerId);
+    const stickerImage =
+      recipe.stickerId &&
+      typeof recipe.stickerId === 'object' &&
+      typeof recipe.stickerId.imageUrl === 'string'
+        ? recipe.stickerId.imageUrl
+        : '';
+
+    return {
+      _id: this.summaryId(recipe._id),
+      title: typeof recipe.title === 'string' ? recipe.title : '',
+      ...(typeof recipe.heroImageUrl === 'string' && recipe.heroImageUrl
+        ? { heroImageUrl: recipe.heroImageUrl }
+        : {}),
+      order: Number.isFinite(recipe.order) ? recipe.order : 0,
+      frameworkCategoryIds: [...new Set(categoryIds)],
+      variantTags: [...variantTags],
+      ...(stickerId && stickerImage
+        ? { sticker: { id: stickerId, imageUrl: stickerImage } }
+        : {}),
+      unsubstitutableIngredientIds: [...unsubstitutableIngredientIds],
+    };
+  }
+
+  private summaryId(value: any): string {
+    if (!value) return '';
+    if (typeof value === 'string') return value;
+    if (value._id) return this.summaryId(value._id);
+    if (value.$oid) return String(value.$oid);
+    const result = String(value);
+    return result === '[object Object]' ? '' : result;
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private async invalidateRecipeSummaryCaches(): Promise<void> {
+    try {
+      await this.redisService.delByPattern(`${this.CACHE_KEY_SUMMARIES}*`);
+    } catch (error) {
+      console.warn(
+        'Failed clearing recipe summary caches:',
+        error?.message,
+      );
+    }
+  }
+
   async findAll(country?: string): Promise<Recipe[]> {
     // Normalize ISO code (e.g. 'IN') → full name (e.g. 'India') to match DB values.
     country = normalizeCountry(country);
@@ -720,6 +941,7 @@ export class RecipeService implements OnModuleInit {
       await this.redisService.del(`${this.CACHE_KEY_SINGLE}:${id}`);
       await this.redisService.delByPattern(`${this.CACHE_KEY_ALL}:country:*`);
       await this.redisService.delByPattern(`${this.CACHE_KEY_CATEGORY}:*:country:*`);
+      await this.invalidateRecipeSummaryCaches();
 
       try {
         const prevCats = existingRecipe.frameworkCategories || [];
@@ -767,6 +989,7 @@ export class RecipeService implements OnModuleInit {
     await this.redisService.del(`${this.CACHE_KEY_SINGLE}:${id}`);
     await this.redisService.delByPattern(`${this.CACHE_KEY_ALL}:country:*`);
     await this.redisService.delByPattern(`${this.CACHE_KEY_CATEGORY}:*:country:*`);
+    await this.invalidateRecipeSummaryCaches();
 
     if (recipe.frameworkCategories) {
       for (const catId of recipe.frameworkCategories) {

@@ -169,6 +169,11 @@ export class RecipeController {
     return this.recipeService.findAll(country);
   }
 
+  @Get('summaries')
+  async findSummaries(@Query('country') country?: string) {
+    return this.recipeService.findSummaries(country);
+  }
+
   @Get('category/:categoryId')
   async findByCategory(
     @Param('categoryId') categoryId: string,

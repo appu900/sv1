@@ -1,20 +1,23 @@
-import { Test, TestingModule } from '@nestjs/testing';
 import { RecipeController } from './recipe.controller';
-import { RecipeService } from './recipe.service';
 
 describe('RecipeController', () => {
-  let controller: RecipeController;
+  it('routes summary requests without changing the full list endpoint', async () => {
+    const recipeService = {
+      findAll: jest.fn().mockResolvedValue([{ full: true }]),
+      findSummaries: jest.fn().mockResolvedValue([{ _id: 'recipe-1' }]),
+    };
+    const controller = new RecipeController(
+      recipeService as never,
+      {} as never,
+    );
 
-  beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
-      controllers: [RecipeController],
-      providers: [RecipeService],
-    }).compile();
-
-    controller = module.get<RecipeController>(RecipeController);
-  });
-
-  it('should be defined', () => {
-    expect(controller).toBeDefined();
+    await expect(controller.findSummaries('AU')).resolves.toEqual([
+      { _id: 'recipe-1' },
+    ]);
+    await expect(controller.findAll('AU')).resolves.toEqual([
+      { full: true },
+    ]);
+    expect(recipeService.findSummaries).toHaveBeenCalledWith('AU');
+    expect(recipeService.findAll).toHaveBeenCalledWith('AU');
   });
 });
