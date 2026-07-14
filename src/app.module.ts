@@ -42,6 +42,7 @@ import { UserEventsModule } from './modules/user-events/user-events.module';
 import { AIInteractionModule } from './modules/ai-interaction/ai-interaction.module';
 import { SubscriptionModule } from './modules/subscription/subscription.module';
 import { DeeplinkModule } from './modules/deeplink/deeplink.module';
+import { PerksModule } from './modules/perks/perks.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
@@ -118,6 +119,7 @@ import { DeeplinkModule } from './modules/deeplink/deeplink.module';
     AIInteractionModule,
     SubscriptionModule,
     DeeplinkModule,
+    PerksModule,
   ],
   controllers: [AppController],
   providers: [AppService],

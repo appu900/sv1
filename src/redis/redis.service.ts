@@ -82,6 +82,32 @@ async expire(key: string, ttlSeconds: number) {
   async del(key: string) {
     await this.client.del(key);
   }
+
+  async setIfAbsent(
+    key: string,
+    value: string,
+    ttlSeconds: number,
+  ): Promise<boolean> {
+    const result = await this.client.set(
+      key,
+      value,
+      'EX',
+      ttlSeconds,
+      'NX',
+    );
+    return result === 'OK';
+  }
+
+  async releaseLock(key: string, value: string): Promise<boolean> {
+    const result = await this.client.eval(
+      'if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end',
+      1,
+      key,
+      value,
+    );
+    return Number(result) === 1;
+  }
+
   async incr(key: string): Promise<number> {
     return this.client.incr(key);
   }

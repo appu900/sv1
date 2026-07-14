@@ -1,8 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document, Types } from 'mongoose';
 
-// ─── Enums ──────────────────────────────────────────────────────────────────
-
 export enum TokenPlatform {
   IOS = 'ios',
   ANDROID = 'android',
@@ -19,14 +17,11 @@ export enum TokenMode {
   DEV = 'dev',
 }
 
-// ─── Schema ─────────────────────────────────────────────────────────────────
-
 @Schema({ timestamps: true })
 export class DeviceToken {
   @Prop({ required: true, type: Types.ObjectId, ref: 'User', index: true })
   userId: Types.ObjectId;
 
-  /** The native APNs/FCM token string (unique per device) */
   @Prop({ required: true, unique: true })
   token: string;
 
@@ -48,11 +43,9 @@ export class DeviceToken {
   @Prop()
   appBundle?: string;
 
-  /** false = token is dead (unregistered / 3 consecutive failures) */
   @Prop({ default: true, index: true })
   isActive: boolean;
 
-  /** Consecutive delivery failures — deactivated after reaching 3 */
   @Prop({ default: 0 })
   failureCount: number;
 
@@ -62,7 +55,6 @@ export class DeviceToken {
   @Prop()
   lastFailureAt?: Date;
 
-  /** Why the token was deactivated (e.g. 'unregistered', 'invalid_token') */
   @Prop()
   deactivationReason?: string;
 }
@@ -70,10 +62,8 @@ export class DeviceToken {
 export type DeviceTokenDocument = DeviceToken & Document;
 export const DeviceTokenSchema = SchemaFactory.createForClass(DeviceToken);
 
-// Fast lookup: all active tokens for a user
 DeviceTokenSchema.index({ userId: 1, isActive: 1 });
 
-// Auto-cleanup: deactivated tokens are removed after 90 days
 DeviceTokenSchema.index(
   { lastFailureAt: 1 },
   {
