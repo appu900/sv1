@@ -62,29 +62,42 @@ import {
 export const PERKS_CATEGORIES = [
   { key: 'groceries', name: 'Groceries', discountBps: 450 },
   { key: 'fuel', name: 'Fuel', discountBps: 200 },
-  { key: 'beer-wine', name: 'Beer & Wine', discountBps: 500 },
-  { key: 'bags-jewellery', name: 'Bags & Jewellery', discountBps: 500 },
-  { key: 'books-magazines', name: 'Books & Magazines', discountBps: 500 },
-  { key: 'clothes-fashion', name: 'Clothes & Fashion', discountBps: 500 },
-  { key: 'department-stores', name: 'Department Stores', discountBps: 500 },
   {
-    key: 'electronics-whitegoods',
-    name: 'Electronics & Whitegoods',
-    discountBps: 400,
-  },
-  { key: 'entertainment', name: 'Entertainment', discountBps: 500 },
-  {
-    key: 'fashion-accessories',
-    name: 'Fashion Accessories',
+    key: 'pharmacy',
+    name: 'Pharmacy, Health & Beauty',
     discountBps: 500,
   },
-  { key: 'transport', name: 'Transport', discountBps: 200 },
-  { key: 'travel', name: 'Travel', discountBps: 1000 },
-  { key: 'officeworks', name: 'Officeworks', discountBps: 500 },
-  { key: 'toys-games', name: 'Toys & Games', discountBps: 500 },
-  { key: 'eats-drinks', name: 'Eats & Drinks', discountBps: 500 },
-  { key: 'hardware', name: 'Hardware', discountBps: 500 },
+  { key: 'dining', name: 'Dining out', discountBps: 500 },
+  { key: 'entertainment', name: 'Entertainment', discountBps: 500 },
+  { key: 'fashion', name: 'Clothes & Fashion', discountBps: 500 },
+  { key: 'hardware', name: 'Hardware & auto', discountBps: 500 },
+  { key: 'beer-wine', name: 'Beer & Wine', discountBps: 500 },
+  { key: 'travel', name: 'Travel & Accommodation', discountBps: 1000 },
 ] as const;
+
+/** Older calculator keys that still resolve to the canonical set. */
+const PERKS_CATEGORY_ALIASES: Record<string, string> = {
+  grocery: 'groceries',
+  petrol: 'fuel',
+  health: 'pharmacy',
+  beauty: 'pharmacy',
+  'health-beauty': 'pharmacy',
+  'pharmacy-health-beauty': 'pharmacy',
+  'dining-out': 'dining',
+  restaurant: 'dining',
+  'eats-drinks': 'dining',
+  eats: 'dining',
+  clothes: 'fashion',
+  'clothes-fashion': 'fashion',
+  'hardware-auto': 'hardware',
+  auto: 'hardware',
+  home: 'hardware',
+  beer: 'beer-wine',
+  wine: 'beer-wine',
+  alcohol: 'beer-wine',
+  accommodation: 'travel',
+  'travel-accommodation': 'travel',
+};
 
 export interface CatalogueCard {
   id: string;
@@ -1615,9 +1628,12 @@ export class PerksService {
 
   private findCategory(value: string) {
     const normalized = value.trim().toLowerCase();
+    const aliased = PERKS_CATEGORY_ALIASES[normalized] ?? normalized;
     const category = PERKS_CATEGORIES.find(
       (item) =>
-        item.key === normalized || item.name.toLowerCase() === normalized,
+        item.key === aliased ||
+        item.key === normalized ||
+        item.name.toLowerCase() === normalized,
     );
     if (!category) {
       throw new BadRequestException(`Unknown Perks category: ${value}`);

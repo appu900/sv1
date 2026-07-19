@@ -159,6 +159,48 @@ describe('PerksService', () => {
     });
   });
 
+  it('accepts the savings-calculator category keys and legacy aliases', () => {
+    const { service } = createService();
+    const result = service.calculate({
+      items: [
+        {
+          category: 'pharmacy',
+          amount: 140,
+          frequency: PerksSpendFrequency.MONTHLY,
+        },
+        {
+          category: 'dining',
+          amount: 450,
+          frequency: PerksSpendFrequency.MONTHLY,
+        },
+        {
+          category: 'fashion',
+          amount: 220,
+          frequency: PerksSpendFrequency.MONTHLY,
+        },
+        {
+          category: 'eats-drinks',
+          amount: 100,
+          frequency: PerksSpendFrequency.MONTHLY,
+        },
+        {
+          category: 'clothes-fashion',
+          amount: 100,
+          frequency: PerksSpendFrequency.MONTHLY,
+        },
+      ],
+    });
+
+    expect(result.items.map(item => item.categoryKey)).toEqual([
+      'pharmacy',
+      'dining',
+      'fashion',
+      'dining',
+      'fashion',
+    ]);
+    expect(service.getCalculatorCategories()).toHaveLength(9);
+  });
+
   it('requires a first name, last name, and numeric postcode', async () => {
     const { service } = createService({
       userModel: {
