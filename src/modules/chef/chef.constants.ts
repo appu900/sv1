@@ -13,6 +13,7 @@ export const CHEF_CACHE_KEYS = {
     `chefs:recipes:v1:${chefId}:${country}:${cursor || 'start'}`,
   recipeChefs: (recipeId: string) => `chef:recipe-chefs:${recipeId}`,
   favSet: (userId: string) => `chef:fav:${userId}`,
+  favLoaded: (userId: string) => `chef:fav:loaded:${userId}`,
   favCount: (chefId: string) => `chef:favcount:${chefId}`,
   userToProfile: (userId: string) => `chef:user-profile:${userId}`,
   patternAll: 'chefs:*',

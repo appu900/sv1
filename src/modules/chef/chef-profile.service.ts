@@ -16,12 +16,14 @@ import {
 } from '../../database/schemas/chef-favourite.schema';
 import { User, UserDocument, UserRole } from '../../database/schemas/user.auth.schema';
 import { ImageUploadService } from '../image-upload/image-upload.service';
+import { RedisService } from '../../redis/redis.service';
 import { ChefProfileSyncService } from './chef-profile-sync.service';
 import { ChefService } from './chef.service';
 import { CreateChefProfileDto } from './dto/create-chef-profile.dto';
 import { UpdateChefProfileDto } from './dto/update-chef-profile.dto';
 import {
   ALLOWED_CHEF_IMAGE_MIME,
+  CHEF_CACHE_KEYS,
   CHEF_UPLOAD_FOLDER,
   slugify,
 } from './chef.constants';
@@ -38,6 +40,7 @@ export class ChefProfileService {
     private readonly imageUploadService: ImageUploadService,
     private readonly syncService: ChefProfileSyncService,
     private readonly chefService: ChefService,
+    private readonly redisService: RedisService,
   ) {}
 
   private assertValidObjectId(id: string, label = 'id') {
@@ -314,8 +317,24 @@ export class ChefProfileService {
     if (existing.heroImageUrl) {
       await this.imageUploadService.deleteFile(existing.heroImageUrl).catch(() => {});
     }
+
+    const profileId = String(existing._id);
+    const favRows = await this.favouriteModel
+      .find({ chefId: existing._id })
+      .select({ userId: 1 })
+      .lean()
+      .exec();
     await this.favouriteModel.deleteMany({ chefId: existing._id });
     await this.chefProfileModel.deleteOne({ _id: existing._id });
+
+    await this.redisService.del(CHEF_CACHE_KEYS.favCount(profileId));
+    for (const row of favRows) {
+      await this.redisService.sRem(
+        CHEF_CACHE_KEYS.favSet(String(row.userId)),
+        profileId,
+      );
+    }
+
     await this.chefService.invalidateCaches();
     return { message: 'Chef profile deleted', id };
   }

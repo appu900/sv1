@@ -43,13 +43,16 @@ export class ChefFavouriteService {
     if (!uid) return new Set();
 
     const key = CHEF_CACHE_KEYS.favSet(String(uid));
+    const loadedKey = CHEF_CACHE_KEYS.favLoaded(String(uid));
     try {
       const members = await this.redisService.sMembers(key);
       if (members.length > 0) {
         return new Set(members);
       }
-      // Distinguish empty-set cache miss: check existence via a sentinel key miss
-      // by loading from Mongo when Redis set is empty.
+      // Empty set may be cached via loaded marker (user truly has zero favourites)
+      if (await this.redisService.exists(loadedKey)) {
+        return new Set();
+      }
     } catch {
       // fall through to Mongo
     }
@@ -65,6 +68,7 @@ export class ChefFavouriteService {
       await this.redisService.sAdd(key, ...ids);
       await this.redisService.expire(key, CHEF_FAV_SET_TTL);
     }
+    await this.redisService.setRaw(loadedKey, '1', CHEF_FAV_SET_TTL);
 
     return new Set(ids);
   }
@@ -124,6 +128,11 @@ export class ChefFavouriteService {
       await this.redisService.sAdd(CHEF_CACHE_KEYS.favSet(String(uid)), String(cid));
       await this.redisService.expire(
         CHEF_CACHE_KEYS.favSet(String(uid)),
+        CHEF_FAV_SET_TTL,
+      );
+      await this.redisService.setRaw(
+        CHEF_CACHE_KEYS.favLoaded(String(uid)),
+        '1',
         CHEF_FAV_SET_TTL,
       );
       await this.redisService.incr(CHEF_CACHE_KEYS.favCount(String(cid)));

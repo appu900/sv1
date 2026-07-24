@@ -731,8 +731,42 @@ export class ChefService {
   }
 
   async getCuisines() {
-    // Full cuisine library for the "See all" screen (not the home rail snapshot)
-    return { cuisines: await this.buildCuisineRail(100) };
+    // Full library: all active cuisines, including those with zero published chefs
+    const [cuisines, counts] = await Promise.all([
+      this.cuisineModel
+        .find({ isActive: true })
+        .sort({ order: 1, title: 1 })
+        .lean()
+        .exec(),
+      this.chefProfileModel.aggregate([
+        {
+          $match: {
+            isPublished: true,
+            cuisineIds: { $exists: true, $ne: [] },
+          },
+        },
+        { $unwind: '$cuisineIds' },
+        {
+          $group: {
+            _id: '$cuisineIds',
+            chefCount: { $sum: 1 },
+          },
+        },
+      ]),
+    ]);
+
+    const countById = new Map(
+      counts.map((r) => [String(r._id), r.chefCount as number]),
+    );
+
+    return {
+      cuisines: cuisines.map((c) => ({
+        id: String(c._id),
+        title: c.title,
+        imageUrl: c.imageUrl ?? null,
+        chefCount: countById.get(String(c._id)) || 0,
+      })),
+    };
   }
 
   async buildCuisineRail(limit = 10) {

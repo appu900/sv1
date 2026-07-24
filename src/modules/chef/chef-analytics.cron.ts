@@ -32,6 +32,7 @@ import {
   CHEF_SNAPSHOT_KEYS,
   RISING_STAR,
   currencyFromCountry,
+  normalizeMoneyByCurrency,
   utcDayStart,
 } from './chef.constants';
 
@@ -374,10 +375,6 @@ export class ChefAnalyticsCronService {
         .lean()
         .exec();
 
-      // Clear the 3-day window then re-set from events
-      await this.impactDailyModel.deleteMany({ day: { $gte: since } });
-      await this.communityDailyModel.deleteMany({ day: { $gte: since } });
-
       type Acc = {
         mealsCooked: number;
         moneySaved: number;
@@ -429,13 +426,17 @@ export class ChefAnalyticsCronService {
       for (const e of events) {
         const day = utcDayStart(new Date(e.createdAt));
         const dayKey = day.toISOString();
-        const currency = e.currency || currencyFromCountry(e.country);
+        // Prefer country mapping; fold legacy UNKNOWN into DEFAULT_CURRENCY
+        const rawCurrency = e.currency || currencyFromCountry(e.country);
+        const moneyByCurrency = normalizeMoneyByCurrency({
+          [rawCurrency]: e.moneySaved || 0,
+        });
         const delta: Acc = {
           mealsCooked: 1,
           moneySaved: e.moneySaved || 0,
           foodSavedInGrams: e.foodSavedInGrams || 0,
           co2SavedInGrams: e.co2SavedInGrams || 0,
-          moneyByCurrency: { [currency]: e.moneySaved || 0 },
+          moneyByCurrency,
         };
 
         const profileIds = (e.chefIds || [])
@@ -450,6 +451,7 @@ export class ChefAnalyticsCronService {
         bump(communityDay, dayKey, delta);
       }
 
+      // Upsert recomputed days (no blank-window delete — avoids racing live $inc)
       const impactOps = [...chefDay.entries()].map(([key, acc]) => {
         const [chefId, dayIso] = key.split('|');
         return {
@@ -466,7 +468,7 @@ export class ChefAnalyticsCronService {
                 moneySaved: acc.moneySaved,
                 foodSavedInGrams: acc.foodSavedInGrams,
                 co2SavedInGrams: acc.co2SavedInGrams,
-                moneyByCurrency: acc.moneyByCurrency,
+                moneyByCurrency: normalizeMoneyByCurrency(acc.moneyByCurrency),
               },
             },
             upsert: true,
@@ -490,7 +492,7 @@ export class ChefAnalyticsCronService {
               moneySaved: acc.moneySaved,
               foodSavedInGrams: acc.foodSavedInGrams,
               co2SavedInGrams: acc.co2SavedInGrams,
-              moneyByCurrency: acc.moneyByCurrency,
+              moneyByCurrency: normalizeMoneyByCurrency(acc.moneyByCurrency),
             },
           },
           upsert: true,
@@ -502,7 +504,35 @@ export class ChefAnalyticsCronService {
         });
       }
 
-      // Recompute lifetime from full ChefImpactDaily
+      // Delete orphan days in the window that were not recomputed
+      const keptChefDays = [...chefDay.keys()].map((key) => {
+        const [chefId, dayIso] = key.split('|');
+        return {
+          chefId: new Types.ObjectId(chefId),
+          day: new Date(dayIso),
+        };
+      });
+      if (keptChefDays.length) {
+        await this.impactDailyModel.deleteMany({
+          day: { $gte: since },
+          $nor: keptChefDays.map((k) => ({ chefId: k.chefId, day: k.day })),
+        });
+      } else {
+        await this.impactDailyModel.deleteMany({ day: { $gte: since } });
+      }
+
+      const keptCommunityDays = [...communityDay.keys()].map(
+        (dayIso) => new Date(dayIso),
+      );
+      if (keptCommunityDays.length) {
+        await this.communityDailyModel.deleteMany({
+          day: { $gte: since, $nin: keptCommunityDays },
+        });
+      } else {
+        await this.communityDailyModel.deleteMany({ day: { $gte: since } });
+      }
+
+      // Recompute lifetime from full ChefImpactDaily for ALL profiles
       const lifetimes = await this.impactDailyModel.aggregate([
         {
           $group: {
@@ -516,6 +546,7 @@ export class ChefAnalyticsCronService {
         },
       ]);
 
+      const lifetimeByChefId = new Map<string, any>();
       for (const row of lifetimes) {
         const moneyByCurrency: Record<string, number> = {};
         for (const doc of row.moneyByCurrencyDocs || []) {
@@ -524,18 +555,47 @@ export class ChefAnalyticsCronService {
             moneyByCurrency[k] = (moneyByCurrency[k] || 0) + (Number(v) || 0);
           }
         }
-        await this.chefProfileModel.updateOne(
-          { _id: row._id },
-          {
-            $set: {
-              'lifetime.mealsCooked': row.mealsCooked,
-              'lifetime.moneySaved': row.moneySaved,
-              'lifetime.foodSavedInGrams': row.foodSavedInGrams,
-              'lifetime.co2SavedInGrams': row.co2SavedInGrams,
-              'lifetime.moneyByCurrency': moneyByCurrency,
+        lifetimeByChefId.set(String(row._id), {
+          mealsCooked: row.mealsCooked,
+          moneySaved: row.moneySaved,
+          foodSavedInGrams: row.foodSavedInGrams,
+          co2SavedInGrams: row.co2SavedInGrams,
+          moneyByCurrency: normalizeMoneyByCurrency(moneyByCurrency),
+        });
+      }
+
+      const allProfiles = await this.chefProfileModel
+        .find({})
+        .select({ _id: 1 })
+        .lean()
+        .exec();
+      const lifetimeOps = allProfiles.map((p) => {
+        const lifetime = lifetimeByChefId.get(String(p._id)) || {
+          mealsCooked: 0,
+          moneySaved: 0,
+          foodSavedInGrams: 0,
+          co2SavedInGrams: 0,
+          moneyByCurrency: {},
+        };
+        return {
+          updateOne: {
+            filter: { _id: p._id },
+            update: {
+              $set: {
+                'lifetime.mealsCooked': lifetime.mealsCooked,
+                'lifetime.moneySaved': lifetime.moneySaved,
+                'lifetime.foodSavedInGrams': lifetime.foodSavedInGrams,
+                'lifetime.co2SavedInGrams': lifetime.co2SavedInGrams,
+                'lifetime.moneyByCurrency': lifetime.moneyByCurrency,
+              },
             },
           },
-        );
+        };
+      });
+      if (lifetimeOps.length) {
+        await this.chefProfileModel.bulkWrite(lifetimeOps as any, {
+          ordered: false,
+        });
       }
 
       await this.favouriteService.flushFavouriteCountsToMongo();

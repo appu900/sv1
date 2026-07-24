@@ -39,6 +39,13 @@ export class ChefProfilesController {
     return this.chefProfileService.getOrCreateForUser(user.userId);
   }
 
+  @Get('by-user/:userId')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  findByUserId(@Param('userId') userId: string) {
+    return this.chefProfileService.findByUserId(userId);
+  }
+
   @Put('me')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.CHEF)

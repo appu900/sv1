@@ -296,6 +296,10 @@ async expire(key: string, ttlSeconds: number) {
     return this.client.get(key);
   }
 
+  async exists(key: string): Promise<boolean> {
+    return (await this.client.exists(key)) === 1;
+  }
+
   async mGet(keys: string[]): Promise<(string | null)[]> {
     if (!keys.length) return [];
     return this.client.mget(...keys);
