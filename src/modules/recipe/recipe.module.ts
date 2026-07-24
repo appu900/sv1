@@ -11,6 +11,8 @@ import { DietCategory, DietCategorySchema } from '../../database/schemas/diet.sc
 import { ScaledPortionsCache, ScaledPortionsCacheSchema } from '../../database/schemas/scaled-portions-cache.schema';
 import { RedisModule } from '../../redis/redis.module';
 import { ImageUploadModule } from '../image-upload/image-upload.module';
+import { ChefModule } from '../chef/chef.module';
+import { forwardRef } from '@nestjs/common';
 
 @Module({
   imports: [
@@ -30,6 +32,7 @@ import { ImageUploadModule } from '../image-upload/image-upload.module';
     }),
     RedisModule,
     ImageUploadModule,
+    forwardRef(() => ChefModule),
   ],
   controllers: [RecipeController],
   providers: [RecipeService, ServingScaleService],

@@ -20,6 +20,7 @@ import { UserBadge, UserBadgeSchema } from 'src/database/schemas/user-badge.sche
 import { IngredientSearchEvent, IngredientSearchEventSchema } from 'src/database/schemas/ingredient-search-event.schema';
 import { ClientAnalyticsEvent, ClientAnalyticsEventSchema } from 'src/database/schemas/client-analytics-event.schema';
 import { MetricsService } from './metrics.service';
+import { ChefModule } from '../chef/chef.module';
 @Global()
 @Module({
   imports: [
@@ -40,6 +41,7 @@ import { MetricsService } from './metrics.service';
       {name:ClientAnalyticsEvent.name,schema:ClientAnalyticsEventSchema},
     ]),
     forwardRef(() => BadgesModule),
+    forwardRef(() => ChefModule),
   ],
   providers: [AnalyticsService, MetricsService, AnalyticsListner, AppSessionListener],
   controllers: [AnalyticsController],

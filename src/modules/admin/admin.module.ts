@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
@@ -10,6 +10,7 @@ import { FoodFact, FoodFactSchema } from 'src/database/schemas/food-fact.schema'
 import { Stickers, StickerSchema } from 'src/database/schemas/stcikers.schema';
 import { QantasFFN, QantasFFNSchema } from 'src/database/schemas/qantas-ffn.schema';
 import { TrackSurvey, TrackSurveySchema } from 'src/database/schemas/track-survey.schema';
+import { ChefModule } from '../chef/chef.module';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { TrackSurvey, TrackSurveySchema } from 'src/database/schemas/track-surve
       { name: QantasFFN.name, schema: QantasFFNSchema },
       { name: TrackSurvey.name, schema: TrackSurveySchema },
     ]),
+    forwardRef(() => ChefModule),
   ],
   controllers: [AdminController],
   providers: [AdminService],

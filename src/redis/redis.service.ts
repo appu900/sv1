@@ -270,6 +270,45 @@ async expire(key: string, ttlSeconds: number) {
     return result === 'OK';
   }
 
+  async sAdd(key: string, ...members: string[]): Promise<number> {
+    if (!members.length) return 0;
+    return this.client.sadd(key, ...members);
+  }
+
+  async sRem(key: string, ...members: string[]): Promise<number> {
+    if (!members.length) return 0;
+    return this.client.srem(key, ...members);
+  }
+
+  async sMembers(key: string): Promise<string[]> {
+    return this.client.smembers(key);
+  }
+
+  async sIsMember(key: string, member: string): Promise<boolean> {
+    return (await this.client.sismember(key, member)) === 1;
+  }
+
+  async sCard(key: string): Promise<number> {
+    return this.client.scard(key);
+  }
+
+  async getRaw(key: string): Promise<string | null> {
+    return this.client.get(key);
+  }
+
+  async mGet(keys: string[]): Promise<(string | null)[]> {
+    if (!keys.length) return [];
+    return this.client.mget(...keys);
+  }
+
+  async setRaw(key: string, value: string, ttlSeconds?: number): Promise<void> {
+    if (ttlSeconds != null) {
+      await this.client.set(key, value, 'EX', ttlSeconds);
+    } else {
+      await this.client.set(key, value);
+    }
+  }
+
   async onModuleDestroy() {
     await this.client.quit();
   }

@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, UnauthorizedException, NotFoundException } from '@nestjs/common';
+import { Injectable, BadRequestException, UnauthorizedException, NotFoundException, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { User, UserDocument, UserRole } from 'src/database/schemas/user.auth.schema';
@@ -11,6 +11,7 @@ import { QantasFFN, QantasFFNDocument } from 'src/database/schemas/qantas-ffn.sc
 import { TrackSurvey, TrackSurveyDocument } from 'src/database/schemas/track-survey.schema';
 import { CreateChefDto } from './dto/create-chef.dto';
 import * as bcrypt from 'bcrypt';
+import { ChefProfileService } from '../chef/chef-profile.service';
 
 @Injectable()
 export class AdminService {
@@ -23,6 +24,7 @@ export class AdminService {
     @InjectModel(Stickers.name) private readonly stickerModel: Model<Stickers>,
     @InjectModel(QantasFFN.name) private readonly qantasFFNModel: Model<QantasFFNDocument>,
     @InjectModel(TrackSurvey.name) private readonly trackSurveyModel: Model<TrackSurveyDocument>,
+    @Optional() private readonly chefProfileService?: ChefProfileService,
   ) {}
 
   private mapQantasFFN(ffn: any | null) {
@@ -79,6 +81,16 @@ export class AdminService {
       passwordHash,
       role: UserRole.CHEF,
     });
+
+    // Draft chef profile (unpublished) so impact attribution can resolve later.
+    try {
+      await this.chefProfileService?.ensureForUser(
+        String(chef._id),
+        chef.name,
+      );
+    } catch {
+      // non-fatal — backfill can create profiles later
+    }
 
     return {
       success: true,

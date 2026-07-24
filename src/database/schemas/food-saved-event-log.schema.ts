@@ -10,6 +10,10 @@ export class FoodSavedEventLog {
   @Prop({ type: Types.ObjectId, ref: 'Recipe', default: null, index: true })
   frameworkId: Types.ObjectId | null;
 
+  /** Snapshot of recipe.chefIds (User ids) at cook time — reconciliation only */
+  @Prop({ type: [{ type: Types.ObjectId, ref: 'User' }], default: [] })
+  chefIds: Types.ObjectId[];
+
   @Prop({ type: [{ type: Types.ObjectId, ref: 'Ingredient' }], default: [] })
   ingredientIds: Types.ObjectId[];
 
@@ -42,6 +46,7 @@ export const FoodSavedEventLogSchema =
 FoodSavedEventLogSchema.index({ userId: 1, createdAt: -1 });
 FoodSavedEventLogSchema.index({ frameworkId: 1, createdAt: -1 });
 FoodSavedEventLogSchema.index({ userId: 1, frameworkId: 1, createdAt: -1 });
+FoodSavedEventLogSchema.index({ chefIds: 1, createdAt: -1 });
 FoodSavedEventLogSchema.index(
   { userId: 1, idempotencyKey: 1 },
   { unique: true, partialFilterExpression: { idempotencyKey: { $type: 'string' } } },

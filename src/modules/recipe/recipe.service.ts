@@ -3,6 +3,7 @@ import {
   NotFoundException,
   BadRequestException,
   OnModuleInit,
+  Optional,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
@@ -16,6 +17,8 @@ import { UpdateRecipeDto } from './dto/update-recipe.dto';
 import { RedisService } from '../../redis/redis.service';
 import { ImageUploadService } from '../image-upload/image-upload.service';
 import { normalizeCountry } from '../../utils/countries.util';
+import { ChefProfileSyncService } from '../chef/chef-profile-sync.service';
+import { ChefLookupService } from '../chef/chef-lookup.service';
 
 export interface RecipeSummary {
   _id: string;
@@ -50,6 +53,8 @@ export class RecipeService implements OnModuleInit {
     @InjectModel(DietCategory.name) private dietCategoryModel: Model<DietCategoryDocument>,
     private readonly redisService: RedisService,
     private readonly imageUploadService: ImageUploadService,
+    @Optional() private readonly chefProfileSync?: ChefProfileSyncService,
+    @Optional() private readonly chefLookup?: ChefLookupService,
   ) {}
 
   async onModuleInit() {
@@ -277,6 +282,8 @@ export class RecipeService implements OnModuleInit {
       } catch (e) {
         console.warn('Failed clearing category cache after create:', e?.message);
       }
+
+      void this.chefProfileSync?.syncChefs(recipeData.chefIds || []);
 
       return savedRecipe;
     } catch (error) {
@@ -976,6 +983,11 @@ export class RecipeService implements OnModuleInit {
         console.warn('Failed clearing category cache after update:', e?.message);
       }
 
+      void this.chefLookup?.invalidateRecipeChefCache(id);
+      const prevChefIds = existingRecipe.chefIds || [];
+      const nextChefIds = updatedRecipe.chefIds || [];
+      void this.chefProfileSync?.syncChefs([...prevChefIds, ...nextChefIds]);
+
       return updatedRecipe;
     } catch (error) {
       throw new BadRequestException(
@@ -1014,6 +1026,9 @@ export class RecipeService implements OnModuleInit {
         );
       }
     }
+
+    void this.chefLookup?.invalidateRecipeChefCache(id);
+    void this.chefProfileSync?.syncChefs(recipe.chefIds || []);
   }
 
  

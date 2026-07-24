@@ -194,4 +194,5 @@ RecipeSchema.index({ cuisines: 1 });
 RecipeSchema.index({ isActive: 1, order: 1 });        
 RecipeSchema.index({ isActive: 1, countries: 1, order: 1 }); 
 RecipeSchema.index({ frameworkCategories: 1, isActive: 1, countries: 1, order: 1 });
-RecipeSchema.index({ cuisines: 1, isActive: 1, order: 1 }); 
+RecipeSchema.index({ cuisines: 1, isActive: 1, order: 1 });
+RecipeSchema.index({ chefIds: 1, isActive: 1, order: 1 }); 

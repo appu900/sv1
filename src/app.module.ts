@@ -20,6 +20,7 @@ import { FoodFactModule } from './modules/food-fact/food-fact.module';
 import { RecipeModule } from './modules/recipe/recipe.module';
 import { FrameworkCategoryModule } from './modules/framework-category/framework-category.module';
 import { CuisineModule } from './modules/cuisine/cuisine.module';
+import { ChefModule } from './modules/chef/chef.module';
 import { AnalyticsService } from './modules/analytics/analytics.service';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { FeedbackModule } from './modules/feedback/feedback.module';
@@ -102,6 +103,7 @@ import { PerksModule } from './modules/perks/perks.module';
     RecipeModule,
     FrameworkCategoryModule,
     CuisineModule,
+    ChefModule,
     AnalyticsModule,
     FeedbackModule,
     FavouriteModule,

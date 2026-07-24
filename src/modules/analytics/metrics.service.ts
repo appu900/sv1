@@ -1,5 +1,6 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Model, Types } from 'mongoose';
 import {
   FoodSavedEventLog,
@@ -23,6 +24,8 @@ import {
 } from '../../database/schemas/ingredient.schema';
 import { MetricsWindow } from './dto/metrics.dto';
 import { windowStart, GLOBAL_SCOPE_MAX_WINDOW_MS } from './utils/time-window.util';
+import { ChefLookupService } from '../chef/chef-lookup.service';
+import { currencyFromCountry } from '../chef/chef.constants';
 
 function toObjectId(value: string | Types.ObjectId | null | undefined): Types.ObjectId | null {
   if (!value) return null;
@@ -89,6 +92,8 @@ export class MetricsService {
     private readonly recipeModel: Model<RecipeDocument>,
     @InjectModel(Ingredient.name)
     private readonly ingredientModel: Model<IngredientDocument>,
+    private readonly eventEmitter: EventEmitter2,
+    @Optional() private readonly chefLookup?: ChefLookupService,
   ) {}
 
 
@@ -108,17 +113,40 @@ export class MetricsService {
         this.logger.warn(`logFoodSaved skipped — invalid userId=${payload.userId}`);
         return;
       }
-      await this.foodSavedModel.create({
+
+      const chefIds = this.chefLookup
+        ? await this.chefLookup.getChefUserIdsForRecipe(payload.frameworkId)
+        : [];
+
+      const currency = currencyFromCountry(payload.country);
+
+      const doc = await this.foodSavedModel.create({
         userId: userObjectId,
         frameworkId: toObjectId(payload.frameworkId),
+        chefIds,
         ingredientIds: (payload.ingredientIds ?? [])
           .map((id) => toObjectId(id))
           .filter((id): id is Types.ObjectId => id !== null),
         foodSavedInGrams: Math.max(0, Math.floor(payload.foodSavedInGrams || 0)),
         moneySaved: Math.max(0, Number(payload.moneySaved) || 0),
+        currency,
         co2SavedInGrams: Math.max(0, Math.floor(payload.co2SavedInGrams || 0)),
         country: payload.country ?? null,
         idempotencyKey: payload.idempotencyKey ?? null,
+      });
+
+      // Only emit after a successful insert so rollups are exactly-once.
+      this.eventEmitter.emit('food.saved.persisted', {
+        logId: String(doc._id),
+        userId: String(doc.userId),
+        frameworkId: doc.frameworkId ? String(doc.frameworkId) : null,
+        chefIds: (doc.chefIds ?? []).map(String),
+        foodSavedInGrams: doc.foodSavedInGrams,
+        moneySaved: doc.moneySaved,
+        currency: doc.currency,
+        country: doc.country,
+        co2SavedInGrams: doc.co2SavedInGrams,
+        createdAt: doc.createdAt,
       });
     } catch (err: any) {
       // Duplicate-key on (userId, idempotencyKey) means the same retry
