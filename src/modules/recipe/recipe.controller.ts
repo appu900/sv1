@@ -54,6 +54,7 @@ export class RecipeController {
     const jsonFields = [
       'components',
       'frameworkCategories',
+      'cuisines',
       'hackOrTipIds',
       'chefIds',
       'useLeftoversIn',
@@ -263,6 +264,7 @@ export class RecipeController {
     const jsonFields = [
       'components',
       'frameworkCategories',
+      'cuisines',
       'hackOrTipIds',
       'chefIds',
       'useLeftoversIn',

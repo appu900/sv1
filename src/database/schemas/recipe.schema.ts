@@ -145,7 +145,13 @@ export class Recipe {
     type: [{ type: Types.ObjectId, ref: 'FrameworkCategory' }],
     required: true,
   })
-  frameworkCategories: Types.ObjectId[]; 
+  frameworkCategories: Types.ObjectId[];
+
+  @Prop({
+    type: [{ type: Types.ObjectId, ref: 'Cuisine' }],
+    default: [],
+  })
+  cuisines: Types.ObjectId[];
 
   @Prop({ type: Types.ObjectId, ref: 'Sponsers' })
   sponsorId?: Types.ObjectId;
@@ -184,6 +190,8 @@ export const RecipeSchema = SchemaFactory.createForClass(Recipe);
 
 RecipeSchema.index({ title: 1 });
 RecipeSchema.index({ frameworkCategories: 1 });
+RecipeSchema.index({ cuisines: 1 });
 RecipeSchema.index({ isActive: 1, order: 1 });        
 RecipeSchema.index({ isActive: 1, countries: 1, order: 1 }); 
-RecipeSchema.index({ frameworkCategories: 1, isActive: 1, countries: 1, order: 1 }); 
+RecipeSchema.index({ frameworkCategories: 1, isActive: 1, countries: 1, order: 1 });
+RecipeSchema.index({ cuisines: 1, isActive: 1, order: 1 }); 

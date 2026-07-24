@@ -213,6 +213,10 @@ export class RecipeService implements OnModuleInit {
         throw new BadRequestException('At least one valid framework category is required');
       }
 
+      const validCuisines = (createRecipeDto.cuisines || [])
+        .filter(id => id && Types.ObjectId.isValid(id))
+        .map(id => new Types.ObjectId(id));
+
       const recipeData: any = {
         ...createRecipeDto,
         heroImageUrl: heroImageUrl || createRecipeDto.heroImageUrl,
@@ -223,6 +227,7 @@ export class RecipeService implements OnModuleInit {
           .filter(id => id && Types.ObjectId.isValid(id))
           .map(id => new Types.ObjectId(id)),
         frameworkCategories: validFrameworkCategories,
+        cuisines: validCuisines,
         useLeftoversIn: (createRecipeDto.useLeftoversIn || [])
           .filter(id => id && Types.ObjectId.isValid(id))
           .map(id => new Types.ObjectId(id)),
@@ -517,6 +522,7 @@ export class RecipeService implements OnModuleInit {
         .populate('chefIds', 'name email role')
         .populate('stickerId', 'title imageUrl description')
         .populate('frameworkCategories', 'name imageUrl')
+        .populate('cuisines', 'title imageUrl')
         .populate('sponsorId', 'title logo logoBlackAndWhite broughtToYouBy tagline')
         .populate('useLeftoversIn', 'title heroImageUrl')
         .populate({
@@ -582,6 +588,7 @@ export class RecipeService implements OnModuleInit {
       .populate('chefIds', 'name email role')
       .populate('stickerId', 'title imageUrl description')
       .populate('frameworkCategories', 'name imageUrl')
+        .populate('cuisines', 'title imageUrl')
       .populate('sponsorId', 'title logo logoBlackAndWhite broughtToYouBy tagline')
       .populate('useLeftoversIn', 'title heroImageUrl')
       .populate({
@@ -653,6 +660,7 @@ export class RecipeService implements OnModuleInit {
       .populate('chefIds', 'name email role')
       .populate('stickerId', 'title imageUrl description')
       .populate('frameworkCategories', 'name imageUrl')
+        .populate('cuisines', 'title imageUrl')
       .populate('sponsorId', 'title logo logoBlackAndWhite broughtToYouBy tagline')
       .populate('useLeftoversIn', 'title heroImageUrl')
       .populate({
@@ -725,6 +733,7 @@ export class RecipeService implements OnModuleInit {
       .populate('chefIds', 'name email role')
       .populate('stickerId', 'title imageUrl description')
       .populate('frameworkCategories', 'name imageUrl')
+        .populate('cuisines', 'title imageUrl')
       .populate('sponsorId', 'title logo logoBlackAndWhite broughtToYouBy tagline')
       .populate({
         path: 'components.component.requiredIngredients.recommendedIngredient',
@@ -789,6 +798,7 @@ export class RecipeService implements OnModuleInit {
       .populate('chefIds', 'name email role')
       .populate('stickerId', 'title imageUrl description')
       .populate('frameworkCategories', 'name imageUrl')
+        .populate('cuisines', 'title imageUrl')
       .populate('sponsorId', 'title logo logoBlackAndWhite broughtToYouBy tagline')
       .populate('useLeftoversIn', 'title heroImageUrl')
       .populate({
@@ -894,6 +904,12 @@ export class RecipeService implements OnModuleInit {
         }
         
         updateData.frameworkCategories = validCategories;
+      }
+
+      if (updateRecipeDto.cuisines !== undefined) {
+        updateData.cuisines = updateRecipeDto.cuisines
+          .filter(id => id && Types.ObjectId.isValid(id))
+          .map((id) => new Types.ObjectId(id));
       }
 
       if (updateRecipeDto.useLeftoversIn) {
