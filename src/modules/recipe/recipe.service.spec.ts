@@ -23,6 +23,11 @@ function createService(overrides: Record<string, any> = {}) {
     set: jest.fn(async (key: string, value: unknown) => {
       cache.set(key, value);
     }),
+    incr: jest.fn(async (key: string) => {
+      const next = Number(cache.get(key) || 0) + 1;
+      cache.set(key, next);
+      return next;
+    }),
     setIfAbsent: jest.fn(async (key: string, value: string) => {
       if (locks.has(key)) return false;
       locks.set(key, value);
@@ -213,5 +218,30 @@ describe('RecipeService summary caching', () => {
     expect(redis.delByPattern).toHaveBeenCalledWith(
       'recipes:summaries:v1*',
     );
+  });
+
+  it('flushes recipes and dietary caches and bumps generation on mutate', async () => {
+    const { service, redis } = createService();
+    await (service as any).invalidateRecipeCaches({ recipeId: 'abc' });
+    expect(redis.incr).toHaveBeenCalledWith('cache:gen:recipes');
+    expect(redis.delByPattern).toHaveBeenCalledWith('recipes:*');
+    expect(redis.delByPattern).toHaveBeenCalledWith('dietary:*');
+  });
+
+  it('does not rewrite summary cache after generation bumps', async () => {
+    const { service, redis } = createService({
+      query: createQuery([rawRecipe]),
+    });
+
+    // Current generation is 2 while write was started at 1 → skip set
+    redis.get.mockResolvedValueOnce(2);
+
+    await (service as any).setRecipeCacheIfCurrent(
+      'recipes:summaries:v1',
+      [{ _id: 'stale' }],
+      1,
+    );
+
+    expect(redis.set).not.toHaveBeenCalled();
   });
 });

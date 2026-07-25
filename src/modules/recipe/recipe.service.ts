@@ -41,6 +41,8 @@ export class RecipeService implements OnModuleInit {
   private readonly CACHE_KEY_SINGLE = 'recipes:single';
   private readonly CACHE_KEY_CATEGORY = 'recipes:category';
   private readonly CACHE_KEY_SUMMARIES = 'recipes:summaries:v1';
+  /** Outside `recipes:*` so nuclear deletes do not reset the fence. */
+  private readonly CACHE_GENERATION_KEY = 'cache:gen:recipes';
   private readonly summaryRefreshes = new Map<
     string,
     Promise<RecipeSummary[]>
@@ -268,20 +270,10 @@ export class RecipeService implements OnModuleInit {
         console.log('SavedRecipe debug logging failed:', e?.message);
       }
 
-      await this.redisService.del(this.CACHE_KEY_ALL);
-      await this.redisService.delByPattern(`${this.CACHE_KEY_ALL}:country:*`);
-      await this.redisService.delByPattern(`${this.CACHE_KEY_CATEGORY}:*:country:*`);
-      await this.invalidateRecipeSummaryCaches();
-      // Also clear per-category caches for affected framework categories
-      try {
-        for (const catId of recipeData.frameworkCategories || []) {
-          await this.redisService.del(
-            `${this.CACHE_KEY_CATEGORY}:${catId.toString()}`,
-          );
-        }
-      } catch (e) {
-        console.warn('Failed clearing category cache after create:', e?.message);
-      }
+      await this.invalidateRecipeCaches({
+        recipeId: savedRecipe._id?.toString?.() || String(savedRecipe._id),
+        frameworkCategoryIds: recipeData.frameworkCategories || [],
+      });
 
       void this.chefProfileSync?.syncChefs(recipeData.chefIds || []);
 
@@ -390,6 +382,8 @@ export class RecipeService implements OnModuleInit {
       matchQuery.countries = country;
     }
 
+    const generationAtStart = await this.getRecipeCacheGeneration();
+
     try {
       const recipes = await this.recipeModel
         .find(matchQuery)
@@ -407,11 +401,7 @@ export class RecipeService implements OnModuleInit {
         this.mapRecipeSummary(recipe),
       );
 
-      try {
-        await this.redisService.set(cacheKey, summaries, this.CACHE_TTL);
-      } catch {
-        // A cache write must not hide a successful database response.
-      }
+      await this.setRecipeCacheIfCurrent(cacheKey, summaries, generationAtStart);
       return summaries;
     } catch (error) {
       throw new BadRequestException(
@@ -495,6 +485,67 @@ export class RecipeService implements OnModuleInit {
     }
   }
 
+  private async getRecipeCacheGeneration(): Promise<number> {
+    try {
+      const value = await this.redisService.get<number | string>(
+        this.CACHE_GENERATION_KEY,
+      );
+      const parsed = typeof value === 'number' ? value : Number(value);
+      return Number.isFinite(parsed) ? parsed : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  private async setRecipeCacheIfCurrent(
+    key: string,
+    value: unknown,
+    generationAtStart: number,
+  ): Promise<void> {
+    try {
+      const current = await this.getRecipeCacheGeneration();
+      if (current !== generationAtStart) {
+        return;
+      }
+      await this.redisService.set(key, value, this.CACHE_TTL);
+    } catch {
+      // Cache writes must never hide a successful database response.
+    }
+  }
+
+  /**
+   * Clear shared Valkey recipe caches after create/update/delete.
+   * Keep in sync with saveful-india-web/lib/invalidateRecipeCache.ts
+   */
+  private async invalidateRecipeCaches(_options?: {
+    recipeId?: string;
+    frameworkCategoryIds?: Array<string | { toString(): string }>;
+  }): Promise<void> {
+    try {
+      // Drop in-flight summary coalescing so a mutation cannot reuse a stale refresh.
+      this.summaryRefreshes.clear();
+
+      // Bump generation first so in-flight DB loads cannot rewrite deleted keys.
+      try {
+        await this.redisService.incr(this.CACHE_GENERATION_KEY);
+      } catch (error) {
+        console.warn(
+          'Failed bumping recipe cache generation:',
+          error?.message,
+        );
+      }
+
+      // Match startup flush: every recipe list/detail + dietary recommendation cache.
+      await this.redisService.delByPattern('recipes:*');
+      await this.redisService.delByPattern('dietary:*');
+    } catch (error) {
+      console.warn(
+        'Failed clearing recipe caches:',
+        error?.message,
+      );
+    }
+  }
+
   async findAll(country?: string): Promise<Recipe[]> {
     // Normalize ISO code (e.g. 'IN') → full name (e.g. 'India') to match DB values.
     country = normalizeCountry(country);
@@ -512,6 +563,8 @@ export class RecipeService implements OnModuleInit {
       console.error('Error reading cached recipes, clearing cache:', error.message);
       await this.redisService.del(cacheKey);
     }
+
+    const generationAtStart = await this.getRecipeCacheGeneration();
 
     try {
       // Build the match query with optional country filter.
@@ -561,7 +614,7 @@ export class RecipeService implements OnModuleInit {
         .lean()
         .exec();
 
-      await this.redisService.set(cacheKey, recipes, this.CACHE_TTL);
+      await this.setRecipeCacheIfCurrent(cacheKey, recipes, generationAtStart);
 
       return recipes;
     } catch (error) {
@@ -588,6 +641,8 @@ export class RecipeService implements OnModuleInit {
       console.error('Error reading cached recipe, clearing cache:', error.message);
       await this.redisService.del(cacheKey);
     }
+
+    const generationAtStart = await this.getRecipeCacheGeneration();
 
     const recipe = await this.recipeModel
       .findById(id)
@@ -630,7 +685,7 @@ export class RecipeService implements OnModuleInit {
       throw new NotFoundException(`Recipe with ID ${id} not found`);
     }
 
-    await this.redisService.set(cacheKey, recipe, this.CACHE_TTL);
+    await this.setRecipeCacheIfCurrent(cacheKey, recipe, generationAtStart);
 
     return recipe;
   }
@@ -651,6 +706,8 @@ export class RecipeService implements OnModuleInit {
       console.error('Error reading cached recipe by slug, clearing cache:', error.message);
       await this.redisService.del(cacheKey);
     }
+
+    const generationAtStart = await this.getRecipeCacheGeneration();
 
     // Build a regex that matches titles whose slugified form equals the slug.
     // Convert slug back to a title-like pattern: "chicken-tikka" → "chicken tikka" (case-insensitive)
@@ -702,7 +759,7 @@ export class RecipeService implements OnModuleInit {
       throw new NotFoundException(`Recipe with slug "${slug}" not found`);
     }
 
-    await this.redisService.set(cacheKey, recipe, this.CACHE_TTL);
+    await this.setRecipeCacheIfCurrent(cacheKey, recipe, generationAtStart);
 
     return recipe;
   }
@@ -725,6 +782,8 @@ export class RecipeService implements OnModuleInit {
       console.error('Error reading cached recipes by category, clearing cache:', error.message);
       await this.redisService.del(cacheKey);
     }
+
+    const generationAtStart = await this.getRecipeCacheGeneration();
 
     const matchQuery: any = {
       frameworkCategories: new Types.ObjectId(categoryId),
@@ -756,7 +815,7 @@ export class RecipeService implements OnModuleInit {
       .lean()
       .exec();
 
-    await this.redisService.set(cacheKey, recipes, this.CACHE_TTL);
+    await this.setRecipeCacheIfCurrent(cacheKey, recipes, generationAtStart);
 
     return recipes;
   }
@@ -779,6 +838,8 @@ export class RecipeService implements OnModuleInit {
       console.error('Error reading cached recipes by ingredient, clearing cache:', error.message);
       await this.redisService.del(cacheKey);
     }
+
+    const generationAtStart = await this.getRecipeCacheGeneration();
 
     const ingredientObjectId = new Types.ObjectId(ingredientId);
 
@@ -837,7 +898,7 @@ export class RecipeService implements OnModuleInit {
       .lean()
       .exec();
 
-    await this.redisService.set(cacheKey, recipes, this.CACHE_TTL);
+    await this.setRecipeCacheIfCurrent(cacheKey, recipes, generationAtStart);
 
     return recipes;
   }
@@ -960,28 +1021,13 @@ export class RecipeService implements OnModuleInit {
         throw new NotFoundException(`Recipe with ID ${id} not found after update`);
       }
 
-      await this.redisService.del(this.CACHE_KEY_ALL);
-      await this.redisService.del(`${this.CACHE_KEY_SINGLE}:${id}`);
-      await this.redisService.delByPattern(`${this.CACHE_KEY_ALL}:country:*`);
-      await this.redisService.delByPattern(`${this.CACHE_KEY_CATEGORY}:*:country:*`);
-      await this.invalidateRecipeSummaryCaches();
-
-      try {
-        const prevCats = existingRecipe.frameworkCategories || [];
-        for (const catId of prevCats) {
-          await this.redisService.del(
-            `${this.CACHE_KEY_CATEGORY}:${catId.toString()}`,
-          );
-        }
-        const newCats = updatedRecipe.frameworkCategories || [];
-        for (const catId of newCats) {
-          await this.redisService.del(
-            `${this.CACHE_KEY_CATEGORY}:${catId.toString()}`,
-          );
-        }
-      } catch (e) {
-        console.warn('Failed clearing category cache after update:', e?.message);
-      }
+      await this.invalidateRecipeCaches({
+        recipeId: id,
+        frameworkCategoryIds: [
+          ...(existingRecipe.frameworkCategories || []),
+          ...(updatedRecipe.frameworkCategories || []),
+        ],
+      });
 
       void this.chefLookup?.invalidateRecipeChefCache(id);
       const prevChefIds = existingRecipe.chefIds || [];
@@ -1013,6 +1059,7 @@ export class RecipeService implements OnModuleInit {
 
     await this.recipeModel.findByIdAndDelete(id).exec();
 
+<<<<<<< Updated upstream
     await this.redisService.del(this.CACHE_KEY_ALL);
     await this.redisService.del(`${this.CACHE_KEY_SINGLE}:${id}`);
     await this.redisService.delByPattern(`${this.CACHE_KEY_ALL}:country:*`);
@@ -1029,6 +1076,12 @@ export class RecipeService implements OnModuleInit {
 
     void this.chefLookup?.invalidateRecipeChefCache(id);
     void this.chefProfileSync?.syncChefs(recipe.chefIds || []);
+=======
+    await this.invalidateRecipeCaches({
+      recipeId: id,
+      frameworkCategoryIds: recipe.frameworkCategories || [],
+    });
+>>>>>>> Stashed changes
   }
 
  
@@ -1071,6 +1124,8 @@ export class RecipeService implements OnModuleInit {
       if (cached) return cached;
     } catch (_) { /* ignore redis errors */ }
 
+    const generationAtStart = await this.getRecipeCacheGeneration();
+
     // ── 2. Resolve DietCategory ObjectIds ───────────────────────────────────
     const namePatterns = activeKeys.flatMap(k => patternMap[k] ?? []);
     const dietCategories = await this.dietCategoryModel
@@ -1112,7 +1167,11 @@ export class RecipeService implements OnModuleInit {
           .map((ing: any) => ing._id.toString()),
       );
 
-      await this.redisService.set(ingCacheKey, [...suitableIngredientIds], this.CACHE_TTL).catch(() => {});
+      await this.setRecipeCacheIfCurrent(
+        ingCacheKey,
+        [...suitableIngredientIds],
+        generationAtStart,
+      );
     }
 
     const matchQuery: any = { isActive: true };
@@ -1169,7 +1228,7 @@ export class RecipeService implements OnModuleInit {
 
     const lean = result.map(({ components: _c, ...rest }: any) => rest);
 
-    await this.redisService.set(resultCacheKey, lean, this.CACHE_TTL).catch(() => {});
+    await this.setRecipeCacheIfCurrent(resultCacheKey, lean, generationAtStart);
 
     return lean;
   }
