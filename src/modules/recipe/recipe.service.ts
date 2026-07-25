@@ -1059,29 +1059,13 @@ export class RecipeService implements OnModuleInit {
 
     await this.recipeModel.findByIdAndDelete(id).exec();
 
-<<<<<<< Updated upstream
-    await this.redisService.del(this.CACHE_KEY_ALL);
-    await this.redisService.del(`${this.CACHE_KEY_SINGLE}:${id}`);
-    await this.redisService.delByPattern(`${this.CACHE_KEY_ALL}:country:*`);
-    await this.redisService.delByPattern(`${this.CACHE_KEY_CATEGORY}:*:country:*`);
-    await this.invalidateRecipeSummaryCaches();
-
-    if (recipe.frameworkCategories) {
-      for (const catId of recipe.frameworkCategories) {
-        await this.redisService.del(
-          `${this.CACHE_KEY_CATEGORY}:${catId.toString()}`,
-        );
-      }
-    }
-
-    void this.chefLookup?.invalidateRecipeChefCache(id);
-    void this.chefProfileSync?.syncChefs(recipe.chefIds || []);
-=======
     await this.invalidateRecipeCaches({
       recipeId: id,
       frameworkCategoryIds: recipe.frameworkCategories || [],
     });
->>>>>>> Stashed changes
+
+    void this.chefLookup?.invalidateRecipeChefCache(id);
+    void this.chefProfileSync?.syncChefs(recipe.chefIds || []);
   }
 
  
