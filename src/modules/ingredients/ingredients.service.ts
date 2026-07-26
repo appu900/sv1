@@ -4,6 +4,7 @@ import {
   Logger,
   NotFoundException,
   OnModuleInit,
+  Optional,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
@@ -25,6 +26,8 @@ import { ImageUploadService } from '../image-upload/image-upload.service';
 import { SqsService } from 'src/sqs/sqs.service';
 import { CacheInvalidationEvent } from 'src/contracts/cache-invalidation.event';
 import { WINSTON_MODULE_PROVIDER } from 'nest-winston';
+import { DataVersionService } from '../data-version/data-version.service';
+import { SummaryHeroImage } from '../recipe/recipe.service';
 
 const VALID_MONTHS = new Set<string>(Object.values(Month));
 
@@ -53,8 +56,21 @@ function sanitizeSeasonByCountry(value: Record<string, Month[]> | undefined) {
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
+
+
+export interface IngredientSummary {
+  _id: string;
+  name: string;
+  heroImageUrl?: string;
+  heroImage?: SummaryHeroImage;
+  theme?: string;
+  inSeason: Month[];
+  seasonByCountry: Record<string, Month[]>;
+  order: number;
+}
 @Injectable()
 export class IngredientsService implements OnModuleInit {
+  static readonly CACHE_KEY_SUMMARIES = 'Ingredients:summaries:v1';
   private readonly logger = new Logger(IngredientsService.name);
   constructor(
     @InjectModel(IngredientsCategory.name)
@@ -63,15 +79,17 @@ export class IngredientsService implements OnModuleInit {
     private readonly ingredientModel: Model<IngredientDocument>,
     private readonly redisService: RedisService,
     private readonly imageuploadService: ImageUploadService,
-    private readonly sqsService:SqsService
-    
+    private readonly sqsService:SqsService,
+    @Optional() private readonly dataVersion?: DataVersionService,
   ) {}
 
   async onModuleInit() {
-    // Flush all ingredient caches on startup so stale/ghost entries
-    // (e.g. deleted ingredients still in versioned cache) are never served.
+
     try {
       await this.redisService.delByPattern('Ingredients:all*');
+      await this.redisService.delByPattern(
+        `${IngredientsService.CACHE_KEY_SUMMARIES}*`,
+      );
       console.log('[IngredientsService] All ingredient caches flushed on startup');
     } catch (e) {
       console.warn('[IngredientsService] Could not flush ingredient caches on startup:', getErrorMessage(e));
@@ -184,11 +202,13 @@ export class IngredientsService implements OnModuleInit {
 
     if (dto.hasPage) {
       if (files?.heroImage?.[0]) {
-        const heroImageUrl = await this.imageuploadService.uploadFile(
+        const heroImage = await this.imageuploadService.uploadImageWithVariants(
           files.heroImage[0],
           'saveful/ingredients/hero',
         );
-        ingredientData.heroImageUrl = heroImageUrl;
+        // `heroImageUrl` stays populated for clients that predate `heroImage`.
+        ingredientData.heroImageUrl = heroImage.base;
+        ingredientData.heroImage = heroImage;
       }
 
       if (dto.theme) ingredientData.theme = dto.theme;
@@ -268,9 +288,107 @@ export class IngredientsService implements OnModuleInit {
     }
 
     // Bust per-country caches so filtered results reflect the new data
-    await this.redisService.delByPattern('Ingredients:all:country:*');
+    await this.invalidateIngredientListCaches();
 
     return ingredient;
+  }
+
+  async getIngredientSummaries(country?: string): Promise<IngredientSummary[]> {
+    const normalizedCountry = normalizeCountry(country);
+    const cacheKey = normalizedCountry
+      ? `${IngredientsService.CACHE_KEY_SUMMARIES}:country:${normalizedCountry.toLowerCase()}`
+      : IngredientsService.CACHE_KEY_SUMMARIES;
+
+    try {
+      const cached = await this.redisService.get<IngredientSummary[]>(cacheKey);
+      if (cached) return cached;
+    } catch (error) {
+      this.logger.warn(
+        `Ingredient summary cache read failed: ${getErrorMessage(error)}`,
+      );
+    }
+
+    const matchQuery: Record<string, unknown> = { hasPage: true };
+    if (normalizedCountry) {
+      matchQuery.countries = normalizedCountry;
+    }
+
+    const rows = await this.ingredientModel
+      .find(matchQuery)
+      .select(
+        '_id name heroImageUrl heroImage theme inSeason seasonByCountry order',
+      )
+      .sort({ order: 1, name: 1 })
+      .lean();
+
+    const summaries = rows.map((row) =>
+      this.mapIngredientSummary(row, normalizedCountry),
+    );
+
+    try {
+      await this.redisService.set(cacheKey, summaries, 60 * 20);
+    } catch (error) {
+      // A cache write must not hide a successful database response.
+      this.logger.warn(
+        `Ingredient summary cache write failed: ${getErrorMessage(error)}`,
+      );
+    }
+
+    return summaries;
+  }
+
+  private mapIngredientSummary(
+    row: any,
+    country?: string,
+  ): IngredientSummary {
+    const seasonByCountry: Record<string, Month[]> = {};
+    const source = row.seasonByCountry;
+    if (source && typeof source === 'object' && !Array.isArray(source)) {
+      if (country) {
+ 
+        for (const [key, months] of Object.entries(source)) {
+          if (key.trim().toLowerCase() === country.trim().toLowerCase()) {
+            seasonByCountry[key] = months as Month[];
+          }
+        }
+      } else {
+        Object.assign(seasonByCountry, source);
+      }
+    }
+
+    return {
+      _id: String(row._id),
+      name: typeof row.name === 'string' ? row.name : '',
+      ...(typeof row.heroImageUrl === 'string' && row.heroImageUrl
+        ? { heroImageUrl: row.heroImageUrl }
+        : {}),
+      ...(row.heroImage?.base
+        ? {
+            heroImage: {
+              base: String(row.heroImage.base),
+              variants:
+                row.heroImage.variants &&
+                typeof row.heroImage.variants === 'object'
+                  ? { ...row.heroImage.variants }
+                  : {},
+              width: Number.isFinite(row.heroImage.width)
+                ? row.heroImage.width
+                : 0,
+              height: Number.isFinite(row.heroImage.height)
+                ? row.heroImage.height
+                : 0,
+              thumbhash:
+                typeof row.heroImage.thumbhash === 'string'
+                  ? row.heroImage.thumbhash
+                  : '',
+            },
+          }
+        : {}),
+      ...(row.theme ? { theme: String(row.theme) } : {}),
+      inSeason: Array.isArray(row.inSeason) ? row.inSeason : [],
+      seasonByCountry,
+      order: Number.isFinite(row.order) ? row.order : 0,
+    };
   }
 
   async getAllIngredients(country?: string) {
@@ -415,11 +533,12 @@ export class IngredientsService implements OnModuleInit {
 
     // Update hasPage related fields
     if (files?.heroImage?.[0]) {
-      const heroImageUrl = await this.imageuploadService.uploadFile(
+      const heroImage = await this.imageuploadService.uploadImageWithVariants(
         files.heroImage[0],
         'saveful/ingredients/hero',
       );
-      updateData.heroImageUrl = heroImageUrl;
+      updateData.heroImageUrl = heroImage.base;
+      updateData.heroImage = heroImage;
     }
 
     if (dto.theme !== undefined) updateData.theme = dto.theme;
@@ -514,7 +633,7 @@ export class IngredientsService implements OnModuleInit {
       );
     }
 
-    await this.redisService.delByPattern('Ingredients:all:country:*');
+    await this.invalidateIngredientListCaches();
 
     return updatedIngredient;
   }
@@ -567,9 +686,18 @@ export class IngredientsService implements OnModuleInit {
       );
     }
 
-    await this.redisService.delByPattern('Ingredients:all:country:*');
+    await this.invalidateIngredientListCaches();
 
     return { message: 'Ingredient deleted successfully' };
+  }
+
+  private async invalidateIngredientListCaches() {
+    await this.redisService.delByPattern('Ingredients:all:country:*');
+    await this.redisService.delByPattern(
+      `${IngredientsService.CACHE_KEY_SUMMARIES}*`,
+    );
+    
+    await this.dataVersion?.bump('ingredients');
   }
 
   private async clearIngredientCache() {

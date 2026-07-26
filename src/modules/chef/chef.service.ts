@@ -462,7 +462,7 @@ export class ChefService {
         _id: { $in: favs.map((f) => f.chefId) },
         isPublished: true,
       })
-      .select({ userId: 1, displayName: 1 })
+      .select({ userId: 1, displayName: 1, avatarImageUrl: 1, heroImageUrl: 1 })
       .lean()
       .exec();
 
@@ -470,12 +470,19 @@ export class ChefService {
     const chefNameByUserId = new Map(
       profiles.map((p) => [String(p.userId), p.displayName]),
     );
+    const chefAvatarByUserId = new Map(
+      profiles.map((p) => [
+        String(p.userId),
+        p.avatarImageUrl ?? p.heroImageUrl ?? null,
+      ]),
+    );
 
     return this.listRecipesForChefUsers(userIds, {
       cursor,
       limit,
       country,
       chefNameByUserId,
+      chefAvatarByUserId,
     });
   }
 
@@ -567,16 +574,20 @@ export class ChefService {
 
     const profile = await this.chefProfileModel
       .findOne({ _id: cid, isPublished: true })
-      .select({ userId: 1, displayName: 1 })
+      .select({ userId: 1, displayName: 1, avatarImageUrl: 1, heroImageUrl: 1 })
       .lean()
       .exec();
     if (!profile) throw new NotFoundException('Chef not found');
+
+    const avatar =
+      profile.avatarImageUrl ?? profile.heroImageUrl ?? null;
 
     return this.listRecipesForChefUsers([profile.userId], {
       cursor,
       limit,
       country,
       chefNameByUserId: new Map([[String(profile.userId), profile.displayName]]),
+      chefAvatarByUserId: new Map([[String(profile.userId), avatar]]),
     });
   }
 
@@ -587,6 +598,7 @@ export class ChefService {
       limit?: number;
       country?: string;
       chefNameByUserId?: Map<string, string>;
+      chefAvatarByUserId?: Map<string, string | null>;
     },
   ) {
     const take = Math.min(Math.max(opts.limit || 24, 1), 48);
@@ -690,6 +702,9 @@ export class ChefService {
           : undefined,
         chefName: firstChefUserId
           ? opts.chefNameByUserId?.get(firstChefUserId) ?? null
+          : null,
+        chefAvatarImageUrl: firstChefUserId
+          ? opts.chefAvatarByUserId?.get(firstChefUserId) ?? null
           : null,
         cookCount: r.cookCount ?? 0,
       };

@@ -11,7 +11,12 @@ import {
   UploadedFiles,
   Param,
   Patch,
+  Req,
+  Res,
 } from '@nestjs/common';
+import { Request, Response } from 'express';
+import { sendCacheableJson } from 'src/common/http/cacheable-json';
+import { DataVersionService } from '../data-version/data-version.service';
 import { IngredientsService } from './ingredients.service';
 import { CreateCatgoryDto } from './dto/ingrediants.category.dto';
 import { CreateIngredientDto } from './dto/create-ingredient.dto';
@@ -23,7 +28,10 @@ import { FileFieldsInterceptor } from '@nestjs/platform-express';
 
 @Controller('ingredients')
 export class IngredientsController {
-  constructor(private readonly ingrediantsService: IngredientsService) {}
+  constructor(
+    private readonly ingrediantsService: IngredientsService,
+    private readonly dataVersionService: DataVersionService,
+  ) {}
 
   // Category endpoints
   @Post('category')
@@ -78,6 +86,23 @@ export class IngredientsController {
   @Get()
   async getAllIngredients(@Query('country') country?: string) {
     return this.ingrediantsService.getAllIngredients(country);
+  }
+
+  @Get('summaries')
+  async getIngredientSummaries(
+    @Req() req: Request,
+    @Res() res: Response,
+    @Query('country') country?: string,
+    @Query('v') v?: string,
+  ) {
+    const [data, currentVersion] = await Promise.all([
+      this.ingrediantsService.getIngredientSummaries(country),
+      this.dataVersionService.getVersion('ingredients'),
+    ]);
+    return sendCacheableJson(req, res, data, {
+      requestedVersion: v,
+      currentVersion,
+    });
   }
 
   @Get('batch')

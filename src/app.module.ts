@@ -45,6 +45,7 @@ import { AIInteractionModule } from './modules/ai-interaction/ai-interaction.mod
 import { SubscriptionModule } from './modules/subscription/subscription.module';
 import { DeeplinkModule } from './modules/deeplink/deeplink.module';
 import { PerksModule } from './modules/perks/perks.module';
+import { DataVersionModule } from './modules/data-version/data-version.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
@@ -89,6 +90,7 @@ import { PerksModule } from './modules/perks/perks.module';
     DatabaseModule,
     AuthModule,
     RedisModule,
+    DataVersionModule,
     UserModule,
     HackModule,
     ImageUploadModule,

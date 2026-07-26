@@ -1,5 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document, Types } from 'mongoose';
+import { HeroImage, HeroImageSchema } from './hero-image.schema';
 
 @Schema({ _id: false })
 export class AlternativeIngredient {
@@ -128,6 +129,9 @@ export class Recipe {
 
   @Prop()
   heroImageUrl?: string; 
+
+  @Prop({ type: HeroImageSchema })
+  heroImage?: HeroImage;
 
   @Prop()
   youtubeId?: string;

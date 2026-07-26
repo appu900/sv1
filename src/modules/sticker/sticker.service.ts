@@ -1,19 +1,33 @@
-import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { StickerDocument, Stickers } from 'src/database/schemas/stcikers.schema';
 import { CreateStickerDto } from './dto/create-sticker.dto';
 import { ImageUploadService } from '../image-upload/image-upload.service';
 import { RedisService } from 'src/redis/redis.service';
+import { DataVersionService } from '../data-version/data-version.service';
 
 
 @Injectable()
 export class StickerService {
     constructor(@InjectModel(Stickers.name) private readonly stickerMode:Model<StickerDocument>,
     private readonly imageUploadService:ImageUploadService,
-    private readonly redisService:RedisService
+    private readonly redisService:RedisService,
+    @Optional() private readonly dataVersion?: DataVersionService,
 
 ){}4
+
+    /**
+     * Sticker images are embedded in the recipe summary payload, so a sticker
+     * change also invalidates every cached recipe summary.
+     */
+    private async invalidateStickerCaches() {
+        try {
+            await this.redisService.delByPattern('recipes:summaries:v1*');
+        } catch { /* non-critical */ }
+        await this.dataVersion?.bump('stickers');
+        await this.dataVersion?.bump('recipes');
+    }
 
 
     async create(dto:CreateStickerDto,file:{image:Express.Multer.File[]}){
@@ -33,6 +47,7 @@ export class StickerService {
          }
          const result = await this.stickerMode.create(stickerData)
          try { await this.redisService.del(cachedKey); } catch { /* non-critical */ }
+         await this.invalidateStickerCaches();
          return result
     }
 
@@ -68,6 +83,7 @@ export class StickerService {
         const cachedKey = `sticker:all`;
         const result = await this.stickerMode.findByIdAndUpdate(id, updateData, { new: true });
         try { await this.redisService.del(cachedKey); } catch { /* non-critical */ }
+        await this.invalidateStickerCaches();
         return result;
     }
 
@@ -78,6 +94,7 @@ export class StickerService {
         const cachedKey = `sticker:all`;
         await this.stickerMode.findByIdAndDelete(id);
         try { await this.redisService.del(cachedKey); } catch { /* non-critical */ }
+        await this.invalidateStickerCaches();
         return { message: 'Sticker deleted successfully' };
     }
 }

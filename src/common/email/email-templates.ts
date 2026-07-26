@@ -7,14 +7,14 @@ const LIGHT_MODE_META = `
 const LOGO_BLOCK = `
 <!-- Light mode logo -->
 <img
-  src="https://d3fg04h02j12vm.cloudfront.net/logo%403x.png"
+  src="https://cdn.saveful.app/logo%403x.png"
   alt="Saveful logo"
   width="110"
   class="logo logo-light"
 />
 <!-- Dark mode logo -->
 <img
-  src="https://d3fg04h02j12vm.cloudfront.net/Saveful-logo-white-Rev.webp"
+  src="https://cdn.saveful.app/Saveful-logo-white-Rev.webp"
   alt="Saveful logo"
   width="110"
   class="logo logo-dark"
@@ -112,7 +112,7 @@ export function welcomeTemplate(userName: string): string {
   <table class="wrapper" width="100%" role="presentation">
     <tr><td align="center">
       <table class="container" width="100%" role="presentation">
-        <tr><td><img src="https://d3fg04h02j12vm.cloudfront.net/header.jpeg" alt="Welcome to Saveful" width="600" style="width:100%; max-width:600px;" /></td></tr>
+        <tr><td><img src="https://cdn.saveful.app/header.jpeg" alt="Welcome to Saveful" width="600" style="width:100%; max-width:600px;" /></td></tr>
         <tr><td class="content">
           <h1>Welcome to Saveful</h1>
           <p class="intro">Here's the good news. You can save money on groceries without changing how you cook.</p>

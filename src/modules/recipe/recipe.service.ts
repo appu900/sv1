@@ -15,15 +15,28 @@ import { DietCategory, DietCategoryDocument } from '../../database/schemas/diet.
 import { CreateRecipeDto } from './dto/create-recipe.dto';
 import { UpdateRecipeDto } from './dto/update-recipe.dto';
 import { RedisService } from '../../redis/redis.service';
-import { ImageUploadService } from '../image-upload/image-upload.service';
+import {
+  HeroImageAsset,
+  ImageUploadService,
+} from '../image-upload/image-upload.service';
 import { normalizeCountry } from '../../utils/countries.util';
 import { ChefProfileSyncService } from '../chef/chef-profile-sync.service';
 import { ChefLookupService } from '../chef/chef-lookup.service';
+import { DataVersionService } from '../data-version/data-version.service';
+
+export interface SummaryHeroImage {
+  base: string;
+  variants: Record<string, string>;
+  width: number;
+  height: number;
+  thumbhash: string;
+}
 
 export interface RecipeSummary {
   _id: string;
   title: string;
   heroImageUrl?: string;
+  heroImage?: SummaryHeroImage;
   order: number;
   frameworkCategoryIds: string[];
   variantTags: string[];
@@ -57,6 +70,7 @@ export class RecipeService implements OnModuleInit {
     private readonly imageUploadService: ImageUploadService,
     @Optional() private readonly chefProfileSync?: ChefProfileSyncService,
     @Optional() private readonly chefLookup?: ChefLookupService,
+    @Optional() private readonly dataVersion?: DataVersionService,
   ) {}
 
   async onModuleInit() {
@@ -190,11 +204,14 @@ export class RecipeService implements OnModuleInit {
   ): Promise<Recipe> {
     try {
       let heroImageUrl: string | undefined;
+      let heroImage: HeroImageAsset | undefined;
       if (heroImageFile) {
-        heroImageUrl = await this.imageUploadService.uploadFile(
+        heroImage = await this.imageUploadService.uploadImageWithVariants(
           heroImageFile,
           'recipes',
         );
+        // `heroImageUrl` stays populated for clients that predate `heroImage`.
+        heroImageUrl = heroImage.base;
       }
 
       const processedComponents = this.processComponents(
@@ -227,6 +244,7 @@ export class RecipeService implements OnModuleInit {
       const recipeData: any = {
         ...createRecipeDto,
         heroImageUrl: heroImageUrl || createRecipeDto.heroImageUrl,
+        ...(heroImage ? { heroImage } : {}),
         hackOrTipIds: (createRecipeDto.hackOrTipIds || [])
           .filter(id => id && Types.ObjectId.isValid(id))
           .map(id => new Types.ObjectId(id)),
@@ -388,7 +406,7 @@ export class RecipeService implements OnModuleInit {
       const recipes = await this.recipeModel
         .find(matchQuery)
         .select(
-          '_id title heroImageUrl order frameworkCategories ' +
+          '_id title heroImageUrl heroImage order frameworkCategories ' +
             'stickerId components.variantTags ' +
             'components.component.requiredIngredients.recommendedIngredient ' +
             'components.component.requiredIngredients.alternativeIngredients.ingredient',
@@ -451,21 +469,46 @@ export class RecipeService implements OnModuleInit {
       ...(typeof recipe.heroImageUrl === 'string' && recipe.heroImageUrl
         ? { heroImageUrl: recipe.heroImageUrl }
         : {}),
+      ...(recipe.heroImage?.base
+        ? { heroImage: this.summaryHeroImage(recipe.heroImage) }
+        : {}),
       order: Number.isFinite(recipe.order) ? recipe.order : 0,
-      frameworkCategoryIds: [...new Set(categoryIds)],
-      variantTags: [...variantTags],
+      frameworkCategoryIds: Array.from(new Set(categoryIds)),
+      variantTags: Array.from(variantTags),
       ...(stickerId && stickerImage
         ? { sticker: { id: stickerId, imageUrl: stickerImage } }
         : {}),
-      unsubstitutableIngredientIds: [...unsubstitutableIngredientIds],
+      unsubstitutableIngredientIds: Array.from(unsubstitutableIngredientIds),
     };
   }
 
-  private summaryId(value: any): string {
+  /** Strips the Mongoose subdocument wrapper down to plain JSON. */
+  private summaryHeroImage(heroImage: any): SummaryHeroImage {
+    return {
+      base: String(heroImage.base),
+      variants:
+        heroImage.variants && typeof heroImage.variants === 'object'
+          ? { ...heroImage.variants }
+          : {},
+      width: Number.isFinite(heroImage.width) ? heroImage.width : 0,
+      height: Number.isFinite(heroImage.height) ? heroImage.height : 0,
+      thumbhash:
+        typeof heroImage.thumbhash === 'string' ? heroImage.thumbhash : '',
+    };
+  }
+
+  private summaryId(value: unknown): string {
     if (!value) return '';
     if (typeof value === 'string') return value;
-    if (value._id) return this.summaryId(value._id);
-    if (value.$oid) return String(value.$oid);
+    // An ObjectId returns itself from `._id`, so it must be matched before the
+    // `._id` unwrapping below or the recursion never terminates.
+    if (value instanceof Types.ObjectId) return value.toHexString();
+    if (Buffer.isBuffer(value)) return value.toString('hex');
+    if (typeof value === 'object') {
+      const obj = value as Record<string, unknown>;
+      if (typeof obj.$oid === 'string') return obj.$oid;
+      if (obj._id && obj._id !== value) return this.summaryId(obj._id);
+    }
     const result = String(value);
     return result === '[object Object]' ? '' : result;
   }
@@ -509,23 +552,17 @@ export class RecipeService implements OnModuleInit {
       }
       await this.redisService.set(key, value, this.CACHE_TTL);
     } catch {
-      // Cache writes must never hide a successful database response.
+     
     }
   }
 
-  /**
-   * Clear shared Valkey recipe caches after create/update/delete.
-   * Keep in sync with saveful-india-web/lib/invalidateRecipeCache.ts
-   */
+ 
   private async invalidateRecipeCaches(_options?: {
     recipeId?: string;
     frameworkCategoryIds?: Array<string | { toString(): string }>;
   }): Promise<void> {
     try {
-      // Drop in-flight summary coalescing so a mutation cannot reuse a stale refresh.
       this.summaryRefreshes.clear();
-
-      // Bump generation first so in-flight DB loads cannot rewrite deleted keys.
       try {
         await this.redisService.incr(this.CACHE_GENERATION_KEY);
       } catch (error) {
@@ -535,7 +572,6 @@ export class RecipeService implements OnModuleInit {
         );
       }
 
-      // Match startup flush: every recipe list/detail + dietary recommendation cache.
       await this.redisService.delByPattern('recipes:*');
       await this.redisService.delByPattern('dietary:*');
     } catch (error) {
@@ -544,12 +580,14 @@ export class RecipeService implements OnModuleInit {
         error?.message,
       );
     }
+
+    // Tells clients to refetch. `bump` absorbs its own failures, so a Redis or
+    // Mongo outage degrades freshness rather than failing the mutation.
+    await this.dataVersion?.bump('recipes');
   }
 
   async findAll(country?: string): Promise<Recipe[]> {
-    // Normalize ISO code (e.g. 'IN') → full name (e.g. 'India') to match DB values.
     country = normalizeCountry(country);
-    // Country-specific cache key so each country gets its own cached result
     const cacheKey = country
       ? `${this.CACHE_KEY_ALL}:country:${country.toLowerCase()}`
       : this.CACHE_KEY_ALL;
@@ -567,10 +605,7 @@ export class RecipeService implements OnModuleInit {
     const generationAtStart = await this.getRecipeCacheGeneration();
 
     try {
-      // Build the match query with optional country filter.
-      // When a country is provided, only return recipes explicitly tagged
-      // with that country. Recipes with no countries field or an empty array
-      // are NOT shown to country-specific users.
+     
       const matchQuery: any = { isActive: true };
       if (country) {
         matchQuery.countries = country;
@@ -843,7 +878,7 @@ export class RecipeService implements OnModuleInit {
 
     const ingredientObjectId = new Types.ObjectId(ingredientId);
 
-    // Build the match query: filter by ingredient presence plus optional country.
+
     const ingredientConditions = [
       { 'components.component.requiredIngredients.recommendedIngredient': ingredientObjectId },
       { 'components.component.requiredIngredients.alternativeIngredients.ingredient': ingredientObjectId },
@@ -920,11 +955,13 @@ export class RecipeService implements OnModuleInit {
 
     try {
       let heroImageUrl = updateRecipeDto.heroImageUrl;
+      let heroImage: HeroImageAsset | undefined;
       if (heroImageFile) {
-        heroImageUrl = await this.imageUploadService.uploadFile(
+        heroImage = await this.imageUploadService.uploadImageWithVariants(
           heroImageFile,
           'recipes',
         );
+        heroImageUrl = heroImage.base;
 
         if (existingRecipe.heroImageUrl) {
           await this.imageUploadService.deleteFile(
@@ -941,13 +978,14 @@ export class RecipeService implements OnModuleInit {
         ...updateRecipeDto,
       };
 
-      // Always remove these from the spread — they are handled explicitly below
-      // to avoid saving empty strings as ObjectId fields (which causes CastErrors on populate).
       delete updateData.stickerId;
       delete updateData.sponsorId;
 
       if (heroImageUrl) {
         updateData.heroImageUrl = heroImageUrl;
+      }
+      if (heroImage) {
+        updateData.heroImage = heroImage;
       }
 
       if (updateRecipeDto.hackOrTipIds) {
@@ -1102,7 +1140,6 @@ export class RecipeService implements OnModuleInit {
     const resultCacheKey = `dietary:recommendations:${activeKeys.sort().join('+')}`
       + (country ? `:country:${country.toLowerCase()}` : '');
 
-    // Return cached result if available
     try {
       const cached = await this.redisService.get<any[]>(resultCacheKey);
       if (cached) return cached;
@@ -1110,7 +1147,6 @@ export class RecipeService implements OnModuleInit {
 
     const generationAtStart = await this.getRecipeCacheGeneration();
 
-    // ── 2. Resolve DietCategory ObjectIds ───────────────────────────────────
     const namePatterns = activeKeys.flatMap(k => patternMap[k] ?? []);
     const dietCategories = await this.dietCategoryModel
       .find({ name: { $in: namePatterns.map(p => new RegExp(`^${p}$`, 'i')) } })
@@ -1124,7 +1160,7 @@ export class RecipeService implements OnModuleInit {
 
     const dietIds = new Set(dietCategories.map((d: any) => d._id.toString()));
 
-    const ingCacheKey = `dietary:suitable-ingredients:${[...dietIds].sort().join('+')}`;
+    const ingCacheKey = `dietary:suitable-ingredients:${Array.from(dietIds).sort().join('+')}`;
     let suitableIngredientIds: Set<string>;
 
     try {
@@ -1146,14 +1182,14 @@ export class RecipeService implements OnModuleInit {
           .filter((ing: any) => {
             const suited: string[] = (ing.suitableDiets ?? []).map((id: any) => id.toString());
             if (suited.length === 0) return true; 
-            return [...dietIds].every(dId => suited.includes(dId));
+            return Array.from(dietIds).every(dId => suited.includes(dId));
           })
           .map((ing: any) => ing._id.toString()),
       );
 
       await this.setRecipeCacheIfCurrent(
         ingCacheKey,
-        [...suitableIngredientIds],
+        Array.from(suitableIngredientIds),
         generationAtStart,
       );
     }

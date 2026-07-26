@@ -1,5 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Types, Schema as MongooseSchema } from 'mongoose';
+import { HeroImage, HeroImageSchema } from './hero-image.schema';
 
 export enum IngredientTheme {
   RED = 'Red',
@@ -47,6 +48,10 @@ export class Ingredient {
 
   @Prop()
   heroImageUrl?: string;
+
+  /** Responsive variants and ThumbHash. Absent until backfilled. */
+  @Prop({ type: HeroImageSchema })
+  heroImage?: HeroImage;
 
   @Prop({ enum: Object.values(IngredientTheme) })
   theme?: IngredientTheme;

@@ -12,8 +12,13 @@ import {
   UploadedFile,
   BadRequestException,
   Logger,
+  Req,
+  Res,
 } from '@nestjs/common';
+import { Request, Response } from 'express';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { sendCacheableJson } from '../../common/http/cacheable-json';
+import { DataVersionService } from '../data-version/data-version.service';
 import { RecipeService } from './recipe.service';
 import { ServingScaleService } from './serving-scale.service';
 import { CreateRecipeDto } from './dto/create-recipe.dto';
@@ -34,6 +39,7 @@ export class RecipeController {
   constructor(
     private readonly recipeService: RecipeService,
     private readonly servingScaleService: ServingScaleService,
+    private readonly dataVersionService: DataVersionService,
   ) {}
 
   @Post()
@@ -171,8 +177,20 @@ export class RecipeController {
   }
 
   @Get('summaries')
-  async findSummaries(@Query('country') country?: string) {
-    return this.recipeService.findSummaries(country);
+  async findSummaries(
+    @Req() req: Request,
+    @Res() res: Response,
+    @Query('country') country?: string,
+    @Query('v') v?: string,
+  ) {
+    const [data, currentVersion] = await Promise.all([
+      this.recipeService.findSummaries(country),
+      this.dataVersionService.getVersion('recipes'),
+    ]);
+    return sendCacheableJson(req, res, data, {
+      requestedVersion: v,
+      currentVersion,
+    });
   }
 
   @Get('category/:categoryId')

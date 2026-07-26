@@ -3,6 +3,7 @@ import {
   NotFoundException,
   BadRequestException,
   ConflictException,
+  Optional,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
@@ -13,6 +14,7 @@ import {
 import { CreateFrameworkCategoryDto } from './dto/create-framework-category.dto';
 import { UpdateFrameworkCategoryDto } from './dto/update-framework-category.dto';
 import { RedisService } from '../../redis/redis.service';
+import { DataVersionService } from '../data-version/data-version.service';
 
 @Injectable()
 export class FrameworkCategoryService {
@@ -24,6 +26,7 @@ export class FrameworkCategoryService {
     @InjectModel(FrameworkCategory.name)
     private frameworkCategoryModel: Model<FrameworkCategoryDocument>,
     private readonly redisService: RedisService,
+    @Optional() private readonly dataVersion?: DataVersionService,
   ) {}
 
   async create(
@@ -46,6 +49,7 @@ export class FrameworkCategoryService {
 
       // Clear cache
       await this.redisService.del(this.CACHE_KEY_ALL);
+      await this.dataVersion?.bump('frameworkCategories');
 
       return savedCategory;
     } catch (error) {
@@ -170,6 +174,7 @@ export class FrameworkCategoryService {
       // Clear cache
       await this.redisService.del(this.CACHE_KEY_ALL);
       await this.redisService.del(`${this.CACHE_KEY_SINGLE}:${id}`);
+      await this.dataVersion?.bump('frameworkCategories');
 
       return updatedCategory;
     } catch (error) {
@@ -199,5 +204,6 @@ export class FrameworkCategoryService {
     // Clear cache
     await this.redisService.del(this.CACHE_KEY_ALL);
     await this.redisService.del(`${this.CACHE_KEY_SINGLE}:${id}`);
+    await this.dataVersion?.bump('frameworkCategories');
   }
 }

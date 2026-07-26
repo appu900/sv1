@@ -1,3 +1,4 @@
+import { Types } from 'mongoose';
 import { RecipeService } from './recipe.service';
 
 function createQuery(result: unknown | Promise<unknown>) {
@@ -47,6 +48,15 @@ function createService(overrides: Record<string, any> = {}) {
     deleteFile: jest.fn(),
     ...overrides.imageUpload,
   };
+  // `null` stands for a deployment where the optional dependency is absent.
+  const dataVersion =
+    overrides.dataVersion === null
+      ? undefined
+      : {
+          bump: jest.fn().mockResolvedValue(1),
+          getVersion: jest.fn().mockResolvedValue(1),
+          ...overrides.dataVersion,
+        };
   const service = new RecipeService(
     recipeModel as never,
     {} as never,
@@ -54,8 +64,11 @@ function createService(overrides: Record<string, any> = {}) {
     {} as never,
     redis as never,
     imageUpload as never,
+    undefined,
+    undefined,
+    dataVersion as never,
   );
-  return { service, recipeModel, redis, query };
+  return { service, recipeModel, redis, query, dataVersion };
 }
 
 const rawRecipe = {
@@ -88,6 +101,67 @@ const rawRecipe = {
     },
   ],
 };
+
+describe('RecipeService summary id mapping', () => {
+  it('maps real ObjectId values to hex strings', async () => {
+    const recipeId = new Types.ObjectId();
+    const categoryId = new Types.ObjectId();
+    const stickerId = new Types.ObjectId();
+    const requiredId = new Types.ObjectId();
+
+    const { service } = createService({
+      query: createQuery([
+        {
+          _id: recipeId,
+          title: 'Objectid Pasta',
+          order: 1,
+          frameworkCategories: [categoryId],
+          stickerId: { _id: stickerId, imageUrl: 'https://cdn/sticker.png' },
+          components: [
+            {
+              variantTags: ['Classic'],
+              component: [
+                {
+                  requiredIngredients: [
+                    {
+                      recommendedIngredient: requiredId,
+                      alternativeIngredients: [],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ]),
+    });
+
+    const [summary] = await service.findSummaries();
+
+    expect(summary._id).toBe(recipeId.toHexString());
+    expect(summary.frameworkCategoryIds).toEqual([categoryId.toHexString()]);
+    expect(summary.sticker?.id).toBe(stickerId.toHexString());
+    expect(summary.unsubstitutableIngredientIds).toEqual([
+      requiredId.toHexString(),
+    ]);
+  });
+
+  it('does not overflow the stack on self-referential id shapes', async () => {
+    const { service } = createService({
+      query: createQuery([
+        {
+          _id: new Types.ObjectId(),
+          title: 'Self Referential',
+          order: 0,
+          frameworkCategories: [],
+          components: [],
+        },
+      ]),
+    });
+
+    await expect(service.findSummaries()).resolves.toHaveLength(1);
+  });
+});
 
 describe('RecipeService summary caching', () => {
   it('returns a lean mapped summary and caches it by country', async () => {
@@ -226,6 +300,18 @@ describe('RecipeService summary caching', () => {
     expect(redis.incr).toHaveBeenCalledWith('cache:gen:recipes');
     expect(redis.delByPattern).toHaveBeenCalledWith('recipes:*');
     expect(redis.delByPattern).toHaveBeenCalledWith('dietary:*');
+  });
+
+  it('bumps the recipes data version so clients learn about the edit', async () => {
+    const { service, dataVersion } = createService();
+    await (service as any).invalidateRecipeCaches({ recipeId: 'abc' });
+    expect(dataVersion.bump).toHaveBeenCalledWith('recipes');
+  });
+
+  it('still purges Redis when data versioning is not wired up', async () => {
+    const { service, redis } = createService({ dataVersion: null });
+    await (service as any).invalidateRecipeCaches({ recipeId: 'abc' });
+    expect(redis.delByPattern).toHaveBeenCalledWith('recipes:*');
   });
 
   it('does not rewrite summary cache after generation bumps', async () => {
