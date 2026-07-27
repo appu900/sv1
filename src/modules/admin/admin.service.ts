@@ -9,9 +9,19 @@ import { FoodFact } from 'src/database/schemas/food-fact.schema';
 import { Stickers } from 'src/database/schemas/stcikers.schema';
 import { QantasFFN, QantasFFNDocument } from 'src/database/schemas/qantas-ffn.schema';
 import { TrackSurvey, TrackSurveyDocument } from 'src/database/schemas/track-survey.schema';
+import { Recipe, RecipeDocument } from 'src/database/schemas/recipe.schema';
+import {
+  ChefProfile,
+  ChefProfileDocument,
+} from 'src/database/schemas/chef-profile.schema';
+import {
+  ChefFavourite,
+  ChefFavouriteDocument,
+} from 'src/database/schemas/chef-favourite.schema';
 import { CreateChefDto } from './dto/create-chef.dto';
 import * as bcrypt from 'bcrypt';
 import { ChefProfileService } from '../chef/chef-profile.service';
+import { ChefService } from '../chef/chef.service';
 
 @Injectable()
 export class AdminService {
@@ -24,7 +34,13 @@ export class AdminService {
     @InjectModel(Stickers.name) private readonly stickerModel: Model<Stickers>,
     @InjectModel(QantasFFN.name) private readonly qantasFFNModel: Model<QantasFFNDocument>,
     @InjectModel(TrackSurvey.name) private readonly trackSurveyModel: Model<TrackSurveyDocument>,
+    @InjectModel(Recipe.name) private readonly recipeModel: Model<RecipeDocument>,
+    @InjectModel(ChefProfile.name)
+    private readonly chefProfileModel: Model<ChefProfileDocument>,
+    @InjectModel(ChefFavourite.name)
+    private readonly chefFavouriteModel: Model<ChefFavouriteDocument>,
     @Optional() private readonly chefProfileService?: ChefProfileService,
+    @Optional() private readonly chefService?: ChefService,
   ) {}
 
   private mapQantasFFN(ffn: any | null) {
@@ -155,8 +171,9 @@ export class AdminService {
       throw new BadRequestException('Invalid chef ID');
     }
 
+    const chefObjectId = new Types.ObjectId(id);
     const chef = await this.userModel.findOne({
-      _id: new Types.ObjectId(id),
+      _id: chefObjectId,
       role: UserRole.CHEF,
     });
 
@@ -164,11 +181,55 @@ export class AdminService {
       throw new NotFoundException('Chef not found');
     }
 
-    await this.userModel.deleteOne({ _id: new Types.ObjectId(id) });
+    // Delete catalog recipes solely attributed to this chef
+    const soleOwned = await this.recipeModel
+      .find({
+        chefIds: chefObjectId,
+        $expr: { $eq: [{ $size: { $ifNull: ['$chefIds', []] } }, 1] },
+      })
+      .select({ _id: 1 })
+      .lean()
+      .exec();
+
+    const soleOwnedIds = soleOwned.map((r) => r._id);
+    const deletedRecipes = soleOwnedIds.length
+      ? await this.recipeModel.deleteMany({ _id: { $in: soleOwnedIds } })
+      : { deletedCount: 0 };
+
+    // Co-authored recipes: remove this chef, keep the recipe
+    const pulled = await this.recipeModel.updateMany(
+      {
+        chefIds: chefObjectId,
+        ...(soleOwnedIds.length ? { _id: { $nin: soleOwnedIds } } : {}),
+      },
+      { $pull: { chefIds: chefObjectId } },
+    );
+
+    const profile = await this.chefProfileModel
+      .findOne({ userId: chefObjectId })
+      .select({ _id: 1 })
+      .lean()
+      .exec();
+
+    if (profile?._id) {
+      await this.chefFavouriteModel.deleteMany({ chefId: profile._id });
+      await this.chefProfileModel.deleteOne({ _id: profile._id });
+    }
+
+    await this.userModel.deleteOne({ _id: chefObjectId });
+
+    if (this.chefService?.invalidateCaches) {
+      await this.chefService.invalidateCaches().catch(() => undefined);
+    }
 
     return {
       success: true,
-      message: 'Chef deleted successfully',
+      message: 'Chef and related recipes deleted successfully',
+      deleted: {
+        catalogRecipes: deletedRecipes.deletedCount || 0,
+        sharedRecipesUpdated: pulled.modifiedCount || 0,
+        profiles: profile?._id ? 1 : 0,
+      },
     };
   }
 

@@ -1,14 +1,13 @@
 import {
+  Allow,
   IsBoolean,
   IsNotEmpty,
   IsNumber,
-  IsObject,
   IsOptional,
   IsString,
   MaxLength,
-  ValidateNested,
 } from 'class-validator';
-import { Transform, Type } from 'class-transformer';
+import { Transform } from 'class-transformer';
 
 const toOptionalNumber = ({ value }: { value: unknown }) => {
   if (value === undefined || value === null || value === '') return undefined;
@@ -33,42 +32,61 @@ const toOptionalTrimmedString = ({ value }: { value: unknown }) => {
 
 const parseSocialLinks = ({ value }: { value: unknown }) => {
   if (value === undefined || value === null || value === '') return undefined;
-  if (typeof value === 'object') return value;
+
+  let parsed: unknown = value;
   if (typeof value === 'string') {
     try {
-      return JSON.parse(value);
+      parsed = JSON.parse(value);
     } catch {
-      return value;
+      return undefined;
     }
   }
-  return value;
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return undefined;
+  }
+
+  const src = parsed as Record<string, unknown>;
+  const pick = (key: string) => {
+    const raw = src[key];
+    if (raw === undefined || raw === null) return '';
+    return String(raw).trim();
+  };
+
+  return {
+    instagram: pick('instagram'),
+    youtube: pick('youtube'),
+    tiktok: pick('tiktok'),
+    facebook: pick('facebook'),
+    website: pick('website'),
+    linkedin: pick('linkedin'),
+  };
 };
 
 export class ChefSocialLinksDto {
-  @Transform(toOptionalTrimmedString)
   @IsString()
   @IsOptional()
   instagram?: string;
 
-  @Transform(toOptionalTrimmedString)
   @IsString()
   @IsOptional()
   youtube?: string;
 
-  @Transform(toOptionalTrimmedString)
   @IsString()
   @IsOptional()
   tiktok?: string;
 
-  @Transform(toOptionalTrimmedString)
   @IsString()
   @IsOptional()
   facebook?: string;
 
-  @Transform(toOptionalTrimmedString)
   @IsString()
   @IsOptional()
   website?: string;
+
+  @IsString()
+  @IsOptional()
+  linkedin?: string;
 }
 
 export class CreateChefProfileDto {
@@ -107,10 +125,8 @@ export class CreateChefProfileDto {
   bio?: string;
 
   @Transform(parseSocialLinks)
-  @IsObject()
+  @Allow()
   @IsOptional()
-  @ValidateNested()
-  @Type(() => ChefSocialLinksDto)
   socialLinks?: ChefSocialLinksDto;
 
   @Transform(toOptionalBoolean)

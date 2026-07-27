@@ -504,9 +504,13 @@ export class ChefService {
       const doc = await this.chefProfileModel.findOne(filter).lean().exec();
       if (!doc) throw new NotFoundException('Chef not found');
 
-      const cuisines = doc.cuisineIds?.length
+      const cuisineSourceIds =
+        doc.featuredCuisineIds?.length > 0
+          ? doc.featuredCuisineIds
+          : doc.cuisineIds;
+      const cuisines = cuisineSourceIds?.length
         ? await this.cuisineModel
-            .find({ _id: { $in: doc.cuisineIds }, isActive: true })
+            .find({ _id: { $in: cuisineSourceIds }, isActive: true })
             .select({ title: 1, imageUrl: 1 })
             .lean()
             .exec()

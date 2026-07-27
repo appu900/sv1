@@ -10,6 +10,15 @@ import { FoodFact, FoodFactSchema } from 'src/database/schemas/food-fact.schema'
 import { Stickers, StickerSchema } from 'src/database/schemas/stcikers.schema';
 import { QantasFFN, QantasFFNSchema } from 'src/database/schemas/qantas-ffn.schema';
 import { TrackSurvey, TrackSurveySchema } from 'src/database/schemas/track-survey.schema';
+import { Recipe, RecipeSchema } from 'src/database/schemas/recipe.schema';
+import {
+  ChefProfile,
+  ChefProfileSchema,
+} from 'src/database/schemas/chef-profile.schema';
+import {
+  ChefFavourite,
+  ChefFavouriteSchema,
+} from 'src/database/schemas/chef-favourite.schema';
 import { ChefModule } from '../chef/chef.module';
 
 @Module({
@@ -23,6 +32,9 @@ import { ChefModule } from '../chef/chef.module';
       { name: Stickers.name, schema: StickerSchema },
       { name: QantasFFN.name, schema: QantasFFNSchema },
       { name: TrackSurvey.name, schema: TrackSurveySchema },
+      { name: Recipe.name, schema: RecipeSchema },
+      { name: ChefProfile.name, schema: ChefProfileSchema },
+      { name: ChefFavourite.name, schema: ChefFavouriteSchema },
     ]),
     forwardRef(() => ChefModule),
   ],

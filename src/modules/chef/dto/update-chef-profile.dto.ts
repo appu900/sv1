@@ -1,14 +1,13 @@
 import {
+  Allow,
+  IsArray,
   IsBoolean,
   IsNumber,
-  IsObject,
   IsOptional,
   IsString,
   MaxLength,
-  ValidateNested,
 } from 'class-validator';
-import { Transform, Type } from 'class-transformer';
-import { ChefSocialLinksDto } from './create-chef-profile.dto';
+import { Transform } from 'class-transformer';
 
 const toOptionalNumber = ({ value }: { value: unknown }) => {
   if (value === undefined || value === null || value === '') return undefined;
@@ -31,14 +30,96 @@ const toOptionalTrimmedString = ({ value }: { value: unknown }) => {
   return trimmed.length ? trimmed : undefined;
 };
 
-const parseSocialLinks = ({ value }: { value: unknown }) => {
+type SocialLinksShape = {
+  instagram?: string;
+  youtube?: string;
+  tiktok?: string;
+  facebook?: string;
+  website?: string;
+  linkedin?: string;
+};
+
+const pickSocial = (src: Record<string, unknown>, key: string) => {
+  const raw = src[key];
+  if (raw === undefined || raw === null) return '';
+  return String(raw).trim();
+};
+
+const asSocialLinks = (src: Record<string, unknown>): SocialLinksShape => ({
+  instagram: pickSocial(src, 'instagram'),
+  youtube: pickSocial(src, 'youtube'),
+  tiktok: pickSocial(src, 'tiktok'),
+  facebook: pickSocial(src, 'facebook'),
+  website: pickSocial(src, 'website'),
+  linkedin: pickSocial(src, 'linkedin'),
+});
+
+/** Multipart may send socialLinks JSON and/or flat instagram/youtube/... fields. */
+const parseSocialLinks = ({ value, obj }: { value: unknown; obj: Record<string, unknown> }) => {
+  let fromJson: SocialLinksShape | undefined;
+
+  if (value !== undefined && value !== null && value !== '') {
+    let parsed: unknown = value;
+    if (typeof value === 'string') {
+      try {
+        parsed = JSON.parse(value);
+      } catch {
+        parsed = undefined;
+      }
+    }
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      fromJson = asSocialLinks(parsed as Record<string, unknown>);
+    }
+  }
+
+  const fromFlat = asSocialLinks(obj || {});
+  const hasFlat = Object.values(fromFlat).some((v) => Boolean(v));
+
+  if (!fromJson && !hasFlat) {
+    // Explicit empty JSON object still means "set social links" (possibly clear)
+    if (
+      value !== undefined &&
+      value !== null &&
+      value !== '' &&
+      typeof value === 'object'
+    ) {
+      return asSocialLinks(value as Record<string, unknown>);
+    }
+    if (typeof value === 'string') {
+      try {
+        const parsed = JSON.parse(value);
+        if (parsed && typeof parsed === 'object') {
+          return asSocialLinks(parsed as Record<string, unknown>);
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    return undefined;
+  }
+
+  return {
+    instagram: fromJson?.instagram || fromFlat.instagram || '',
+    youtube: fromJson?.youtube || fromFlat.youtube || '',
+    tiktok: fromJson?.tiktok || fromFlat.tiktok || '',
+    facebook: fromJson?.facebook || fromFlat.facebook || '',
+    website: fromJson?.website || fromFlat.website || '',
+    linkedin: fromJson?.linkedin || fromFlat.linkedin || '',
+  };
+};
+
+const parseIdArray = ({ value }: { value: unknown }) => {
   if (value === undefined || value === null || value === '') return undefined;
-  if (typeof value === 'object') return value;
+  if (Array.isArray(value)) return value;
   if (typeof value === 'string') {
     try {
-      return JSON.parse(value);
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : value;
     } catch {
-      return value;
+      return value
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
     }
   }
   return value;
@@ -75,11 +156,66 @@ export class UpdateChefProfileDto {
   bio?: string;
 
   @Transform(parseSocialLinks)
-  @IsObject()
+  @Allow()
   @IsOptional()
-  @ValidateNested()
-  @Type(() => ChefSocialLinksDto)
-  socialLinks?: ChefSocialLinksDto;
+  socialLinks?: SocialLinksShape;
+
+  // Flat multipart fallbacks (also used by parseSocialLinks via obj)
+  @Transform(toOptionalTrimmedString)
+  @IsString()
+  @IsOptional()
+  instagram?: string;
+
+  @Transform(toOptionalTrimmedString)
+  @IsString()
+  @IsOptional()
+  youtube?: string;
+
+  @Transform(toOptionalTrimmedString)
+  @IsString()
+  @IsOptional()
+  tiktok?: string;
+
+  @Transform(toOptionalTrimmedString)
+  @IsString()
+  @IsOptional()
+  facebook?: string;
+
+  @Transform(toOptionalTrimmedString)
+  @IsString()
+  @IsOptional()
+  website?: string;
+
+  @Transform(toOptionalTrimmedString)
+  @IsString()
+  @IsOptional()
+  linkedin?: string;
+
+  @Transform(parseIdArray)
+  @IsArray()
+  @IsOptional()
+  @IsString({ each: true })
+  featuredCuisineIds?: string[];
+
+  @Transform(toOptionalTrimmedString)
+  @IsString()
+  @IsOptional()
+  contactEmail?: string;
+
+  @Transform(toOptionalTrimmedString)
+  @IsString()
+  @IsOptional()
+  mobileNumber?: string;
+
+  @Transform(toOptionalTrimmedString)
+  @IsString()
+  @IsOptional()
+  preferredContactName?: string;
+
+  @Transform(toOptionalTrimmedString)
+  @IsString()
+  @IsOptional()
+  organisation?: string;
 
   @Transform(toOptionalBoolean)
   @IsBoolean()

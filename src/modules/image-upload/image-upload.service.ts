@@ -11,7 +11,7 @@ import {
   renderImageSet,
   VARIANT_WIDTHS,
 } from './image-variants';
-
+import { buildCdnAssetUrl } from '../../common/utils/image-url-migration';
 
 export interface HeroImageAsset {
   base: string;
@@ -114,10 +114,7 @@ export class ImageUploadService {
   }
 
   private publicUrl(key: string): string {
-    return `${this.cdnBaseUrl}/${key
-      .split('/')
-      .map(encodeURIComponent)
-      .join('/')}`;
+    return buildCdnAssetUrl(key, this.cdnBaseUrl);
   }
 
   private async deleteDerivedVariants(originalKey: string) {

@@ -241,12 +241,48 @@ export class ChefProfileService {
     if (dto.country !== undefined) existing.country = dto.country;
     if (dto.quote !== undefined) existing.quote = dto.quote;
     if (dto.bio !== undefined) existing.bio = dto.bio;
-    if (dto.socialLinks !== undefined) {
-      existing.socialLinks = {
-        ...(existing.socialLinks || {}),
-        ...dto.socialLinks,
-      };
+    const flatSocial = {
+      instagram: dto.instagram,
+      youtube: dto.youtube,
+      tiktok: dto.tiktok,
+      facebook: dto.facebook,
+      website: dto.website,
+      linkedin: dto.linkedin,
+    };
+    const hasFlatSocial = Object.values(flatSocial).some(
+      (v) => v !== undefined,
+    );
+    const incomingSocial =
+      dto.socialLinks !== undefined
+        ? dto.socialLinks
+        : hasFlatSocial
+          ? flatSocial
+          : undefined;
+
+    if (incomingSocial !== undefined) {
+      // Replace + markModified so nested subdocument changes persist in Mongo.
+      existing.set('socialLinks', {
+        instagram: String(incomingSocial.instagram ?? '').trim(),
+        youtube: String(incomingSocial.youtube ?? '').trim(),
+        tiktok: String(incomingSocial.tiktok ?? '').trim(),
+        facebook: String(incomingSocial.facebook ?? '').trim(),
+        website: String(incomingSocial.website ?? '').trim(),
+        linkedin: String(incomingSocial.linkedin ?? '').trim(),
+      });
+      existing.markModified('socialLinks');
     }
+    if (dto.featuredCuisineIds !== undefined) {
+      existing.featuredCuisineIds = (dto.featuredCuisineIds || [])
+        .filter((id) => Types.ObjectId.isValid(id))
+        .slice(0, 3)
+        .map((id) => new Types.ObjectId(id));
+    }
+    if (dto.contactEmail !== undefined) existing.contactEmail = dto.contactEmail;
+    if (dto.mobileNumber !== undefined) existing.mobileNumber = dto.mobileNumber;
+    if (dto.preferredContactName !== undefined) {
+      existing.preferredContactName = dto.preferredContactName;
+    }
+    if (dto.organisation !== undefined) existing.organisation = dto.organisation;
     if (dto.isPublished !== undefined) existing.isPublished = dto.isPublished;
     if (dto.order !== undefined) existing.order = dto.order;
 
