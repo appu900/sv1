@@ -1474,7 +1474,7 @@ export class PerksService {
     if (nameParts.length < 2) {
       missingFields.push('name');
     }
-    if (!/^\d{4}$/.test(postcode)) {
+    if (!/^\d{4,}$/.test(postcode)) {
       missingFields.push('pincode');
     }
     return missingFields;
@@ -1494,7 +1494,9 @@ export class PerksService {
       firstname: nameParts[0],
       lastname: nameParts.slice(1).join(' '),
       email: user.email.toLowerCase(),
-      postcode,
+      // WMAD only accepts 4-digit postcodes, so keep Saveful's stored pincode
+      // intact and trim only the upstream registration payload.
+      postcode: postcode.slice(0, 4),
     };
   }
 

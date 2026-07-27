@@ -229,15 +229,15 @@ describe('PerksService', () => {
     }
   });
 
-  it('requires an exact four digit postcode', async () => {
+  it('requires at least four digits in the stored pincode', async () => {
     const { service } = createService({
       userModel: {
         findById: jest.fn(() =>
           lean({
             _id: userId,
-            name: 'Long Postcode',
-            email: 'long@example.com',
-            pincode: '12345',
+            name: 'Short Postcode',
+            email: 'short@example.com',
+            pincode: '123',
           }),
         ),
       },
@@ -246,6 +246,51 @@ describe('PerksService', () => {
     await expect(service.ensureMembership(userId)).rejects.toBeInstanceOf(
       UnprocessableEntityException,
     );
+  });
+
+  it('trims longer stored pincodes before registering with WMAD', async () => {
+    const membership = {
+      wmadUserId: null,
+      status: PerksMembershipStatus.PENDING,
+      registeredAt: null,
+      lastErrorCode: null,
+      lastErrorMessage: null,
+      save: jest.fn(),
+      toObject() {
+        return this;
+      },
+    };
+    const { service, api, membershipModel } = createService({
+      userModel: {
+        findById: jest.fn(() =>
+          lean({
+            _id: userId,
+            name: 'Long Postcode',
+            email: 'long@example.com',
+            pincode: '123456',
+          }),
+        ),
+      },
+      membershipModel: {
+        findOneAndUpdate: jest.fn().mockResolvedValue(membership),
+      },
+      api: {
+        registerUser: jest.fn().mockResolvedValue({ user_id: 10625 }),
+      },
+    });
+
+    await expect(service.ensureMembership(userId)).resolves.toMatchObject({
+      wmadUserId: '10625',
+      status: PerksMembershipStatus.ACTIVE,
+    });
+    expect(api.registerUser).toHaveBeenCalledWith({
+      firstname: 'Long',
+      lastname: 'Postcode',
+      email: 'long@example.com',
+      postcode: '1234',
+    });
+    expect(membershipModel.findOneAndUpdate).toHaveBeenCalled();
+    expect(membership.save).toHaveBeenCalled();
   });
 
   it('reads membership status without registering or calling WMAD', async () => {
@@ -854,7 +899,7 @@ describe('PerksService', () => {
 
     await expect(service.getMembershipStatus(userId)).resolves.toMatchObject({
       status: 'not_registered',
-      missingFields: ['name', 'pincode'],
+      missingFields: ['name'],
     });
     expect(membershipModel.findOneAndUpdate).not.toHaveBeenCalled();
     expect(api.registerUser).not.toHaveBeenCalled();
