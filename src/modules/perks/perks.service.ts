@@ -285,11 +285,11 @@ export class PerksService {
       const missingFields = this.profileMissingFields(user, fallbackGender);
       throw new UnprocessableEntityException({
         message:
-          'WeMAD could not register your account. Confirm your first name, last name, postcode and gender, then try again.',
+          'WeMAD could not register your account. Confirm your first name, last name, phone number, postcode and gender, then try again.',
         missingFields:
           missingFields.length > 0
             ? missingFields
-            : ['name', 'pincode', 'gender'],
+            : ['name', 'phone', 'pincode', 'gender'],
         code: apiError.code,
         upstreamMessage: apiError.message,
       });
@@ -1534,6 +1534,9 @@ export class PerksService {
     if (nameParts.length < 2) {
       missingFields.push('name');
     }
+    if (!this.toWmadPhoneNumber(user.phoneNumber)) {
+      missingFields.push('phone');
+    }
     if (!/^\d{4,}$/.test(postcode)) {
       missingFields.push('pincode');
     }
@@ -1556,27 +1559,17 @@ export class PerksService {
       });
     }
     const gender = this.toWmadGenderCode(user.gender ?? fallbackGender ?? null);
-    const registration: {
-      firstname: string;
-      lastname: string;
-      email: string;
-      postcode: string;
-      phone?: string;
-      gender: WmadGenderCode;
-    } = {
+    const phone = this.toWmadPhoneNumber(user.phoneNumber);
+    return {
       firstname: nameParts[0],
       lastname: nameParts.slice(1).join(' '),
       email: user.email.toLowerCase(),
       // WMAD only accepts 4-digit postcodes, so keep Saveful's stored pincode
       // intact and trim only the upstream registration payload.
       postcode: postcode.slice(0, 4),
+      phone: phone as string,
       gender: gender as WmadGenderCode,
     };
-    const phone = this.toWmadPhoneNumber(user.phoneNumber);
-    if (phone) {
-      registration.phone = phone;
-    }
-    return registration;
   }
 
   private mapOrderPayload(
