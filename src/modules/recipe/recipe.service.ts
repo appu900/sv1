@@ -39,6 +39,7 @@ export interface RecipeSummary {
   heroImage?: SummaryHeroImage;
   order: number;
   frameworkCategoryIds: string[];
+  cuisineIds: string[];
   variantTags: string[];
   sticker?: {
     id: string;
@@ -53,7 +54,7 @@ export class RecipeService implements OnModuleInit {
   private readonly CACHE_KEY_ALL = 'recipes:all';
   private readonly CACHE_KEY_SINGLE = 'recipes:single';
   private readonly CACHE_KEY_CATEGORY = 'recipes:category';
-  private readonly CACHE_KEY_SUMMARIES = 'recipes:summaries:v1';
+  private readonly CACHE_KEY_SUMMARIES = 'recipes:summaries:v2';
   /** Outside `recipes:*` so nuclear deletes do not reset the fence. */
   private readonly CACHE_GENERATION_KEY = 'cache:gen:recipes';
   private readonly summaryRefreshes = new Map<
@@ -406,7 +407,7 @@ export class RecipeService implements OnModuleInit {
       const recipes = await this.recipeModel
         .find(matchQuery)
         .select(
-          '_id title heroImageUrl heroImage order frameworkCategories ' +
+          '_id title heroImageUrl heroImage order frameworkCategories cuisines ' +
             'stickerId components.variantTags ' +
             'components.component.requiredIngredients.recommendedIngredient ' +
             'components.component.requiredIngredients.alternativeIngredients.ingredient',
@@ -430,6 +431,9 @@ export class RecipeService implements OnModuleInit {
 
   private mapRecipeSummary(recipe: any): RecipeSummary {
     const categoryIds: string[] = (recipe.frameworkCategories || [])
+      .map((value: unknown) => this.summaryId(value))
+      .filter((value: string) => Boolean(value));
+    const cuisineIds: string[] = (recipe.cuisines || [])
       .map((value: unknown) => this.summaryId(value))
       .filter((value: string) => Boolean(value));
     const variantTags = new Set<string>();
@@ -474,6 +478,7 @@ export class RecipeService implements OnModuleInit {
         : {}),
       order: Number.isFinite(recipe.order) ? recipe.order : 0,
       frameworkCategoryIds: Array.from(new Set(categoryIds)),
+      cuisineIds: Array.from(new Set(cuisineIds)),
       variantTags: Array.from(variantTags),
       ...(stickerId && stickerImage
         ? { sticker: { id: stickerId, imageUrl: stickerImage } }

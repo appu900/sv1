@@ -23,7 +23,7 @@ export class StickerService {
      */
     private async invalidateStickerCaches() {
         try {
-            await this.redisService.delByPattern('recipes:summaries:v1*');
+            await this.redisService.delByPattern('recipes:summaries:v2*');
         } catch { /* non-critical */ }
         await this.dataVersion?.bump('stickers');
         await this.dataVersion?.bump('recipes');

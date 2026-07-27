@@ -100,6 +100,9 @@ function toRecipeSummary(recipe: any) {
         (recipe.frameworkCategories ?? []).map(asId).filter(Boolean),
       ),
     ],
+    cuisineIds: [
+      ...new Set((recipe.cuisines ?? []).map(asId).filter(Boolean)),
+    ],
     variantTags: [...variantTags],
     ...(stickerId && stickerImage
       ? { sticker: { id: stickerId, imageUrl: stickerImage } }

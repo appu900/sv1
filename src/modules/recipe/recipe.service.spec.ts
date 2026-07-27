@@ -106,6 +106,7 @@ describe('RecipeService summary id mapping', () => {
   it('maps real ObjectId values to hex strings', async () => {
     const recipeId = new Types.ObjectId();
     const categoryId = new Types.ObjectId();
+    const cuisineId = new Types.ObjectId();
     const stickerId = new Types.ObjectId();
     const requiredId = new Types.ObjectId();
 
@@ -116,6 +117,7 @@ describe('RecipeService summary id mapping', () => {
           title: 'Objectid Pasta',
           order: 1,
           frameworkCategories: [categoryId],
+          cuisines: [cuisineId],
           stickerId: { _id: stickerId, imageUrl: 'https://cdn/sticker.png' },
           components: [
             {
@@ -140,6 +142,7 @@ describe('RecipeService summary id mapping', () => {
 
     expect(summary._id).toBe(recipeId.toHexString());
     expect(summary.frameworkCategoryIds).toEqual([categoryId.toHexString()]);
+    expect(summary.cuisineIds).toEqual([cuisineId.toHexString()]);
     expect(summary.sticker?.id).toBe(stickerId.toHexString());
     expect(summary.unsubstitutableIngredientIds).toEqual([
       requiredId.toHexString(),
@@ -177,6 +180,7 @@ describe('RecipeService summary caching', () => {
         heroImageUrl: 'https://images.example/pasta.jpg',
         order: 4,
         frameworkCategoryIds: ['category-1', 'category-2'],
+        cuisineIds: [],
         variantTags: ['Classic', 'Quick'],
         sticker: {
           id: 'sticker-1',
@@ -194,7 +198,7 @@ describe('RecipeService summary caching', () => {
     );
     expect(query.populate).toHaveBeenCalledTimes(1);
     expect(redis.set).toHaveBeenCalledWith(
-      'recipes:summaries:v1:country:australia',
+      'recipes:summaries:v2:country:australia',
       result,
       1200,
     );
@@ -212,8 +216,8 @@ describe('RecipeService summary caching', () => {
 
     expect(recipeModel.find).toHaveBeenCalledTimes(2);
     expect(redis.set.mock.calls.map(call => call[0])).toEqual([
-      'recipes:summaries:v1:country:india',
-      'recipes:summaries:v1:country:australia',
+      'recipes:summaries:v2:country:india',
+      'recipes:summaries:v2:country:australia',
     ]);
   });
 
@@ -290,7 +294,7 @@ describe('RecipeService summary caching', () => {
     const { service, redis } = createService();
     await (service as any).invalidateRecipeSummaryCaches();
     expect(redis.delByPattern).toHaveBeenCalledWith(
-      'recipes:summaries:v1*',
+      'recipes:summaries:v2*',
     );
   });
 
@@ -323,7 +327,7 @@ describe('RecipeService summary caching', () => {
     redis.get.mockResolvedValueOnce(2);
 
     await (service as any).setRecipeCacheIfCurrent(
-      'recipes:summaries:v1',
+      'recipes:summaries:v2',
       [{ _id: 'stale' }],
       1,
     );
