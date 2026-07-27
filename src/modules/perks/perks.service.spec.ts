@@ -23,6 +23,7 @@ function createService(overrides: Record<string, unknown> = {}) {
         name: 'Saveful Tester',
         email: 'tester@saveful.com',
         pincode: '5000',
+        gender: 'male',
       }),
     ),
   };
@@ -232,7 +233,7 @@ describe('PerksService', () => {
       expect(
         (error as UnprocessableEntityException).getResponse(),
       ).toMatchObject({
-        missingFields: ['name', 'pincode'],
+        missingFields: ['name', 'pincode', 'gender'],
       });
     }
   });
@@ -276,6 +277,7 @@ describe('PerksService', () => {
             name: 'Long Postcode',
             email: 'long@example.com',
             pincode: '123456',
+            gender: 'male',
           }),
         ),
       },
@@ -296,6 +298,7 @@ describe('PerksService', () => {
       lastname: 'Postcode',
       email: 'long@example.com',
       postcode: '1234',
+      gender: 0,
     });
     expect(membershipModel.findOneAndUpdate).toHaveBeenCalled();
     expect(membership.save).toHaveBeenCalled();
@@ -395,6 +398,7 @@ describe('PerksService', () => {
       lastname: 'Tester',
       email: 'tester@saveful.com',
       postcode: '5000',
+      gender: 0,
     });
     expect(membershipModel.findOneAndUpdate).toHaveBeenCalled();
     expect(membership.save).toHaveBeenCalled();
@@ -955,7 +959,7 @@ describe('PerksService', () => {
 
     await expect(service.getMembershipStatus(userId)).resolves.toMatchObject({
       status: 'not_registered',
-      missingFields: ['name'],
+      missingFields: ['name', 'gender'],
     });
     expect(membershipModel.findOneAndUpdate).not.toHaveBeenCalled();
     expect(api.registerUser).not.toHaveBeenCalled();

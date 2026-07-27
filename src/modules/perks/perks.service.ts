@@ -149,9 +149,13 @@ export class PerksService {
 
   async getMembershipStatus(userId: string) {
     const objectId = this.toObjectId(userId);
-    const [membership, user] = await Promise.all([
+    const [membership, user, healthProfile] = await Promise.all([
       this.membershipModel.findOne({ userId: objectId }).lean(),
       this.userModel.findById(objectId).lean(),
+      this.healthProfileModel
+        .findOne({ userId: objectId })
+        .select({ gender: 1 })
+        .lean(),
     ]);
     if (!user) {
       throw new NotFoundException('Saveful user not found');
@@ -165,7 +169,10 @@ export class PerksService {
         };
     return {
       ...status,
-      missingFields: this.profileMissingFields(user),
+      missingFields: this.profileMissingFields(
+        user,
+        (healthProfile?.gender as Gender | undefined) ?? null,
+      ),
     };
   }
 
@@ -191,16 +198,20 @@ export class PerksService {
     if (!user) {
       throw new NotFoundException('Saveful user not found');
     }
-    const registration = this.mapRegistration(
-      user,
-      (healthProfile?.gender as Gender | undefined) ?? null,
-    );
+    const fallbackGender =
+      (healthProfile?.gender as Gender | undefined) ?? null;
+    const registration = this.mapRegistration(user, fallbackGender);
 
+    // Retry failed/unknown/stuck pending rows. Only ACTIVE short-circuits above.
     let membership = await this.membershipModel.findOneAndUpdate(
       {
         userId: objectId,
         status: {
-          $in: [PerksMembershipStatus.FAILED],
+          $in: [
+            PerksMembershipStatus.FAILED,
+            PerksMembershipStatus.UNKNOWN,
+            PerksMembershipStatus.PENDING,
+          ],
         },
       },
       {
@@ -229,11 +240,25 @@ export class PerksService {
           if (concurrent?.status === PerksMembershipStatus.ACTIVE) {
             return this.membershipResponse(concurrent);
           }
-          throw new ConflictException(
-            'Perks registration is already in progress',
+          membership = await this.membershipModel.findOneAndUpdate(
+            { userId: objectId },
+            {
+              $set: {
+                status: PerksMembershipStatus.PENDING,
+                lastErrorCode: null,
+                lastErrorMessage: null,
+              },
+            },
+            { new: true },
           );
+          if (!membership) {
+            throw new ConflictException(
+              'Perks registration is already in progress',
+            );
+          }
+        } else {
+          throw error;
         }
-        throw error;
       }
     }
 
@@ -252,7 +277,22 @@ export class PerksService {
       membership.lastErrorCode = apiError.code;
       membership.lastErrorMessage = apiError.message;
       await membership.save();
-      this.throwUpstream(apiError, 'Could not register the Saveful user');
+      if (apiError.ambiguous || apiError.retryable) {
+        this.throwUpstream(apiError, 'Could not register the Saveful user');
+      }
+      // Surface profile gaps when WMAD rejects so the app can send users
+      // to complete autofilled details instead of a dead-end error.
+      const missingFields = this.profileMissingFields(user, fallbackGender);
+      throw new UnprocessableEntityException({
+        message:
+          'WeMAD could not register your account. Confirm your first name, last name, postcode and gender, then try again.',
+        missingFields:
+          missingFields.length > 0
+            ? missingFields
+            : ['name', 'pincode', 'gender'],
+        code: apiError.code,
+        upstreamMessage: apiError.message,
+      });
     }
   }
 
@@ -1484,7 +1524,10 @@ export class PerksService {
     }
   }
 
-  private profileMissingFields(user: Pick<User, 'name' | 'pincode'>) {
+  private profileMissingFields(
+    user: Pick<User, 'name' | 'pincode' | 'gender' | 'phoneNumber'>,
+    fallbackGender?: Gender | null,
+  ) {
     const nameParts = (user.name ?? '').trim().split(/\s+/).filter(Boolean);
     const postcode = (user.pincode ?? '').trim();
     const missingFields: string[] = [];
@@ -1494,39 +1537,44 @@ export class PerksService {
     if (!/^\d{4,}$/.test(postcode)) {
       missingFields.push('pincode');
     }
+    // Gender is optional in WMAD docs, but incomplete Saveful profiles are a
+    // common reject cause, so require it before calling upstream.
+    if (!user.gender && !fallbackGender) {
+      missingFields.push('gender');
+    }
     return missingFields;
   }
 
   private mapRegistration(user: User, fallbackGender?: Gender | null) {
     const nameParts = user.name.trim().split(/\s+/).filter(Boolean);
     const postcode = (user.pincode ?? '').trim();
-    const missingFields = this.profileMissingFields(user);
+    const missingFields = this.profileMissingFields(user, fallbackGender);
     if (missingFields.length > 0) {
       throw new UnprocessableEntityException({
         message: 'Complete your Saveful profile before using Perks',
         missingFields,
       });
     }
+    const gender = this.toWmadGenderCode(user.gender ?? fallbackGender ?? null);
     const registration: {
       firstname: string;
       lastname: string;
       email: string;
       postcode: string;
       phone?: string;
-      gender?: WmadGenderCode;
+      gender: WmadGenderCode;
     } = {
       firstname: nameParts[0],
       lastname: nameParts.slice(1).join(' '),
       email: user.email.toLowerCase(),
+      // WMAD only accepts 4-digit postcodes, so keep Saveful's stored pincode
+      // intact and trim only the upstream registration payload.
       postcode: postcode.slice(0, 4),
+      gender: gender as WmadGenderCode,
     };
     const phone = this.toWmadPhoneNumber(user.phoneNumber);
     if (phone) {
       registration.phone = phone;
-    }
-    const gender = this.toWmadGenderCode(user.gender ?? fallbackGender ?? null);
-    if (gender !== null) {
-      registration.gender = gender;
     }
     return registration;
   }

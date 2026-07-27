@@ -343,9 +343,29 @@ export class PerksApiClient {
     }
 
     const code = body?.code ?? `WMAD_${status || httpStatus}`;
-    const message = body?.message ?? 'WMAD rejected the request';
+    const rawMessage = body?.message as unknown;
+    let message = 'WMAD rejected the request';
+    if (typeof rawMessage === 'string' && rawMessage.trim()) {
+      message = rawMessage.trim();
+    } else if (Array.isArray(rawMessage)) {
+      const parts = rawMessage.filter(
+        (part): part is string => typeof part === 'string' && part.trim().length > 0,
+      );
+      if (parts.length) {
+        message = parts.join(', ');
+      }
+    } else if (
+      rawMessage &&
+      typeof rawMessage === 'object' &&
+      typeof (rawMessage as { message?: unknown }).message === 'string'
+    ) {
+      const nested = String((rawMessage as { message: string }).message).trim();
+      if (nested) {
+        message = nested;
+      }
+    }
     this.logger.warn(
-      `WMAD request rejected path=${path} status=${status || httpStatus} code=${code}`,
+      `WMAD request rejected path=${path} status=${status || httpStatus} code=${code} message=${message}`,
     );
     throw new PerksApiError(
       message,
