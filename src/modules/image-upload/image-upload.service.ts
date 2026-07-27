@@ -47,7 +47,7 @@ export class ImageUploadService {
   }
 
   /**
-   * Uploads the original plus a responsive WebP ladder and a ThumbHash.
+   * Uploads the original image plus a responsive WebP ladder and a ThumbHash.
    *
    * Variants live under `{folder}/{id}/{width}.webp`, keyed off the original's
    * id. Falls back to a base-only descriptor when the file is not a raster image
