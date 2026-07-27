@@ -2,6 +2,7 @@ import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document, Types } from 'mongoose';
 import { UserDietaryProfile } from './user-dietary-profile.schema';
 import { UserSavefulPreferences } from './user-saveful-preferences.schema';
+import { Gender } from './nutrition/health-profile.schema';
 
 export enum UserRole {
   ADMIN = 'ADMIN',
@@ -33,6 +34,12 @@ export class User {
 
   @Prop({})
   pincode?:string
+
+  @Prop({ trim: true })
+  phoneNumber?: string;
+
+  @Prop({ type: String, enum: Gender })
+  gender?: Gender;
 
   @Prop({default:true})
   isUserSubscribed?:boolean

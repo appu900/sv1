@@ -24,6 +24,10 @@ import {
   PerksWalletMetadata,
   PerksWalletMetadataSchema,
 } from '../../database/schemas/perks-wallet-metadata.schema';
+import {
+  HealthProfile,
+  HealthProfileSchema,
+} from '../../database/schemas/nutrition/health-profile.schema';
 import { User, UserSchema } from '../../database/schemas/user.auth.schema';
 import { PerksApiClient } from './perks-api-client';
 import { PerksController } from './perks.controller';
@@ -33,6 +37,7 @@ import { PerksService } from './perks.service';
   imports: [
     MongooseModule.forFeature([
       { name: User.name, schema: UserSchema },
+      { name: HealthProfile.name, schema: HealthProfileSchema },
       { name: PerksMembership.name, schema: PerksMembershipSchema },
       { name: PerksOrder.name, schema: PerksOrderSchema },
       { name: PerksFavourite.name, schema: PerksFavouriteSchema },

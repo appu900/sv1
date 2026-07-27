@@ -1,0 +1,583 @@
+{
+  "info": {
+    "_postman_id": "589f23e2-0461-4f31-94e5-66d0537c91af",
+    "name": "WMAD API Flow",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Direct WMAD API collection using the live base URL. Run top to bottom. Register trims fullPostcode to 4 digits. Saveful backend currently only maps firstname/lastname/email/postcode; this collection also sends phone and gender to match the fuller WMAD register body."
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "https://api.wemad.com.au/v1/api"
+    },
+    {
+      "key": "wmadEmail",
+      "value": ""
+    },
+    {
+      "key": "wmadPassword",
+      "value": ""
+    },
+    {
+      "key": "wmadClientId",
+      "value": "178"
+    },
+    {
+      "key": "merchantToken",
+      "value": ""
+    },
+    {
+      "key": "merchantTokenExpiresAt",
+      "value": ""
+    },
+    {
+      "key": "firstName",
+      "value": "Aniket"
+    },
+    {
+      "key": "lastName",
+      "value": "Test"
+    },
+    {
+      "key": "userEmail",
+      "value": ""
+    },
+    {
+      "key": "phone",
+      "value": "1234567890"
+    },
+    {
+      "key": "gender",
+      "value": "male"
+    },
+    {
+      "key": "fullPostcode",
+      "value": "560001"
+    },
+    {
+      "key": "wmadPostcode",
+      "value": "5600"
+    },
+    {
+      "key": "wmadUserId",
+      "value": ""
+    },
+    {
+      "key": "ecardId",
+      "value": ""
+    },
+    {
+      "key": "ecardValue",
+      "value": "100"
+    },
+    {
+      "key": "orderQuantity",
+      "value": "1"
+    },
+    {
+      "key": "orderReference",
+      "value": ""
+    },
+    {
+      "key": "orderNumber",
+      "value": ""
+    },
+    {
+      "key": "giftTemplateId",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Login",
+      "item": [
+        {
+          "name": "Login And Save Token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Login succeeded', function () {",
+                  "  pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+                  "});",
+                  "var json = {};",
+                  "try { json = pm.response.json(); } catch (error) {}",
+                  "var data = json.data || {};",
+                  "if (data.token) {",
+                  "  pm.collectionVariables.set('merchantToken', String(data.token));",
+                  "}",
+                  "if (data.expire !== undefined) {",
+                  "  pm.collectionVariables.set('merchantTokenExpiresAt', String(data.expire));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{wmadEmail}}\",\n  \"password\": \"{{wmadPassword}}\",\n  \"client_id\": \"{{wmadClientId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "login"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Registration",
+      "item": [
+        {
+          "name": "Register User With Trimmed Postcode",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var fullPostcode = (pm.collectionVariables.get('fullPostcode') || '').trim();",
+                  "pm.collectionVariables.set('wmadPostcode', fullPostcode.slice(0, 4));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Register succeeded', function () {",
+                  "  pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+                  "});",
+                  "var json = {};",
+                  "try { json = pm.response.json(); } catch (error) {}",
+                  "var data = json.data || {};",
+                  "if (data.user_id !== undefined) {",
+                  "  pm.collectionVariables.set('wmadUserId', String(data.user_id));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{merchantToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"firstname\": \"{{firstName}}\",\n  \"lastname\": \"{{lastName}}\",\n  \"email\": \"{{userEmail}}\",\n  \"phone\": \"{{phone}}\",\n  \"postcode\": \"{{wmadPostcode}}\",\n  \"gender\": \"{{gender}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "register"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Catalogue",
+      "item": [
+        {
+          "name": "Get Ecards And Save First Card",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Catalogue loaded', function () {",
+                  "  pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+                  "});",
+                  "var json = {};",
+                  "try { json = pm.response.json(); } catch (error) {}",
+                  "var cards = Array.isArray(json.data) ? json.data : [];",
+                  "var first = cards[0] || {};",
+                  "if (first.ecard_id !== undefined) {",
+                  "  pm.collectionVariables.set('ecardId', String(first.ecard_id));",
+                  "}",
+                  "var priceParts = String(first.ecard_price || '')",
+                  "  .split(',')",
+                  "  .map(function (value) { return Number(String(value).trim()); })",
+                  "  .filter(function (value) { return Number.isFinite(value) && value > 0; });",
+                  "if (priceParts.length > 0) {",
+                  "  pm.collectionVariables.set('ecardValue', String(priceParts[0]));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{merchantToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/ecard",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "ecard"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Gift Send Details",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Gift metadata loaded', function () {",
+                  "  pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+                  "});",
+                  "var json = {};",
+                  "try { json = pm.response.json(); } catch (error) {}",
+                  "var data = json.data || {};",
+                  "var templates = [];",
+                  "if (Array.isArray(data.templates)) {",
+                  "  templates = data.templates;",
+                  "} else if (Array.isArray(data.gift_template)) {",
+                  "  templates = data.gift_template;",
+                  "}",
+                  "var first = templates[0] || {};",
+                  "var templateId = first.id || first.gift_templateid || first.template_id;",
+                  "if (templateId !== undefined) {",
+                  "  pm.collectionVariables.set('giftTemplateId', String(templateId));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{merchantToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/order/sendgiftdetail",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "order",
+                "sendgiftdetail"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Purchase Flow",
+      "item": [
+        {
+          "name": "Create Standard Order",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var reference = 'SVPOSTMAN' + Date.now();",
+                  "pm.collectionVariables.set('orderReference', reference);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Order created', function () {",
+                  "  pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+                  "});",
+                  "var json = {};",
+                  "try { json = pm.response.json(); } catch (error) {}",
+                  "var data = json.data || {};",
+                  "if (data.order_number !== undefined) {",
+                  "  pm.collectionVariables.set('orderNumber', String(data.order_number));",
+                  "}",
+                  "if (data.order_reference) {",
+                  "  pm.collectionVariables.set('orderReference', String(data.order_reference));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{merchantToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"ecard_id\": \"{{ecardId}}\",\n  \"ecard_value\": {{ecardValue}},\n  \"ecard_qty\": {{orderQuantity}},\n  \"order_reference\": \"{{orderReference}}\",\n  \"ecard_sendasgift\": 0\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/order",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "order"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Order Detail",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{merchantToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"order_number\": \"{{orderNumber}}\",\n  \"order_reference\": \"{{orderReference}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/order/detail",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "order",
+                "detail"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Tax Receipt After Completion",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{merchantToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"order_number\": \"{{orderNumber}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/order/taxreceipt",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "order",
+                "taxreceipt"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Cancel Order Optional",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{merchantToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"order_number\": \"{{orderNumber}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/order/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "order",
+                "cancel"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Wallet",
+      "item": [
+        {
+          "name": "Get Wallet",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{merchantToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/ewallet",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "ewallet"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Gifted Wallet",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{merchantToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/ewallet/gifted",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "ewallet",
+                "gifted"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

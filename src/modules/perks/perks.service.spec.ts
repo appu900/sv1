@@ -26,6 +26,11 @@ function createService(overrides: Record<string, unknown> = {}) {
       }),
     ),
   };
+  const healthProfileModel = {
+    findOne: jest.fn(() => ({
+      select: jest.fn(() => lean(null)),
+    })),
+  };
   const membershipModel = {
     findOne: jest.fn(() => lean(null)),
     findOneAndUpdate: jest.fn(),
@@ -94,6 +99,7 @@ function createService(overrides: Record<string, unknown> = {}) {
   };
   Object.assign(api, overrides.api);
   Object.assign(userModel, overrides.userModel);
+  Object.assign(healthProfileModel, overrides.healthProfileModel);
   Object.assign(membershipModel, overrides.membershipModel);
   Object.assign(orderModel, overrides.orderModel);
   Object.assign(favouriteModel, overrides.favouriteModel);
@@ -106,6 +112,7 @@ function createService(overrides: Record<string, unknown> = {}) {
   return {
     service: new PerksService(
       userModel as never,
+      healthProfileModel as never,
       membershipModel as never,
       orderModel as never,
       favouriteModel as never,
@@ -117,6 +124,7 @@ function createService(overrides: Record<string, unknown> = {}) {
       config as never,
     ),
     userModel,
+    healthProfileModel,
     membershipModel,
     orderModel,
     favouriteModel,
@@ -291,6 +299,54 @@ describe('PerksService', () => {
     });
     expect(membershipModel.findOneAndUpdate).toHaveBeenCalled();
     expect(membership.save).toHaveBeenCalled();
+  });
+
+  it('includes optional WMAD phone and numeric gender when available', async () => {
+    const membership = {
+      wmadUserId: null,
+      status: PerksMembershipStatus.PENDING,
+      registeredAt: null,
+      lastErrorCode: null,
+      lastErrorMessage: null,
+      save: jest.fn(),
+      toObject() {
+        return this;
+      },
+    };
+    const { service, api } = createService({
+      userModel: {
+        findById: jest.fn(() =>
+          lean({
+            _id: userId,
+            name: 'Profile Complete',
+            email: 'complete@example.com',
+            pincode: '4000',
+            phoneNumber: '+61 412 345 678',
+          }),
+        ),
+      },
+      healthProfileModel: {
+        findOne: jest.fn(() => ({
+          select: jest.fn(() => lean({ gender: 'female' })),
+        })),
+      },
+      membershipModel: {
+        findOneAndUpdate: jest.fn().mockResolvedValue(membership),
+      },
+      api: {
+        registerUser: jest.fn().mockResolvedValue({ user_id: 10625 }),
+      },
+    });
+
+    await service.ensureMembership(userId);
+    expect(api.registerUser).toHaveBeenCalledWith({
+      firstname: 'Profile',
+      lastname: 'Complete',
+      email: 'complete@example.com',
+      postcode: '4000',
+      phone: '61412345678',
+      gender: 1,
+    });
   });
 
   it('reads membership status without registering or calling WMAD', async () => {

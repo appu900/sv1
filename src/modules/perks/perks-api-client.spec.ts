@@ -139,6 +139,8 @@ describe('PerksApiClient', () => {
       lastname: 'Tester',
       email: 'tester@example.com',
       postcode: '5000',
+      phone: '61412345678',
+      gender: 1,
     });
     await client.getGiftOptions();
     await client.createOrder({ ecard_id: '242' });
@@ -163,6 +165,14 @@ describe('PerksApiClient', () => {
       ['/ewallet', 'GET'],
       ['/ewallet/gifted', 'GET'],
     ]);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      firstname: 'Saveful',
+      lastname: 'Tester',
+      email: 'tester@example.com',
+      postcode: '5000',
+      phone: '61412345678',
+      gender: 1,
+    });
   });
 
   it('treats a timed-out POST as ambiguous', async () => {

@@ -3,6 +3,7 @@ import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { PassportModule } from '@nestjs/passport';
 import { JwtModule } from '@nestjs/jwt';
+import { MongooseModule } from '@nestjs/mongoose';
 import { UserModule } from '../user/user.module';
 import { JwtStrategy } from './strategy/jwt.strategy';
 import { RedisModule } from 'src/redis/redis.module';
@@ -10,6 +11,10 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { AdminModule } from '../admin/admin.module';
 import { EmailModule } from 'src/common/email';
 import { ThrottlerModule } from '@nestjs/throttler';
+import {
+  HealthProfile,
+  HealthProfileSchema,
+} from '../../database/schemas/nutrition/health-profile.schema';
 
 @Module({
   imports: [
@@ -35,6 +40,9 @@ import { ThrottlerModule } from '@nestjs/throttler';
         };
       },
     }),
+    MongooseModule.forFeature([
+      { name: HealthProfile.name, schema: HealthProfileSchema },
+    ]),
     UserModule,
     RedisModule,
     AdminModule,

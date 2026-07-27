@@ -13,6 +13,11 @@ import { InjectModel } from '@nestjs/mongoose';
 import { createHash, randomBytes, randomUUID } from 'crypto';
 import { Model, Types } from 'mongoose';
 import {
+  Gender,
+  HealthProfile,
+  HealthProfileDocument,
+} from '../../database/schemas/nutrition/health-profile.schema';
+import {
   PerksCalculatorProfile,
   PerksCalculatorProfileDocument,
 } from '../../database/schemas/perks-calculator-profile.schema';
@@ -56,6 +61,7 @@ import {
 import {
   PerksApiClient,
   PerksApiError,
+  WmadGenderCode,
   WmadOrderResult,
 } from './perks-api-client';
 
@@ -122,6 +128,8 @@ export class PerksService {
   constructor(
     @InjectModel(User.name)
     private readonly userModel: Model<UserDocument>,
+    @InjectModel(HealthProfile.name)
+    private readonly healthProfileModel: Model<HealthProfileDocument>,
     @InjectModel(PerksMembership.name)
     private readonly membershipModel: Model<PerksMembershipDocument>,
     @InjectModel(PerksOrder.name)
@@ -173,11 +181,20 @@ export class PerksService {
       return this.membershipResponse(existing);
     }
 
-    const user = await this.userModel.findById(objectId).lean();
+    const [user, healthProfile] = await Promise.all([
+      this.userModel.findById(objectId).lean(),
+      this.healthProfileModel
+        .findOne({ userId: objectId })
+        .select({ gender: 1 })
+        .lean(),
+    ]);
     if (!user) {
       throw new NotFoundException('Saveful user not found');
     }
-    const registration = this.mapRegistration(user);
+    const registration = this.mapRegistration(
+      user,
+      (healthProfile?.gender as Gender | undefined) ?? null,
+    );
 
     let membership = await this.membershipModel.findOneAndUpdate(
       {
@@ -1480,7 +1497,7 @@ export class PerksService {
     return missingFields;
   }
 
-  private mapRegistration(user: User) {
+  private mapRegistration(user: User, fallbackGender?: Gender | null) {
     const nameParts = user.name.trim().split(/\s+/).filter(Boolean);
     const postcode = (user.pincode ?? '').trim();
     const missingFields = this.profileMissingFields(user);
@@ -1490,14 +1507,28 @@ export class PerksService {
         missingFields,
       });
     }
-    return {
+    const registration: {
+      firstname: string;
+      lastname: string;
+      email: string;
+      postcode: string;
+      phone?: string;
+      gender?: WmadGenderCode;
+    } = {
       firstname: nameParts[0],
       lastname: nameParts.slice(1).join(' '),
       email: user.email.toLowerCase(),
-      // WMAD only accepts 4-digit postcodes, so keep Saveful's stored pincode
-      // intact and trim only the upstream registration payload.
       postcode: postcode.slice(0, 4),
     };
+    const phone = this.toWmadPhoneNumber(user.phoneNumber);
+    if (phone) {
+      registration.phone = phone;
+    }
+    const gender = this.toWmadGenderCode(user.gender ?? fallbackGender ?? null);
+    if (gender !== null) {
+      registration.gender = gender;
+    }
+    return registration;
   }
 
   private mapOrderPayload(
@@ -1703,6 +1734,24 @@ export class PerksService {
   private nullableString(value: unknown): string | null {
     const result = this.stringValue(value).trim();
     return !result || result.toLowerCase() === 'null' ? null : result;
+  }
+
+  private toWmadPhoneNumber(value: unknown): string | null {
+    const digits = this.stringValue(value).replace(/\D+/g, '');
+    return digits.length >= 8 && digits.length <= 11 ? digits : null;
+  }
+
+  private toWmadGenderCode(value: unknown): WmadGenderCode | null {
+    switch (this.nullableString(value)?.toLowerCase()) {
+      case Gender.MALE:
+        return 0;
+      case Gender.FEMALE:
+        return 1;
+      case Gender.OTHER:
+        return 2;
+      default:
+        return null;
+    }
   }
 
   private numberValue(value: unknown): number | null {

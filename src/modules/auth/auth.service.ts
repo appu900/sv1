@@ -7,6 +7,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { InjectModel } from '@nestjs/mongoose';
 import { RedisService } from 'src/redis/redis.service';
 import { RegisterUserDto } from './dto/user.register.dto';
 import { UserService } from '../user/user.service';
@@ -15,7 +16,7 @@ import * as argon2 from 'argon2';
 import { UserRole } from 'src/database/schemas/user.auth.schema';
 import { UserLoginDto } from './dto/user.login.dto';
 import { nanoid } from 'nanoid';
-import { Types } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import { EmailQueueService } from 'src/common/email';
 import { ConfigService } from '@nestjs/config';
 import { RequestOtpDto } from './dto/request-otp.dto';
@@ -28,6 +29,11 @@ import { SavefulPreferencesDto } from './dto/saveful-preferences.dto';
 
 import { UserEventService } from '../user-events/user-event.service';
 import { UserEventType } from '../../database/schemas/user-event.schema';
+import {
+  Gender,
+  HealthProfile,
+  HealthProfileDocument,
+} from '../../database/schemas/nutrition/health-profile.schema';
 
 @Injectable()
 export class AuthService {
@@ -38,6 +44,8 @@ export class AuthService {
     private readonly userService: UserService,
     private readonly emailQueue: EmailQueueService,
     private readonly config: ConfigService,
+    @InjectModel(HealthProfile.name)
+    private readonly healthProfileModel: Model<HealthProfileDocument>,
     private readonly userEventService: UserEventService,
   ) {}
 
@@ -487,14 +495,29 @@ export class AuthService {
   async getProfile(userId: string) {
     if (!Types.ObjectId.isValid(userId))
       throw new BadRequestException('invalid userId');
-    const user = await this.userService.findById(userId);
+    const objectId = new Types.ObjectId(userId);
+    const [user, healthProfile] = await Promise.all([
+      this.userService.findById(userId),
+      this.healthProfileModel
+        .findOne({ userId: objectId })
+        .select({ gender: 1 })
+        .lean(),
+    ]);
     if (!user) throw new UnauthorizedException();
+    const { firstName, lastName } = this.splitName(user.name);
+    const resolvedGender =
+      ((user as any).gender as Gender | undefined) ??
+      (healthProfile?.gender as Gender | undefined) ??
+      null;
     return {
       id: user._id.toString(),
       _id: user._id,
       email: user.email,
       name: user.name,
-      first_name: user.name,
+      first_name: firstName,
+      last_name: lastName || null,
+      phone_number: (user as any).phoneNumber ?? null,
+      gender: resolvedGender,
       role: user.role,
       country: user.country,
       stateCode: user.stateCode,
@@ -531,11 +554,51 @@ export class AuthService {
     if (!Types.ObjectId.isValid(userId))
       throw new BadRequestException('Invalid userId');
 
-    if (dto.name) {
-      await this.userService.updateName(userId, dto.name);
+    const updates: {
+      name?: string;
+      phoneNumber?: string | null;
+      gender?: Gender | null;
+    } = {};
+    if (dto.first_name !== undefined || dto.last_name !== undefined) {
+      const currentUser = await this.userService.findById(userId);
+      const existingName = this.splitName(currentUser.name);
+      const firstName = (dto.first_name ?? existingName.firstName).trim();
+      const lastName = (dto.last_name ?? existingName.lastName).trim();
+      const nextName = [firstName, lastName].filter(Boolean).join(' ').trim();
+      if (!nextName) {
+        throw new BadRequestException('Name is required');
+      }
+      updates.name = nextName;
+    } else if (dto.name !== undefined) {
+      const nextName = dto.name.trim();
+      if (!nextName) {
+        throw new BadRequestException('Name is required');
+      }
+      updates.name = nextName;
+    }
+    if (dto.phone_number !== undefined) {
+      const phoneNumber = dto.phone_number.trim();
+      updates.phoneNumber = phoneNumber || null;
+    }
+    if (dto.gender !== undefined) {
+      updates.gender = dto.gender;
+    }
+    if (Object.keys(updates).length > 0) {
+      await this.userService.updateBasicProfile(userId, updates);
     }
 
     return this.getProfile(userId);
+  }
+
+  private splitName(name?: string | null) {
+    const parts = (name ?? '')
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+    return {
+      firstName: parts[0] ?? '',
+      lastName: parts.slice(1).join(' '),
+    };
   }
 
   async changePassword(userId: string, dto: ChangePasswordDto) {

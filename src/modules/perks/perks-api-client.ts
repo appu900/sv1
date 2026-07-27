@@ -23,6 +23,8 @@ export interface WmadRegistration {
   user_id: number | string;
 }
 
+export type WmadGenderCode = 0 | 1 | 2;
+
 export interface WmadOrderResult {
   order_number: number | string;
   order_status: number | string;
@@ -72,6 +74,8 @@ export class PerksApiClient {
     lastname: string;
     email: string;
     postcode: string;
+    phone?: string;
+    gender?: WmadGenderCode;
   }): Promise<WmadRegistration> {
     return this.request<WmadRegistration>('/register', {
       method: 'POST',

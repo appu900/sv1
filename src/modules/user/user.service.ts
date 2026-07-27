@@ -193,13 +193,37 @@ export class UserService {
   }
 
   async updateName(userId: string, name: string) {
+    return this.updateBasicProfile(userId, { name });
+  }
+
+  async updateBasicProfile(
+    userId: string,
+    profile: {
+      name?: string;
+      phoneNumber?: string | null;
+      gender?: User['gender'] | null;
+    },
+  ) {
     if (!Types.ObjectId.isValid(userId)) {
       throw new BadRequestException('Invalid userId');
+    }
+    const updateData: Record<string, unknown> = {};
+    if (profile.name !== undefined) {
+      updateData.name = profile.name;
+    }
+    if (profile.phoneNumber !== undefined) {
+      updateData.phoneNumber = profile.phoneNumber;
+    }
+    if (profile.gender !== undefined) {
+      updateData.gender = profile.gender;
+    }
+    if (Object.keys(updateData).length === 0) {
+      return this.findById(userId);
     }
     const result = await this.userModel
       .findByIdAndUpdate(
         new Types.ObjectId(userId),
-        { $set: { name } },
+        { $set: updateData },
         { new: true },
       )
       .lean();
