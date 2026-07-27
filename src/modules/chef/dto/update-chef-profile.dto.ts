@@ -54,7 +54,7 @@ const asSocialLinks = (src: Record<string, unknown>): SocialLinksShape => ({
   linkedin: pickSocial(src, 'linkedin'),
 });
 
-/** Multipart may send socialLinks JSON and/or flat instagram/youtube/... fields. */
+/** Multipart forms may send socialLinks as JSON and/or flat instagram/youtube/... fields. */
 const parseSocialLinks = ({ value, obj }: { value: unknown; obj: Record<string, unknown> }) => {
   let fromJson: SocialLinksShape | undefined;
 
