@@ -30,6 +30,7 @@ import { ChefFavouriteService } from './chef-favourite.service';
 import { ChefProfileSyncService } from './chef-profile-sync.service';
 import {
   CHEF_SNAPSHOT_KEYS,
+  PUBLIC_CHEF_FILTER,
   RISING_STAR,
   currencyFromCountry,
   normalizeMoneyByCurrency,
@@ -120,7 +121,7 @@ export class ChefAnalyticsCronService {
       const profiles = await this.chefProfileModel
         .find({
           _id: { $in: rows.map((r) => r._id) },
-          isPublished: true,
+          ...PUBLIC_CHEF_FILTER,
         })
         .lean()
         .exec();
@@ -152,7 +153,7 @@ export class ChefAnalyticsCronService {
       if (chefs.length < 10) {
         const existing = new Set(chefs.map((c: any) => c.id));
         const fillers = await this.chefProfileModel
-          .find({ isPublished: true, _id: { $nin: [...existing].map((id) => new Types.ObjectId(id)) } })
+          .find({ ...PUBLIC_CHEF_FILTER, _id: { $nin: [...existing].map((id) => new Types.ObjectId(id)) } })
           .sort({ order: 1, 'lifetime.mealsCooked': -1 })
           .limit(10 - chefs.length)
           .lean()
@@ -186,7 +187,7 @@ export class ChefAnalyticsCronService {
   async refreshCommunityAndAwards() {
     await this.withLock('community-awards', 300, async () => {
       const published = await this.chefProfileModel
-        .find({ isPublished: true })
+        .find({ ...PUBLIC_CHEF_FILTER })
         .select({
           _id: 1,
           slug: 1,

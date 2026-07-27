@@ -17,6 +17,7 @@ import { RedisService } from '../../redis/redis.service';
 import {
   CHEF_CACHE_KEYS,
   CHEF_FAV_SET_TTL,
+  PUBLIC_CHEF_FILTER,
 } from './chef.constants';
 
 function toObjectId(
@@ -113,7 +114,7 @@ export class ChefFavouriteService {
     if (!uid || !cid) throw new BadRequestException('Invalid id');
 
     const profile = await this.chefProfileModel
-      .findOne({ _id: cid, isPublished: true })
+      .findOne({ _id: cid, ...PUBLIC_CHEF_FILTER })
       .select({ _id: 1 })
       .lean()
       .exec();

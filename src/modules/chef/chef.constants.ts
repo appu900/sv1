@@ -4,6 +4,8 @@ export const CHEF_RECIPE_CHEFS_TTL = 3600;
 export const CHEF_FAV_SET_TTL = 86400;
 export const CHEF_UPLOAD_FOLDER = 'saveful/chef';
 
+export const PUBLIC_CHEF_FILTER = { isPublished: true } as const;
+
 export const CHEF_CACHE_KEYS = {
   home: (country?: string) =>
     `chefs:home:v1:${(country || 'all').toLowerCase()}`,

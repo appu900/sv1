@@ -27,6 +27,7 @@ import {
   RecipeDocument,
 } from '../../database/schemas/recipe.schema';
 import { RedisService } from '../../redis/redis.service';
+import { DataVersionService } from '../data-version/data-version.service';
 import { ChefFavouriteService } from './chef-favourite.service';
 import {
   CHEF_CACHE_KEYS,
@@ -34,6 +35,7 @@ import {
   CHEF_HOME_CACHE_TTL,
   CHEF_SNAPSHOT_KEYS,
   DEFAULT_CURRENCY,
+  PUBLIC_CHEF_FILTER,
   currencyFromCountry,
   formatCurrencyLabel,
   normalizeMoneyByCurrency,
@@ -109,6 +111,7 @@ export class ChefService {
     private readonly recipeModel: Model<RecipeDocument>,
     private readonly redisService: RedisService,
     private readonly favouriteService: ChefFavouriteService,
+    private readonly dataVersion: DataVersionService,
   ) {}
 
   private toCard(doc: any, isFavourited = false) {
@@ -168,20 +171,67 @@ export class ChefService {
     };
   }
 
+  private async filterPublishedChefCards(chefs: any[] | null | undefined) {
+    if (!chefs?.length) return [];
+    const ids = chefs
+      .map((c) => toObjectId(c?.id))
+      .filter((v): v is Types.ObjectId => v !== null);
+    if (!ids.length) return [];
+
+    const published = await this.chefProfileModel
+      .find({ _id: { $in: ids }, ...PUBLIC_CHEF_FILTER })
+      .select({ _id: 1 })
+      .lean()
+      .exec();
+    const ok = new Set(published.map((p) => String(p._id)));
+    return chefs.filter((c) => ok.has(String(c?.id)));
+  }
+
+  private async filterPublishedAwards(awards: any | null | undefined) {
+    const empty = {
+      mostMeals: null,
+      mostFood: null,
+      mostCo2: null,
+      risingStar: null,
+    };
+    if (!awards) return empty;
+
+    const cards = [
+      awards.mostMeals,
+      awards.mostFood,
+      awards.mostCo2,
+      awards.risingStar,
+    ].filter(Boolean);
+    const publishedCards = await this.filterPublishedChefCards(cards);
+    const ok = new Set(publishedCards.map((c: any) => String(c.id)));
+    const keep = (card: any) =>
+      card && ok.has(String(card.id)) ? card : null;
+
+    return {
+      mostMeals: keep(awards.mostMeals),
+      mostFood: keep(awards.mostFood),
+      mostCo2: keep(awards.mostCo2),
+      risingStar: keep(awards.risingStar),
+    };
+  }
+
   async getHome(userId?: string | null, country?: string) {
     const cacheKey = CHEF_CACHE_KEYS.home(country);
     let payload = await this.redisService.get<any>(cacheKey);
 
     if (!payload) {
-      const [popularSnap, cuisineSnap, favouritesSeed] = await Promise.all([
+      const [popularSnap, cuisineSnap] = await Promise.all([
         this.getSnapshot(CHEF_SNAPSHOT_KEYS.popularWeek),
         this.getSnapshot(CHEF_SNAPSHOT_KEYS.cuisineRail),
-        Promise.resolve(null),
       ]);
 
-      const popularThisWeek =
-        (popularSnap?.chefs as any[]) ||
-        (await this.fallbackPopularChefs());
+      // Snapshots can lag behind publish toggles — always re-check live flags.
+      let popularThisWeek = await this.filterPublishedChefCards(
+        popularSnap?.chefs as any[],
+      );
+      if (!popularThisWeek.length) {
+        popularThisWeek = await this.fallbackPopularChefs();
+      }
 
       const cuisineRail =
         (cuisineSnap?.cuisines as any[]) || (await this.buildCuisineRail(10));
@@ -189,10 +239,20 @@ export class ChefService {
       payload = {
         cuisineRail,
         popularThisWeek,
-        // favourites are personalized — filled below
       };
 
       await this.redisService.set(cacheKey, payload, CHEF_HOME_CACHE_TTL);
+    } else {
+      let popularThisWeek = await this.filterPublishedChefCards(
+        payload.popularThisWeek,
+      );
+      if (!popularThisWeek.length) {
+        popularThisWeek = await this.fallbackPopularChefs();
+      }
+      payload = {
+        ...payload,
+        popularThisWeek,
+      };
     }
 
     let favouriteChefs: any[] = [];
@@ -226,7 +286,7 @@ export class ChefService {
 
   private async fallbackPopularChefs() {
     const docs = await this.chefProfileModel
-      .find({ isPublished: true })
+      .find(PUBLIC_CHEF_FILTER)
       .sort({ 'lifetime.mealsCooked': -1, order: 1 })
       .limit(10)
       .lean()
@@ -264,7 +324,7 @@ export class ChefService {
     let page = await this.redisService.get<any>(cacheKey);
 
     if (!page) {
-      const filter: any = { isPublished: true };
+      const filter: any = { ...PUBLIC_CHEF_FILTER };
       if (cuisineId) filter.cuisineIds = cuisineId;
 
       if (q) {
@@ -413,7 +473,7 @@ export class ChefService {
     const chefIds = slice.map((r) => r.chefId);
 
     const chefs = await this.chefProfileModel
-      .find({ _id: { $in: chefIds }, isPublished: true })
+      .find({ _id: { $in: chefIds }, ...PUBLIC_CHEF_FILTER })
       .lean()
       .exec();
     const byId = new Map(chefs.map((c) => [String(c._id), c]));
@@ -460,7 +520,7 @@ export class ChefService {
     const profiles = await this.chefProfileModel
       .find({
         _id: { $in: favs.map((f) => f.chefId) },
-        isPublished: true,
+        ...PUBLIC_CHEF_FILTER,
       })
       .select({ userId: 1, displayName: 1, avatarImageUrl: 1, heroImageUrl: 1 })
       .lean()
@@ -491,7 +551,7 @@ export class ChefService {
     let profile = await this.redisService.get<any>(cacheKey);
 
     if (!profile) {
-      const filter: any = { isPublished: true };
+      const filter: any = { ...PUBLIC_CHEF_FILTER };
       if (Types.ObjectId.isValid(slugOrId)) {
         filter.$or = [
           { _id: new Types.ObjectId(slugOrId) },
@@ -577,7 +637,7 @@ export class ChefService {
     if (!cid) throw new BadRequestException('Invalid chef id');
 
     const profile = await this.chefProfileModel
-      .findOne({ _id: cid, isPublished: true })
+      .findOne({ _id: cid, ...PUBLIC_CHEF_FILTER })
       .select({ userId: 1, displayName: 1, avatarImageUrl: 1, heroImageUrl: 1 })
       .lean()
       .exec();
@@ -742,12 +802,7 @@ export class ChefService {
         foodSavedInGrams: 0,
         co2SavedInGrams: 0,
       },
-      awards: awards || {
-        mostMeals: null,
-        mostFood: null,
-        mostCo2: null,
-        risingStar: null,
-      },
+      awards: await this.filterPublishedAwards(awards),
     };
   }
 
@@ -762,7 +817,7 @@ export class ChefService {
       this.chefProfileModel.aggregate([
         {
           $match: {
-            isPublished: true,
+            ...PUBLIC_CHEF_FILTER,
             cuisineIds: { $exists: true, $ne: [] },
           },
         },
@@ -792,7 +847,7 @@ export class ChefService {
 
   async buildCuisineRail(limit = 10) {
     const rows = await this.chefProfileModel.aggregate([
-      { $match: { isPublished: true, cuisineIds: { $exists: true, $ne: [] } } },
+      { $match: { ...PUBLIC_CHEF_FILTER, cuisineIds: { $exists: true, $ne: [] } } },
       { $unwind: '$cuisineIds' },
       {
         $group: {
@@ -843,5 +898,22 @@ export class ChefService {
   async invalidateCaches(): Promise<void> {
     await this.redisService.delByPattern(CHEF_CACHE_KEYS.patternAll);
     await this.redisService.delByPattern('chefs:snapshot:*');
+    await this.redisService.del('chefs:published-user-ids:v1');
+  }
+
+  /**
+   * When a chef is published/unpublished, Make must drop their recipes too.
+   * Mirrors RecipeService.invalidateRecipeCaches without a circular import.
+   */
+  async invalidateRecipeVisibilityCaches(): Promise<void> {
+    try {
+      await this.redisService.incr('cache:gen:recipes');
+      await this.redisService.delByPattern('recipes:*');
+      await this.redisService.delByPattern('dietary:*');
+    } catch (error: any) {
+      // non-fatal — version bump still forces clients to refetch
+    }
+    await this.dataVersion.bump('recipes');
+    await this.dataVersion.bump('chefs');
   }
 }

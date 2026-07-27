@@ -217,6 +217,9 @@ export class ChefProfileService {
 
     void this.syncService.syncChefs([dto.userId]);
     await this.chefService.invalidateCaches();
+    if (profile.isPublished) {
+      await this.chefService.invalidateRecipeVisibilityCaches();
+    }
     return profile.toObject();
   }
 
@@ -283,6 +286,8 @@ export class ChefProfileService {
       existing.preferredContactName = dto.preferredContactName;
     }
     if (dto.organisation !== undefined) existing.organisation = dto.organisation;
+    const publishChanged =
+      dto.isPublished !== undefined && dto.isPublished !== existing.isPublished;
     if (dto.isPublished !== undefined) existing.isPublished = dto.isPublished;
     if (dto.order !== undefined) existing.order = dto.order;
 
@@ -304,6 +309,9 @@ export class ChefProfileService {
 
     await existing.save();
     await this.chefService.invalidateCaches();
+    if (publishChanged) {
+      await this.chefService.invalidateRecipeVisibilityCaches();
+    }
     return existing.toObject();
   }
 
@@ -341,9 +349,13 @@ export class ChefProfileService {
     if (!existing) throw new NotFoundException('Chef profile not found');
 
     if (!hard) {
+      const wasPublished = existing.isPublished;
       existing.isPublished = false;
       await existing.save();
       await this.chefService.invalidateCaches();
+      if (wasPublished) {
+        await this.chefService.invalidateRecipeVisibilityCaches();
+      }
       return { message: 'Chef unpublished', id };
     }
 
@@ -372,6 +384,7 @@ export class ChefProfileService {
     }
 
     await this.chefService.invalidateCaches();
+    await this.chefService.invalidateRecipeVisibilityCaches();
     return { message: 'Chef profile deleted', id };
   }
 

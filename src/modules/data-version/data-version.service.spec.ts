@@ -52,13 +52,14 @@ async function build(): Promise<{ service: DataVersionService } & Mocked> {
 describe('DataVersionService', () => {
   it('serves the manifest from a single Redis MGET when every key is warm', async () => {
     const { service, redis, model } = await build();
-    redis.mGet.mockResolvedValue(['42', '17', '5', '3']);
+    redis.mGet.mockResolvedValue(['42', '17', '5', '3', '1']);
 
     await expect(service.getManifest()).resolves.toEqual({
       recipes: 42,
       ingredients: 17,
       frameworkCategories: 5,
       stickers: 3,
+      chefs: 1,
     });
 
     expect(redis.mGet).toHaveBeenCalledWith([
@@ -66,13 +67,14 @@ describe('DataVersionService', () => {
       'dataversion:ingredients',
       'dataversion:frameworkCategories',
       'dataversion:stickers',
+      'dataversion:chefs',
     ]);
     expect(model.find).not.toHaveBeenCalled();
   });
 
   it('reseeds Redis from the durable Mongo floor after a flush', async () => {
     const { service, redis, model } = await build();
-    redis.mGet.mockResolvedValue(['42', null, null, null]);
+    redis.mGet.mockResolvedValue(['42', null, null, null, null]);
     model.find.mockReturnValue({
       select: jest.fn().mockReturnValue({
         lean: jest
@@ -86,6 +88,7 @@ describe('DataVersionService', () => {
       ingredients: 17,
       frameworkCategories: 0,
       stickers: 0,
+      chefs: 0,
     });
 
     expect(redis.setRaw).toHaveBeenCalledWith(
@@ -103,6 +106,7 @@ describe('DataVersionService', () => {
       ingredients: 0,
       frameworkCategories: 0,
       stickers: 0,
+      chefs: 0,
     });
   });
 

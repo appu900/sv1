@@ -76,7 +76,6 @@ export class RecipeService implements OnModuleInit {
 
   async onModuleInit() {
     try {
-      // Flush all recipe caches so any stale data is cleared on startup
       await this.redisService.delByPattern('recipes:*');
       await this.redisService.delByPattern('dietary:*');
       console.log('[RecipeService] All recipe/dietary caches flushed on startup');
@@ -84,7 +83,6 @@ export class RecipeService implements OnModuleInit {
       console.warn('[RecipeService] Could not flush recipe caches on startup:', e?.message);
     }
 
-    // One-time cleanup: remove empty-string ObjectId fields that would cause cast errors
     try {
       await this.recipeModel.updateMany(
         { $or: [{ stickerId: '' }, { sponsorId: '' }] },
@@ -396,10 +394,9 @@ export class RecipeService implements OnModuleInit {
     cacheKey: string,
     country?: string,
   ): Promise<RecipeSummary[]> {
-    const matchQuery: Record<string, unknown> = { isActive: true };
-    if (country) {
-      matchQuery.countries = country;
-    }
+    const matchQuery = await this.publicRecipeMatch(
+      country ? { countries: country } : {},
+    );
 
     const generationAtStart = await this.getRecipeCacheGeneration();
 
@@ -522,6 +519,62 @@ export class RecipeService implements OnModuleInit {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
+  private async publicRecipeMatch(
+    extra: Record<string, unknown> = {},
+  ): Promise<Record<string, unknown>> {
+    const match: Record<string, unknown> = { isActive: true, ...extra };
+    if (!this.chefLookup) return match;
+
+    const publishedChefUserIds =
+      await this.chefLookup.getPublishedChefUserIds();
+    const andClause = Array.isArray(match.$and)
+      ? [...(match.$and as unknown[])]
+      : [];
+    andClause.push({
+      $or: [
+        { chefIds: { $exists: false } },
+        { chefIds: null },
+        { chefIds: { $size: 0 } },
+        { chefIds: { $in: publishedChefUserIds } },
+      ],
+    });
+    match.$and = andClause;
+    return match;
+  }
+
+  private async assertRecipePubliclyVisible(recipe: {
+    isActive?: boolean;
+    chefIds?: unknown[];
+  }): Promise<void> {
+    if (recipe.isActive === false) {
+      throw new NotFoundException('Recipe not found');
+    }
+    if (!this.chefLookup) return;
+    const visible = await this.chefLookup.isRecipePubliclyVisible(
+      recipe.chefIds as any,
+    );
+    if (!visible) {
+      throw new NotFoundException('Recipe not found');
+    }
+  }
+
+  private async returnCachedIfPublic(
+    cacheKey: string,
+    cached: Recipe | null | undefined,
+  ): Promise<Recipe | null> {
+    if (!cached) return null;
+    try {
+      await this.assertRecipePubliclyVisible(cached as any);
+      return cached;
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        await this.redisService.del(cacheKey).catch(() => undefined);
+        throw error;
+      }
+      throw error;
+    }
+  }
+
   private async invalidateRecipeSummaryCaches(): Promise<void> {
     try {
       await this.redisService.delByPattern(`${this.CACHE_KEY_SUMMARIES}*`);
@@ -611,10 +664,9 @@ export class RecipeService implements OnModuleInit {
 
     try {
      
-      const matchQuery: any = { isActive: true };
-      if (country) {
-        matchQuery.countries = country;
-      }
+      const matchQuery = await this.publicRecipeMatch(
+        country ? { countries: country } : {},
+      );
 
       const recipes = await this.recipeModel
         .find(matchQuery)
@@ -674,10 +726,12 @@ export class RecipeService implements OnModuleInit {
     const cacheKey = `${this.CACHE_KEY_SINGLE}:${id}`;
     try {
       const cached = await this.redisService.get<Recipe>(cacheKey);
-      if (cached) {
-        return cached;
+      const visibleCached = await this.returnCachedIfPublic(cacheKey, cached);
+      if (visibleCached) {
+        return visibleCached;
       }
     } catch (error) {
+      if (error instanceof NotFoundException) throw error;
       console.error('Error reading cached recipe, clearing cache:', error.message);
       await this.redisService.del(cacheKey);
     }
@@ -725,6 +779,8 @@ export class RecipeService implements OnModuleInit {
       throw new NotFoundException(`Recipe with ID ${id} not found`);
     }
 
+    await this.assertRecipePubliclyVisible(recipe as any);
+
     await this.setRecipeCacheIfCurrent(cacheKey, recipe, generationAtStart);
 
     return recipe;
@@ -739,10 +795,12 @@ export class RecipeService implements OnModuleInit {
     const cacheKey = `recipes:slug:${slug}`;
     try {
       const cached = await this.redisService.get<Recipe>(cacheKey);
-      if (cached) {
-        return cached;
+      const visibleCached = await this.returnCachedIfPublic(cacheKey, cached);
+      if (visibleCached) {
+        return visibleCached;
       }
     } catch (error) {
+      if (error instanceof NotFoundException) throw error;
       console.error('Error reading cached recipe by slug, clearing cache:', error.message);
       await this.redisService.del(cacheKey);
     }
@@ -759,7 +817,11 @@ export class RecipeService implements OnModuleInit {
       .join('[\\s\\-]+');
 
     const recipe = await this.recipeModel
-      .findOne({ isActive: true, title: { $regex: new RegExp(`^${titlePattern}$`, 'i') } })
+      .findOne(
+        await this.publicRecipeMatch({
+          title: { $regex: new RegExp(`^${titlePattern}$`, 'i') },
+        }),
+      )
       .populate('hackOrTipIds', 'title type shortDescription')
       .populate('chefIds', 'name email role')
       .populate('stickerId', 'title imageUrl description')
@@ -799,6 +861,8 @@ export class RecipeService implements OnModuleInit {
       throw new NotFoundException(`Recipe with slug "${slug}" not found`);
     }
 
+    await this.assertRecipePubliclyVisible(recipe as any);
+
     await this.setRecipeCacheIfCurrent(cacheKey, recipe, generationAtStart);
 
     return recipe;
@@ -825,13 +889,10 @@ export class RecipeService implements OnModuleInit {
 
     const generationAtStart = await this.getRecipeCacheGeneration();
 
-    const matchQuery: any = {
+    const matchQuery = await this.publicRecipeMatch({
       frameworkCategories: new Types.ObjectId(categoryId),
-      isActive: true,
-    };
-    if (country) {
-      matchQuery.countries = country;
-    }
+      ...(country ? { countries: country } : {}),
+    });
 
     const recipes = await this.recipeModel
       .find(matchQuery)
@@ -890,15 +951,13 @@ export class RecipeService implements OnModuleInit {
       { 'components.component.optionalIngredients.ingredient': ingredientObjectId },
     ];
 
-    const matchQuery: any = { isActive: true, $or: ingredientConditions };
-    if (country) {
-      matchQuery.$and = [
-        { $or: ingredientConditions },
-        { countries: country },
-      ];
-      delete matchQuery.$or; 
-    }
-
+    const matchQuery = await this.publicRecipeMatch(
+      country
+        ? {
+            $and: [{ $or: ingredientConditions }, { countries: country }],
+          }
+        : { $or: ingredientConditions },
+    );
 
     const recipes = await this.recipeModel
       .find(matchQuery)
@@ -1199,8 +1258,9 @@ export class RecipeService implements OnModuleInit {
       );
     }
 
-    const matchQuery: any = { isActive: true };
-    if (country) matchQuery.countries = normalizeCountry(country);
+    const matchQuery = await this.publicRecipeMatch(
+      country ? { countries: normalizeCountry(country) } : {},
+    );
 
     const recipes = await this.recipeModel
       .find(matchQuery)
@@ -1228,7 +1288,7 @@ export class RecipeService implements OnModuleInit {
     let result = matching;
     if (result.length === 0 && country) {
       const allCountryRecipes = await this.recipeModel
-        .find({ isActive: true })
+        .find(await this.publicRecipeMatch())
         .select(
           '_id title heroImageUrl order countries frameworkCategories stickerId ' +
           'components.component.requiredIngredients.recommendedIngredient',
