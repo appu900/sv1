@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ConflictException,
   OnModuleInit,
   Optional,
 } from '@nestjs/common';
@@ -1153,6 +1154,12 @@ export class RecipeService implements OnModuleInit {
     const recipe = await this.recipeModel.findById(id);
     if (!recipe) {
       throw new NotFoundException(`Recipe with ID ${id} not found`);
+    }
+
+    if (recipe.isActive) {
+      throw new ConflictException(
+        'Published recipes cannot be deleted because dependent data may reference them',
+      );
     }
 
     if (recipe.heroImageUrl) {

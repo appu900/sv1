@@ -89,20 +89,29 @@ export class ChefProfileService {
     }
   }
 
-  async findAllAdmin() {
-    return this.chefProfileModel
-      .find({})
-      .sort({ order: 1, displayNameLower: 1 })
+  private populateCuisineRefs<T extends { populate: (...args: any[]) => T }>(
+    query: T,
+  ): T {
+    return query
       .populate('cuisineIds', 'title imageUrl')
+      .populate('featuredCuisineIds', 'title imageUrl');
+  }
+
+  async findAllAdmin() {
+    return this.populateCuisineRefs(
+      this.chefProfileModel
+        .find({})
+        .sort({ order: 1, displayNameLower: 1 }),
+    )
       .lean()
       .exec();
   }
 
   async findOneAdmin(id: string) {
     this.assertValidObjectId(id);
-    const doc = await this.chefProfileModel
-      .findById(id)
-      .populate('cuisineIds', 'title imageUrl')
+    const doc = await this.populateCuisineRefs(
+      this.chefProfileModel.findById(id),
+    )
       .lean()
       .exec();
     if (!doc) throw new NotFoundException('Chef profile not found');
@@ -111,9 +120,9 @@ export class ChefProfileService {
 
   async findByUserId(userId: string) {
     this.assertValidObjectId(userId, 'userId');
-    const doc = await this.chefProfileModel
-      .findOne({ userId: new Types.ObjectId(userId) })
-      .populate('cuisineIds', 'title imageUrl')
+    const doc = await this.populateCuisineRefs(
+      this.chefProfileModel.findOne({ userId: new Types.ObjectId(userId) }),
+    )
       .lean()
       .exec();
     if (!doc) throw new NotFoundException('Chef profile not found');
@@ -312,7 +321,8 @@ export class ChefProfileService {
     if (publishChanged) {
       await this.chefService.invalidateRecipeVisibilityCaches();
     }
-    return existing.toObject();
+    // Return populated cuisine refs so admin/chef previews get images + titles.
+    return this.findOneAdmin(id);
   }
 
   async updateMe(

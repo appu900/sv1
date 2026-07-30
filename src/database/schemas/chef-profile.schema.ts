@@ -128,7 +128,7 @@ export class ChefProfile {
   })
   onboardingStatus: string;
 
-  @Prop({ type: Number, default: 0, min: 0, max: 8 })
+  @Prop({ type: Number, default: 0, min: 0, max: 7 })
   onboardingStep: number;
 
   @Prop({ type: Date, default: null })
