@@ -1,5 +1,6 @@
 import {
   Allow,
+  IsArray,
   IsBoolean,
   IsNotEmpty,
   IsNumber,
@@ -128,6 +129,27 @@ export class CreateChefProfileDto {
   @Allow()
   @IsOptional()
   socialLinks?: ChefSocialLinksDto;
+
+  @Transform(({ value }: { value: unknown }) => {
+    if (value === undefined || value === null || value === '') return undefined;
+    if (Array.isArray(value)) return value;
+    if (typeof value === 'string') {
+      try {
+        const parsed = JSON.parse(value);
+        return Array.isArray(parsed) ? parsed : value;
+      } catch {
+        return value
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean);
+      }
+    }
+    return value;
+  })
+  @IsArray()
+  @IsOptional()
+  @IsString({ each: true })
+  featuredCuisineIds?: string[];
 
   @Transform(toOptionalBoolean)
   @IsBoolean()

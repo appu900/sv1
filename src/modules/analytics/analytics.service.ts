@@ -284,12 +284,11 @@ async saveFood(
   // Three possible sources, in priority order:
   //   1. `ingredinatIds` → DB lookup, uses stored averageWeight.
   //   2. `directIngredients[i].quantity` → one-shot AI resolver that returns
-  //      weight + price + CO2 together. Saves ~50% tokens vs. split calls.
-  //   3. `directIngredients[i].averageWeight` → already-known weight, price
-  //      and CO2 are computed via the separate cached AI calls.
+  //      weight + price together.
+  //   3. `directIngredients[i].averageWeight` → already-known weight; price
+  //      via cached AI call. CO₂ is always foodSaved × 2.1.
   let ingredinats: Array<{ name: string; averageWeight: number }> = [];
   let preResolvedPrice: Array<PriceCalculationResult | null> = [];
-  let preResolvedCo2: Array<Co2CalculationResult | null> = [];
 
   if (ingredinatIds && ingredinatIds.length > 0) {
     const dbIngredients = await this.ingredinatModel
@@ -300,7 +299,6 @@ async saveFood(
       averageWeight: i.averageWeight || 0,
     }));
     preResolvedPrice = ingredinats.map(() => null);
-    preResolvedCo2 = ingredinats.map(() => null);
   } else if (directIngredients && directIngredients.length > 0) {
     // Run AI resolvers only for entries that carry a quantity string.
     const resolutions = await Promise.all(
@@ -322,16 +320,9 @@ async saveFood(
           country,
           priceInLocalCurrency: r.priceInLocalCurrency,
         });
-        preResolvedCo2.push({
-          ingredient: i.name,
-          weightInGrams: r.weightInGrams,
-          country,
-          co2SavedKg: r.co2SavedKg,
-        });
       } else {
         ingredinats.push({ name: i.name, averageWeight: i.averageWeight || 0 });
         preResolvedPrice.push(null);
-        preResolvedCo2.push(null);
       }
     }
   }
@@ -339,8 +330,8 @@ async saveFood(
   const foodSavedInGrams = ingredinats.reduce((sum, i) => sum + (i.averageWeight || 0), 0);
   const ingredientNames = ingredinats.map(i => i.name).join(', ') || 'none';
 
-  // For any entry without a pre-resolved price/co2 (i.e. ID-based or
-  // weight-only direct ingredient), fall back to the split AI calls.
+  // For any entry without a pre-resolved price (i.e. ID-based or
+  // weight-only direct ingredient), fall back to the split AI price call.
   const aiResults: PriceCalculationResult[] = await Promise.all(
     ingredinats.map((i, idx) =>
       preResolvedPrice[idx]
@@ -348,21 +339,22 @@ async saveFood(
         : this.calculatePriceWithAI(i.name, i.averageWeight || 0, country),
     ),
   );
-  const co2Results: Co2CalculationResult[] = await Promise.all(
-    ingredinats.map((i, idx) =>
-      preResolvedCo2[idx]
-        ? Promise.resolve(preResolvedCo2[idx]!)
-        : this.calculateCo2SavedWithAI(i.name, i.averageWeight || 0, country),
-    ),
-  );
+  // Platform standard: CO₂ avoided = food saved × 2.1 (same unit ratio).
+  const CO2_KG_PER_KG_FOOD = 2.1;
+  const co2Results: Co2CalculationResult[] = ingredinats.map((i) => {
+    const weightInGrams = Math.max(0, i.averageWeight || 0);
+    return {
+      ingredient: i.name,
+      weightInGrams,
+      country,
+      co2SavedKg: Number(((weightInGrams / 1000) * CO2_KG_PER_KG_FOOD).toFixed(4)),
+    };
+  });
   const totalPriceInLocalCurrency = aiResults.reduce(
     (sum, r) => sum + Math.max(0, r.priceInLocalCurrency || 0),
     0,
   );
-  const totalCo2SavedInGrams = co2Results.reduce(
-    (sum, r) => sum + Math.max(0, (r.co2SavedKg || 0) * 1000),
-    0,
-  );
+  const totalCo2SavedInGrams = Math.max(0, foodSavedInGrams) * CO2_KG_PER_KG_FOOD;
 
   this.eventEmmiter.emit('food.saved', {
     userId,

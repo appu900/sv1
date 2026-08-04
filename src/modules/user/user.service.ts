@@ -32,8 +32,17 @@ export class UserService {
   ) {}
 
   async findByEmail(email: string) {
-    const user = await this.userModel.findOne({ email });
-    return user;
+    const normalized = String(email || '').trim().toLowerCase();
+    if (!normalized) return null;
+
+    // Prefer exact lowercase match, then case-insensitive for legacy mixed-case emails
+    const exact = await this.userModel.findOne({ email: normalized });
+    if (exact) return exact;
+
+    const escaped = normalized.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return this.userModel.findOne({
+      email: { $regex: `^${escaped}$`, $options: 'i' },
+    });
   }
 
   async findById(userId: string) {

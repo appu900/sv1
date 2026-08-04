@@ -202,6 +202,11 @@ export class ChefProfileService {
     const avatarImageUrl = await this.uploadImageIfPresent(files?.avatar?.[0]);
     const heroImageUrl = await this.uploadImageIfPresent(files?.hero?.[0]);
 
+    const featuredCuisineIds = (dto.featuredCuisineIds || [])
+      .filter((id) => Types.ObjectId.isValid(id))
+      .slice(0, 3)
+      .map((id) => new Types.ObjectId(id));
+
     const profile = await this.chefProfileModel.create({
       userId: new Types.ObjectId(dto.userId),
       displayName,
@@ -211,6 +216,7 @@ export class ChefProfileService {
       quote: dto.quote,
       bio: dto.bio,
       socialLinks: dto.socialLinks ?? {},
+      featuredCuisineIds,
       isPublished: dto.isPublished ?? false,
       order: dto.order ?? 0,
       avatarImageUrl,
