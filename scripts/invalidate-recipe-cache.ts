@@ -1,10 +1,14 @@
 /**
  * Invalidate Make-feed recipe caches on prod (cluster-safe).
  *
- * From ~/sv1 (or wherever REDIS_* env is loaded):
+ * From ~/sv1:
  *   npx tsx scripts/invalidate-recipe-cache.ts
  */
+import * as dotenv from 'dotenv';
+import * as path from 'path';
 import Redis, { RedisOptions } from 'ioredis';
+
+dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
 async function delByPattern(client: Redis, pattern: string): Promise<number> {
   let cursor = '0';
@@ -22,20 +26,31 @@ async function delByPattern(client: Redis, pattern: string): Promise<number> {
 }
 
 async function main() {
+  const host = process.env.REDIS_HOST || process.env.VALKEY_HOST || '';
+  const url = process.env.REDIS_URL || process.env.VALKEY_URL || '';
+  if (!host && !url) {
+    throw new Error(
+      'REDIS_HOST / REDIS_URL missing. Run from ~/sv1 with .env present, or: export $(grep -E \'^REDIS_\' .env | xargs)',
+    );
+  }
+
+  console.log(
+    `Connecting Redis → ${url || `${host}:${process.env.REDIS_PORT || 6379}`}`,
+  );
+
   const options: RedisOptions = {
     maxRetriesPerRequest: 1,
     enableReadyCheck: true,
-    connectTimeout: 5000,
+    connectTimeout: 8000,
     tls: {},
     username: process.env.REDIS_USERNAME || process.env.VALKEY_USERNAME,
     password: process.env.REDIS_PASSWORD || process.env.VALKEY_PASSWORD,
   };
 
-  const url = process.env.REDIS_URL || process.env.VALKEY_URL;
   const client = url
     ? new Redis(url.replace(/^redis:\/\//, 'rediss://'), options)
     : new Redis({
-        host: process.env.REDIS_HOST || process.env.VALKEY_HOST || '127.0.0.1',
+        host,
         port: Number(process.env.REDIS_PORT || process.env.VALKEY_PORT || 6379),
         db: Number(process.env.REDIS_DB || process.env.VALKEY_DB || 0),
         ...options,
