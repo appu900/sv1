@@ -35,6 +35,13 @@ export class User {
   @Prop({})
   pincode?:string
 
+  /** True after offline pincode→state backfill processed this user. */
+  @Prop({ default: false, index: true })
+  stateCheckDone?: boolean;
+
+  @Prop({ type: Date, default: null })
+  stateCheckedAt?: Date | null;
+
   @Prop({ trim: true })
   phoneNumber?: string;
 
