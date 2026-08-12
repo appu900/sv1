@@ -21,7 +21,6 @@ import { IngredientSearchEvent, IngredientSearchEventSchema } from 'src/database
 import { ClientAnalyticsEvent, ClientAnalyticsEventSchema } from 'src/database/schemas/client-analytics-event.schema';
 import { MetricsService } from './metrics.service';
 import { ChefModule } from '../chef/chef.module';
-import { SurveyConfigModule } from '../survey-config/survey-config.module';
 @Global()
 @Module({
   imports: [
@@ -41,7 +40,6 @@ import { SurveyConfigModule } from '../survey-config/survey-config.module';
       {name:IngredientSearchEvent.name,schema:IngredientSearchEventSchema},
       {name:ClientAnalyticsEvent.name,schema:ClientAnalyticsEventSchema},
     ]),
-    SurveyConfigModule,
     forwardRef(() => BadgesModule),
     forwardRef(() => ChefModule),
   ],

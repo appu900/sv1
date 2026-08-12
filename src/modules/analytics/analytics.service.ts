@@ -20,14 +20,7 @@ import { UserBadge, UserBadgeDocument } from 'src/database/schemas/user-badge.sc
 import { RedisService } from 'src/redis/redis.service';
 import { normalizeCountry } from '../../utils/countries.util';
 import { fallbackPriceInLocalCurrency, fallbackCo2SavedKg } from './utils/fallback-pricing.util';
-import {
-  CO2_KG_PER_KG_FOOD_SAVED,
-  moneySavedFromFoodGrams,
-  co2SavedInGramsFromFood,
-  resolveCostPerGram,
-} from './utils/impact-pricing.util';
 import { normalizeObjectIdArray } from 'src/modules/analytics/utils/object-id-array.util';
-import { SurveyConfigService } from '../survey-config/survey-config.service';
 
 type LeaderboardPeriodOption = 'ALL_TIME' | 'YEARLY' | 'MONTHLY' | 'WEEKLY' | 'DAILY';
 type LeaderboardMetricOption = 'MEALS_COOKED' | 'FOOD_SAVED' | 'MONEY_SAVED' | 'BADGES' | 'CO2_SAVED' | 'BOTH';
@@ -105,7 +98,6 @@ export class AnalyticsService {
     private readonly userBadgeModel: Model<UserBadgeDocument>,
     private readonly redisService: RedisService,
     private readonly eventEmmiter: EventEmitter2,
-    private readonly surveyConfigService: SurveyConfigService,
   ) {}
 
   private getLeaderboardWindowStart(period: LeaderboardPeriodOption): Date | null {
@@ -256,16 +248,6 @@ export class AnalyticsService {
     return payload;
   }
 
-/**
- * Persist cook impact for a household.
- *
- * Platform formulas (AI is NOT used for money or CO₂ totals):
- * - foodSavedInGrams = Σ ingredient weights (g)
- * - moneySaved = foodSavedInGrams × survey costPerGram (else fallback $/kg × kg)
- * - co2SavedInGrams = foodSavedInGrams × 2.1
- *
- * AI may still resolve free-form quantity → grams when needed.
- */
 async saveFood(
   userId: string,
   ingredinatIds: string[] = [],
@@ -296,13 +278,17 @@ async saveFood(
     }
   }
 
-  // Resolve ingredients to { name, grams }.
+  // Resolve ingredients to { name, grams } + (optional) price/co2 already
+  // computed when a quantity string is supplied.
   //
   // Three possible sources, in priority order:
   //   1. `ingredinatIds` → DB lookup, uses stored averageWeight.
-  //   2. `directIngredients[i].quantity` → AI quantity→grams resolver.
-  //   3. `directIngredients[i].averageWeight` → already-known weight.
+  //   2. `directIngredients[i].quantity` → one-shot AI resolver that returns
+  //      weight + price together.
+  //   3. `directIngredients[i].averageWeight` → already-known weight; price
+  //      via cached AI call. CO₂ is always foodSaved × 2.1.
   let ingredinats: Array<{ name: string; averageWeight: number }> = [];
+  let preResolvedPrice: Array<PriceCalculationResult | null> = [];
 
   if (ingredinatIds && ingredinatIds.length > 0) {
     const dbIngredients = await this.ingredinatModel
@@ -312,7 +298,9 @@ async saveFood(
       name: i.name,
       averageWeight: i.averageWeight || 0,
     }));
+    preResolvedPrice = ingredinats.map(() => null);
   } else if (directIngredients && directIngredients.length > 0) {
+    // Run AI resolvers only for entries that carry a quantity string.
     const resolutions = await Promise.all(
       directIngredients.map(i =>
         i.quantity && i.quantity.trim().length > 0
@@ -326,8 +314,15 @@ async saveFood(
       const r = resolutions[idx];
       if (r) {
         ingredinats.push({ name: i.name, averageWeight: r.weightInGrams });
+        preResolvedPrice.push({
+          ingredient: i.name,
+          weightInGrams: r.weightInGrams,
+          country,
+          priceInLocalCurrency: r.priceInLocalCurrency,
+        });
       } else {
         ingredinats.push({ name: i.name, averageWeight: i.averageWeight || 0 });
+        preResolvedPrice.push(null);
       }
     }
   }
@@ -335,48 +330,31 @@ async saveFood(
   const foodSavedInGrams = ingredinats.reduce((sum, i) => sum + (i.averageWeight || 0), 0);
   const ingredientNames = ingredinats.map(i => i.name).join(', ') || 'none';
 
-  let countryRates: Array<{ countryCode: string; countryName?: string; costPerGram: number; isActive?: boolean }> | null =
-    null;
-  try {
-    const surveyConfig = await this.surveyConfigService.getActiveConfig();
-    countryRates = surveyConfig?.countryRates ?? null;
-  } catch (err: any) {
-    this.logger.warn(`survey config unavailable for money calc: ${err?.message}`);
-  }
-
-  const costPerGram = resolveCostPerGram(country, countryRates);
-  const totalPriceInLocalCurrency = moneySavedFromFoodGrams(
-    foodSavedInGrams,
-    country,
-    countryRates,
+  // For any entry without a pre-resolved price (i.e. ID-based or
+  // weight-only direct ingredient), fall back to the split AI price call.
+  const aiResults: PriceCalculationResult[] = await Promise.all(
+    ingredinats.map((i, idx) =>
+      preResolvedPrice[idx]
+        ? Promise.resolve(preResolvedPrice[idx]!)
+        : this.calculatePriceWithAI(i.name, i.averageWeight || 0, country),
+    ),
   );
-  const totalCo2SavedInGrams = co2SavedInGramsFromFood(foodSavedInGrams);
-
-  const priceResults: PriceCalculationResult[] = ingredinats.map((i) => {
-    const weightInGrams = Math.max(0, i.averageWeight || 0);
-    const priceInLocalCurrency =
-      costPerGram != null && costPerGram > 0
-        ? Math.round(weightInGrams * costPerGram * 100) / 100
-        : fallbackPriceInLocalCurrency(weightInGrams, country);
-    return {
-      ingredient: i.name,
-      weightInGrams,
-      country,
-      priceInLocalCurrency,
-    };
-  });
-
+  // Platform standard: CO₂ avoided = food saved × 2.1 (same unit ratio).
+  const CO2_KG_PER_KG_FOOD = 2.1;
   const co2Results: Co2CalculationResult[] = ingredinats.map((i) => {
     const weightInGrams = Math.max(0, i.averageWeight || 0);
     return {
       ingredient: i.name,
       weightInGrams,
       country,
-      co2SavedKg: Number(
-        ((weightInGrams / 1000) * CO2_KG_PER_KG_FOOD_SAVED).toFixed(4),
-      ),
+      co2SavedKg: Number(((weightInGrams / 1000) * CO2_KG_PER_KG_FOOD).toFixed(4)),
     };
   });
+  const totalPriceInLocalCurrency = aiResults.reduce(
+    (sum, r) => sum + Math.max(0, r.priceInLocalCurrency || 0),
+    0,
+  );
+  const totalCo2SavedInGrams = Math.max(0, foodSavedInGrams) * CO2_KG_PER_KG_FOOD;
 
   this.eventEmmiter.emit('food.saved', {
     userId,
@@ -397,7 +375,7 @@ async saveFood(
     ingredientNames,
     country,
     totalPriceInLocalCurrency,
-    breakdown: priceResults,
+    breakdown: aiResults,
     co2Breakdown: co2Results,
     totalCo2SavedInKg: Number((totalCo2SavedInGrams / 1000).toFixed(3)),
   };
