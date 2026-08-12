@@ -89,7 +89,10 @@ export class SurveyConfig {
   @Prop({
     type: MongooseSchema.Types.Mixed,
     default: {
-      co2PerGram: 2.5,
+      // Keep in step with CO2_KG_PER_KG_FOOD_SAVED in
+      // modules/analytics/utils/impact-pricing.util.ts — the survey and the
+      // cook-event paths must not report a user different CO2 per kg saved.
+      co2PerGram: 2.1,
       avgWeeklyWasteGrams: 5000,
       scrapsWeightPerUnit: 150,
       leftoversWeightPerUnit: 500,

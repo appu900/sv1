@@ -2,7 +2,6 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
-import OpenAI from "openai";
 import {
   Ingredient,
   IngredientDocument,
@@ -19,8 +18,10 @@ import { FoodSavedEventLog, FoodSavedEventLogDocument } from 'src/database/schem
 import { UserBadge, UserBadgeDocument } from 'src/database/schemas/user-badge.schema';
 import { RedisService } from 'src/redis/redis.service';
 import { normalizeCountry } from '../../utils/countries.util';
-import { fallbackPriceInLocalCurrency, fallbackCo2SavedKg } from './utils/fallback-pricing.util';
 import { normalizeObjectIdArray } from 'src/modules/analytics/utils/object-id-array.util';
+import { SurveyConfigService } from '../survey-config/survey-config.service';
+import { AiImpactService } from './ai-impact.service';
+import { ImpactRequestItem } from './utils/ai-impact.util';
 
 type LeaderboardPeriodOption = 'ALL_TIME' | 'YEARLY' | 'MONTHLY' | 'WEEKLY' | 'DAILY';
 type LeaderboardMetricOption = 'MEALS_COOKED' | 'FOOD_SAVED' | 'MONEY_SAVED' | 'BADGES' | 'CO2_SAVED' | 'BOTH';
@@ -57,25 +58,10 @@ export interface Co2CalculationResult {
   co2SavedKg: number;
 }
 
-export interface QuantityResolutionResult {
-  ingredient: string;
-  quantity: string;
-  country: string;
-  weightInGrams: number;
-  priceInLocalCurrency: number;
-  co2SavedKg: number;
-}
-
 @Injectable()
 export class AnalyticsService {
   private readonly logger = new Logger(AnalyticsService.name);
-  private readonly openai = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
-  });
 
-  private readonly AI_TIMEOUT_MS = 4000;
-  private readonly AI_MAX_ATTEMPTS = 2;
-  private readonly PRICE_CACHE_TTL_SEC = 7 * 24 * 3600; // 7 days
   private readonly LEADERBOARD_CACHE_TTL_SEC = 60;
   private readonly TRENDING_CACHE_TTL_SEC = 5 * 60;
 
@@ -98,6 +84,8 @@ export class AnalyticsService {
     private readonly userBadgeModel: Model<UserBadgeDocument>,
     private readonly redisService: RedisService,
     private readonly eventEmmiter: EventEmitter2,
+    private readonly surveyConfigService: SurveyConfigService,
+    private readonly aiImpactService: AiImpactService,
   ) {}
 
   private getLeaderboardWindowStart(period: LeaderboardPeriodOption): Date | null {
@@ -278,83 +266,73 @@ async saveFood(
     }
   }
 
-  // Resolve ingredients to { name, grams } + (optional) price/co2 already
-  // computed when a quantity string is supplied.
+  // Collect the ingredients to price.
   //
-  // Three possible sources, in priority order:
-  //   1. `ingredinatIds` → DB lookup, uses stored averageWeight.
-  //   2. `directIngredients[i].quantity` → one-shot AI resolver that returns
-  //      weight + price together.
-  //   3. `directIngredients[i].averageWeight` → already-known weight; price
-  //      via cached AI call. CO₂ is always foodSaved × 2.1.
-  let ingredinats: Array<{ name: string; averageWeight: number }> = [];
-  let preResolvedPrice: Array<PriceCalculationResult | null> = [];
+  // Two sources:
+  //   1. `ingredinatIds` → DB lookup, uses the stored averageWeight.
+  //   2. `directIngredients` → a free-form quantity string (the AI resolves
+  //      grams) or an already-known averageWeight.
+  let impactItems: ImpactRequestItem[] = [];
 
   if (ingredinatIds && ingredinatIds.length > 0) {
     const dbIngredients = await this.ingredinatModel
       .find({ _id: { $in: ingredinatIds } })
       .lean();
-    ingredinats = dbIngredients.map(i => ({
+    impactItems = dbIngredients.map(i => ({
       name: i.name,
-      averageWeight: i.averageWeight || 0,
+      weightGrams: i.averageWeight || 0,
     }));
-    preResolvedPrice = ingredinats.map(() => null);
   } else if (directIngredients && directIngredients.length > 0) {
-    // Run AI resolvers only for entries that carry a quantity string.
-    const resolutions = await Promise.all(
-      directIngredients.map(i =>
-        i.quantity && i.quantity.trim().length > 0
-          ? this.resolveIngredientByQuantity(i.name, i.quantity, country)
-          : Promise.resolve(null),
-      ),
-    );
-
-    for (let idx = 0; idx < directIngredients.length; idx++) {
-      const i = directIngredients[idx];
-      const r = resolutions[idx];
-      if (r) {
-        ingredinats.push({ name: i.name, averageWeight: r.weightInGrams });
-        preResolvedPrice.push({
-          ingredient: i.name,
-          weightInGrams: r.weightInGrams,
-          country,
-          priceInLocalCurrency: r.priceInLocalCurrency,
-        });
-      } else {
-        ingredinats.push({ name: i.name, averageWeight: i.averageWeight || 0 });
-        preResolvedPrice.push(null);
-      }
-    }
+    impactItems = directIngredients.map(i => ({
+      name: i.name,
+      quantity: i.quantity,
+      weightGrams: i.averageWeight || 0,
+    }));
   }
 
-  const foodSavedInGrams = ingredinats.reduce((sum, i) => sum + (i.averageWeight || 0), 0);
-  const ingredientNames = ingredinats.map(i => i.name).join(', ') || 'none';
+  let countryRates: Array<{ countryCode: string; countryName?: string; costPerGram: number; isActive?: boolean }> | null =
+    null;
+  try {
+    const surveyConfig = await this.surveyConfigService.getActiveConfig();
+    countryRates = surveyConfig?.countryRates ?? null;
+  } catch (err: any) {
+    this.logger.warn(`survey config unavailable for money calc: ${err?.message}`);
+  }
 
-  // For any entry without a pre-resolved price (i.e. ID-based or
-  // weight-only direct ingredient), fall back to the split AI price call.
-  const aiResults: PriceCalculationResult[] = await Promise.all(
-    ingredinats.map((i, idx) =>
-      preResolvedPrice[idx]
-        ? Promise.resolve(preResolvedPrice[idx]!)
-        : this.calculatePriceWithAI(i.name, i.averageWeight || 0, country),
-    ),
+  // One batched AI call for the whole recipe. Ingredients already seen in this
+  // country are served from cache and cost nothing.
+  const resolved = await this.aiImpactService.resolveBatch(
+    impactItems,
+    country,
+    countryRates,
   );
-  // Platform standard: CO₂ avoided = food saved × 2.1 (same unit ratio).
-  const CO2_KG_PER_KG_FOOD = 2.1;
-  const co2Results: Co2CalculationResult[] = ingredinats.map((i) => {
-    const weightInGrams = Math.max(0, i.averageWeight || 0);
-    return {
-      ingredient: i.name,
-      weightInGrams,
-      country,
-      co2SavedKg: Number(((weightInGrams / 1000) * CO2_KG_PER_KG_FOOD).toFixed(4)),
-    };
-  });
-  const totalPriceInLocalCurrency = aiResults.reduce(
-    (sum, r) => sum + Math.max(0, r.priceInLocalCurrency || 0),
+
+  const foodSavedInGrams = resolved.reduce((sum, r) => sum + r.weightInGrams, 0);
+  const ingredientNames =
+    resolved.map(r => r.ingredient).filter(Boolean).join(', ') || 'none';
+
+  const totalPriceInLocalCurrency =
+    Math.round(
+      resolved.reduce((sum, r) => sum + r.priceInLocalCurrency, 0) * 100,
+    ) / 100;
+  const totalCo2SavedInGrams = resolved.reduce(
+    (sum, r) => sum + r.co2SavedInGrams,
     0,
   );
-  const totalCo2SavedInGrams = Math.max(0, foodSavedInGrams) * CO2_KG_PER_KG_FOOD;
+
+  const priceResults: PriceCalculationResult[] = resolved.map(r => ({
+    ingredient: r.ingredient,
+    weightInGrams: r.weightInGrams,
+    country,
+    priceInLocalCurrency: r.priceInLocalCurrency,
+  }));
+
+  const co2Results: Co2CalculationResult[] = resolved.map(r => ({
+    ingredient: r.ingredient,
+    weightInGrams: r.weightInGrams,
+    country,
+    co2SavedKg: Number((r.co2SavedInGrams / 1000).toFixed(4)),
+  }));
 
   this.eventEmmiter.emit('food.saved', {
     userId,
@@ -375,280 +353,11 @@ async saveFood(
     ingredientNames,
     country,
     totalPriceInLocalCurrency,
-    breakdown: aiResults,
+    breakdown: priceResults,
     co2Breakdown: co2Results,
     totalCo2SavedInKg: Number((totalCo2SavedInGrams / 1000).toFixed(3)),
   };
 }
-
-/**
- * Single-shot AI resolver: given an ingredient NAME and a free-form
- * QUANTITY string (e.g. "6 large", "2 tablespoons", "1 teaspoon",
- * "to taste"), return estimated weight + local price + CO2e avoided.
- *
- * Cached in Redis for 7 days by (country, name|quantity). This means
- * "onion | 1 large" in India is resolved ONCE and reused across every
- * user that cooks any recipe containing that exact line — the hot
- * ingredients (tomato, onion, oil, salt) cost zero tokens after the
- * very first user.
- *
- * On AI failure returns null so the caller can decide on a fallback.
- */
-async resolveIngredientByQuantity(
-  ingredientName: string,
-  quantity: string,
-  country: string,
-): Promise<QuantityResolutionResult | null> {
-  const safeName = (ingredientName || '').trim();
-  const safeQty = (quantity || '').trim();
-  if (!safeName || !safeQty) return null;
-
-  // "to taste", "for garnish", "as needed" → negligible weight, skip AI.
-  const negligible = /^(to taste|for garnish|as needed|optional|pinch)$/i;
-  if (negligible.test(safeQty)) {
-    return {
-      ingredient: safeName,
-      quantity: safeQty,
-      country,
-      weightInGrams: 0,
-      priceInLocalCurrency: 0,
-      co2SavedKg: 0,
-    };
-  }
-
-  const cacheKey = `analytics:qty:v1:${country}:${safeName.toLowerCase().slice(0, 60)}|${safeQty.toLowerCase().slice(0, 40)}`;
-  try {
-    const cached = await this.redisService.get<{
-      w: number;
-      p: number;
-      c: number;
-    }>(cacheKey);
-    if (cached && typeof cached.w === 'number') {
-      return {
-        ingredient: safeName,
-        quantity: safeQty,
-        country,
-        weightInGrams: cached.w,
-        priceInLocalCurrency: cached.p,
-        co2SavedKg: cached.c,
-      };
-    }
-  } catch (err: any) {
-    this.logger.warn(`qty cache read failed: ${err?.message}`);
-  }
-
-  try {
-    const content = await this.callOpenAIWithRetry([
-      {
-        role: 'system',
-        content:
-          'You estimate ingredient weight (grams), local-currency price, and CO2e emissions avoided from preventing that ingredient from being wasted. Respond with STRICT JSON only — no prose.',
-      },
-      {
-        role: 'user',
-        content:
-          `Resolve the following line from a recipe:\n` +
-          `- ingredient: ${safeName}\n` +
-          `- quantity: ${safeQty}\n` +
-          `- country: ${country}\n\n` +
-          `Return JSON exactly:\n` +
-          `{"weightInGrams":0,"priceInLocalCurrency":0,"co2SavedKg":0}\n` +
-          `- weightInGrams: realistic edible weight in grams for the given quantity.\n` +
-          `- priceInLocalCurrency: typical retail price for that weight in ${country}.\n` +
-          `- co2SavedKg: CO2e in kg that would be avoided by NOT wasting that weight of ${safeName}.`,
-      },
-    ]);
-    const parsed = JSON.parse(content);
-    const w = Math.max(0, Number(parsed?.weightInGrams) || 0);
-    const p = Math.max(0, Number(parsed?.priceInLocalCurrency) || 0);
-    const c = Math.max(0, Number(parsed?.co2SavedKg) || 0);
-
-    // Only cache when weight is meaningful — avoids poisoning the cache
-    // with zero-weight results from a bad AI response.
-    if (w > 0) {
-      void this.redisService.set(
-        cacheKey,
-        { w, p, c },
-        this.PRICE_CACHE_TTL_SEC,
-      );
-    }
-
-    return {
-      ingredient: safeName,
-      quantity: safeQty,
-      country,
-      weightInGrams: Number(w.toFixed(1)),
-      priceInLocalCurrency: Number(p.toFixed(2)),
-      co2SavedKg: Number(c.toFixed(4)),
-    };
-  } catch (err: any) {
-    this.logger.error(`qty AI failed for "${safeName} ${safeQty}": ${err?.message}`);
-    return null;
-  }
-}
-private async callOpenAIWithRetry(
-  messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
-): Promise<string> {
-  let lastErr: any;
-  for (let attempt = 1; attempt <= this.AI_MAX_ATTEMPTS; attempt++) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.AI_TIMEOUT_MS);
-    try {
-      const response = await this.openai.chat.completions.create(
-        {
-          model: 'gpt-4.1',
-          messages,
-          temperature: 0.2,
-          response_format: { type: 'json_object' },
-        },
-        { signal: controller.signal as any },
-      );
-      const content = response.choices[0]?.message?.content;
-      if (!content) throw new Error('empty AI content');
-      return content;
-    } catch (err: any) {
-      lastErr = err;
-      this.logger.warn(
-        `openai attempt ${attempt}/${this.AI_MAX_ATTEMPTS} failed: ${err?.message}`,
-      );
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-  throw lastErr ?? new Error('openai failed');
-}
-
-private priceCacheKey(ingredient: string, country: string): string {
-  return `analytics:price:v2:${country}:${ingredient.trim().toLowerCase().slice(0, 80)}`;
-}
-private co2CacheKey(ingredient: string, country: string): string {
-  return `analytics:co2:v2:${country}:${ingredient.trim().toLowerCase().slice(0, 80)}`;
-}
-
-
-  async calculatePriceWithAI(
-    ingredientName: string,
-    weightInGrams: number,
-    country: string,
-  ): Promise<PriceCalculationResult> {
-    const safeName = (ingredientName || '').trim();
-    if (!safeName || weightInGrams <= 0) {
-      return { ingredient: safeName, weightInGrams, country, priceInLocalCurrency: 0 };
-    }
-
-    const cacheKey = this.priceCacheKey(safeName, country);
-    try {
-      const cached = await this.redisService.get<number>(cacheKey);
-      if (typeof cached === 'number' && cached >= 0) {
-        return {
-          ingredient: safeName,
-          weightInGrams,
-          country,
-          priceInLocalCurrency: Number((cached * weightInGrams).toFixed(2)),
-        };
-      }
-    } catch (err: any) {
-      this.logger.warn(`price cache read failed: ${err?.message}`);
-    }
-
-    try {
-      const content = await this.callOpenAIWithRetry([
-        {
-          role: 'system',
-          content:
-            'You estimate the price of a food ingredient in the local currency of a given country. Respond with STRICT JSON only — no prose.',
-        },
-        {
-          role: 'user',
-          content: `Estimate the price of:\n- ingredient: ${safeName}\n- weight: ${weightInGrams} grams\n- country: ${country}\n\nReturn JSON exactly:\n{"ingredient":"","weightInGrams":0,"country":"","priceInLocalCurrency":0}\nPrice must be in the local currency of ${country}.`,
-        },
-      ]);
-      const parsed = JSON.parse(content);
-      const price = Math.max(0, Number(parsed?.priceInLocalCurrency) || 0);
-      if (price > 0) {
-        // Cache as price-per-gram so a different weight still benefits.
-        const perGram = price / weightInGrams;
-        void this.redisService.set(cacheKey, perGram, this.PRICE_CACHE_TTL_SEC);
-      }
-      return {
-        ingredient: safeName,
-        weightInGrams,
-        country,
-        priceInLocalCurrency: price > 0
-          ? Number(price.toFixed(2))
-          : fallbackPriceInLocalCurrency(weightInGrams, country),
-      };
-    } catch (err: any) {
-      this.logger.error(`price AI fallback for "${safeName}": ${err?.message}`);
-      return {
-        ingredient: safeName,
-        weightInGrams,
-        country,
-        priceInLocalCurrency: fallbackPriceInLocalCurrency(weightInGrams, country),
-      };
-    }
-  }
-
-  async calculateCo2SavedWithAI(
-    ingredientName: string,
-    weightInGrams: number,
-    country: string,
-  ): Promise<Co2CalculationResult> {
-    const safeName = (ingredientName || '').trim();
-    if (!safeName || weightInGrams <= 0) {
-      return { ingredient: safeName, weightInGrams, country, co2SavedKg: 0 };
-    }
-
-    const cacheKey = this.co2CacheKey(safeName, country);
-    try {
-      const cached = await this.redisService.get<number>(cacheKey);
-      if (typeof cached === 'number' && cached >= 0) {
-        return {
-          ingredient: safeName,
-          weightInGrams,
-          country,
-          co2SavedKg: Number((cached * weightInGrams).toFixed(4)),
-        };
-      }
-    } catch (err: any) {
-      this.logger.warn(`co2 cache read failed: ${err?.message}`);
-    }
-
-    try {
-      const content = await this.callOpenAIWithRetry([
-        {
-          role: 'system',
-          content:
-            'You estimate CO2e emissions avoided (kg) by preventing food waste. Respond with STRICT JSON only — no prose.',
-        },
-        {
-          role: 'user',
-          content: `Estimate CO2e avoided for:\n- ingredient: ${safeName}\n- weight: ${weightInGrams} grams\n- country: ${country}\n\nReturn JSON exactly:\n{"ingredient":"","weightInGrams":0,"country":"","co2SavedKg":0}\nco2SavedKg must be CO2e saved, not produced.`,
-        },
-      ]);
-      const parsed = JSON.parse(content);
-      const co2 = Math.max(0, Number(parsed?.co2SavedKg) || 0);
-      if (co2 > 0) {
-        const perGram = co2 / weightInGrams;
-        void this.redisService.set(cacheKey, perGram, this.PRICE_CACHE_TTL_SEC);
-      }
-      return {
-        ingredient: safeName,
-        weightInGrams,
-        country,
-        co2SavedKg: co2 > 0 ? Number(co2.toFixed(3)) : fallbackCo2SavedKg(weightInGrams),
-      };
-    } catch (err: any) {
-      this.logger.error(`co2 AI fallback for "${safeName}": ${err?.message}`);
-      return {
-        ingredient: safeName,
-        weightInGrams,
-        country,
-        co2SavedKg: fallbackCo2SavedKg(weightInGrams),
-      };
-    }
-  }
-  
 
   private async getNormalizedCookedRecipesProfile(userId: string) {
     const profile = (await this.userFoodAnallyticsProfileModel.collection.findOne(
@@ -738,10 +447,8 @@ private co2CacheKey(ingredient: string, country: string): string {
     return {
       food_savings_user: foodSavedInKg.toFixed(2),
       completed_meals_count: profile.numberOfMealsCooked || 0,
-      best_food_savings: null, // TODO: Track best savings
+      best_food_savings: null,
       total_co2_savings: totalCo2SavedKg.toFixed(2),
-      // Return the accumulated money saved for the user.
-      // Amount is computed based on the user's country during saveFood.
       total_cost_savings: totalMoneySaved.toFixed(2),
       best_co2_savings: null,
       best_cost_savings: null,

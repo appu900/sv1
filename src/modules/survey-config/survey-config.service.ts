@@ -211,7 +211,8 @@ export class SurveyConfigService {
         { countryCode: 'FR', countryName: 'France', costPerGram: 0.003, currencySymbol: '€', isActive: true },
       ],
       calculationConstants: {
-        co2PerGram: 2.5,
+        // Matches CO2_KG_PER_KG_FOOD_SAVED (analytics/utils/impact-pricing.util.ts).
+        co2PerGram: 2.1,
         avgWeeklyWasteGrams: 5000,
         scrapsWeightPerUnit: 150,
         leftoversWeightPerUnit: 500,

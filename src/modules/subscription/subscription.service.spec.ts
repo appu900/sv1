@@ -298,6 +298,23 @@ describe('SubscriptionService RevenueCat v2 periods', () => {
 });
 
 describe('SubscriptionService RevenueCat webhooks', () => {
+  // These fixtures pin absolute dates, and the service decides "expired" by
+  // comparing them against Date.now(). Without pinning the clock the suite
+  // silently stops testing the branch it was written for: once the wall clock
+  // passes the fixture's expiry, every case collapses to basic/expired and
+  // passes or fails for the wrong reason. 2026-05-01 sits inside the paid
+  // period of every fixture below.
+  const NOW = Date.UTC(2026, 4, 1);
+  let nowSpy: jest.SpyInstance<number, []>;
+
+  beforeEach(() => {
+    nowSpy = jest.spyOn(Date, 'now').mockReturnValue(NOW);
+  });
+
+  afterEach(() => {
+    nowSpy.mockRestore();
+  });
+
   it('keeps cancelled paid users active until their paid period expires when entitlement ids are missing', async () => {
     const { service, subscriptionModel } = createService();
     const userId = new Types.ObjectId().toHexString();

@@ -20,7 +20,9 @@ import { UserBadge, UserBadgeSchema } from 'src/database/schemas/user-badge.sche
 import { IngredientSearchEvent, IngredientSearchEventSchema } from 'src/database/schemas/ingredient-search-event.schema';
 import { ClientAnalyticsEvent, ClientAnalyticsEventSchema } from 'src/database/schemas/client-analytics-event.schema';
 import { MetricsService } from './metrics.service';
+import { AiImpactService } from './ai-impact.service';
 import { ChefModule } from '../chef/chef.module';
+import { SurveyConfigModule } from '../survey-config/survey-config.module';
 @Global()
 @Module({
   imports: [
@@ -40,11 +42,12 @@ import { ChefModule } from '../chef/chef.module';
       {name:IngredientSearchEvent.name,schema:IngredientSearchEventSchema},
       {name:ClientAnalyticsEvent.name,schema:ClientAnalyticsEventSchema},
     ]),
+    SurveyConfigModule,
     forwardRef(() => BadgesModule),
     forwardRef(() => ChefModule),
   ],
-  providers: [AnalyticsService, MetricsService, AnalyticsListner, AppSessionListener],
+  providers: [AnalyticsService, MetricsService, AiImpactService, AnalyticsListner, AppSessionListener],
   controllers: [AnalyticsController],
-  exports:[AnalyticsService, MetricsService]
+  exports:[AnalyticsService, MetricsService, AiImpactService]
 })
 export class AnalyticsModule {}
