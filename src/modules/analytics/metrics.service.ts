@@ -149,8 +149,7 @@ export class MetricsService {
         createdAt: doc.createdAt,
       });
     } catch (err: any) {
-      // Duplicate-key on (userId, idempotencyKey) means the same retry
-      // was already persisted — this is a success, not an error.
+
       if (err?.code === 11000) {
         this.logger.debug(
           `logFoodSaved duplicate suppressed for key=${payload.idempotencyKey}`,
@@ -187,7 +186,6 @@ export class MetricsService {
       });
     } catch (err: any) {
       this.logger.error(`logIngredientSearch failed: ${err?.message}`);
-      // Non-fatal for the caller — analytics should never break search UX.
     }
   }
 

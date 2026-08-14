@@ -221,11 +221,6 @@ export class AnalyticsController {
     return { success: true };
   }
 
-  // ──────────────────── generic client UI events ────────────────────
-
-  /**
-   * Single client UI event. Non-blocking — we ACK immediately so the app never stalls on analytics.
-   */
   @Post('client-event')
   @UseGuards(JwtAuthGuard, RolesGuard)
   async logClientEvent(
@@ -233,7 +228,6 @@ export class AnalyticsController {
     @GetUser() user: any,
   ) {
     const userId = user?.userId ?? null;
-    // Fire-and-forget so the HTTP response isn't gated on the write.
     void this.metricsService.logClientEvent({
       userId,
       event: dto.event,
@@ -246,10 +240,6 @@ export class AnalyticsController {
     return { success: true };
   }
 
-  /**
-   * Batch client UI events. Used by the mobile app's buffered queue to
-   * reduce round-trips. Caps at 50 events per request (DTO).
-   */
   @Post('client-events/batch')
   @UseGuards(JwtAuthGuard, RolesGuard)
   async logClientEventsBatch(

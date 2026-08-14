@@ -51,7 +51,6 @@ describe('impact-pricing.util', () => {
     });
 
     it('uses fallback $/kg for unknown country with no default code', () => {
-      // Unknown country → no survey code → fallbackPriceInLocalCurrency → $5/kg default
       expect(moneySavedFromFoodGrams(2000, 'Atlantis', null)).toBe(10);
     });
 

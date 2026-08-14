@@ -63,8 +63,8 @@ describe('ai-impact.util', () => {
 
   describe('clampCo2eKgPerKg', () => {
     it('accepts realistic factors', () => {
-      expect(clampCo2eKgPerKg(60)).toBe(60); // beef
-      expect(clampCo2eKgPerKg(0.4)).toBe(0.4); // root veg
+      expect(clampCo2eKgPerKg(60)).toBe(60);
+      expect(clampCo2eKgPerKg(0.4)).toBe(0.4); 
       expect(clampCo2eKgPerKg('2.7')).toBe(2.7);
     });
 
@@ -88,7 +88,7 @@ describe('ai-impact.util', () => {
 
     it('accepts prices within the sanity band', () => {
       expect(clampPricePerKg(40, flat)).toBe(40);
-      expect(clampPricePerKg(3000, flat)).toBe(3000); // expensive spice, still allowed
+      expect(clampPricePerKg(3000, flat)).toBe(3000); 
     });
 
     it('rejects a catastrophic hallucination', () => {

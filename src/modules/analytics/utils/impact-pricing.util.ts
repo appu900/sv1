@@ -1,12 +1,7 @@
 import { fallbackPriceInLocalCurrency } from './fallback-pricing.util';
 
-/** kg CO₂e avoided per kg of food saved (platform standard). */
 export const CO2_KG_PER_KG_FOOD_SAVED = 2.1;
 
-/**
- * Default survey cost-per-gram rates (local currency per gram).
- * Mirrors SurveyConfig defaults — used when DB config is unavailable.
- */
 export const DEFAULT_COST_PER_GRAM: Record<string, number> = {
   IN: 0.015,
   AU: 0.004,
@@ -23,7 +18,6 @@ export const DEFAULT_COST_PER_GRAM: Record<string, number> = {
   FR: 0.003,
 };
 
-/** Map normalized country names / codes → ISO country code used by survey rates. */
 const COUNTRY_TO_CODE: Record<string, string> = {
   AU: 'AU',
   Australia: 'AU',
@@ -74,10 +68,6 @@ export function countryToSurveyCode(country?: string | null): string | null {
   );
 }
 
-/**
- * Resolve costPerGram for a cook country from survey countryRates.
- * Falls back to DEFAULT_COST_PER_GRAM, then null (caller uses $/kg fallback).
- */
 export function resolveCostPerGram(
   country: string | null | undefined,
   countryRates?: CountryRateLike[] | null,
@@ -107,12 +97,6 @@ export function resolveCostPerGram(
   return null;
 }
 
-/**
- * Platform money saved from food mass.
- * Prefer survey costPerGram; otherwise country fallback $/kg table.
- *
- * moneySaved = round(foodGrams × costPerGram, 2)
- */
 export function moneySavedFromFoodGrams(
   foodSavedInGrams: number,
   country: string,
@@ -129,7 +113,6 @@ export function moneySavedFromFoodGrams(
   return fallbackPriceInLocalCurrency(grams, country);
 }
 
-/** CO₂ avoided in grams (same numeric scale as food grams × 2.1). */
 export function co2SavedInGramsFromFood(foodSavedInGrams: number): number {
   const grams = Math.max(0, Number(foodSavedInGrams) || 0);
   return grams * CO2_KG_PER_KG_FOOD_SAVED;

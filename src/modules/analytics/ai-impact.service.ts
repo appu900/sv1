@@ -155,7 +155,6 @@ export class AiImpactService {
       const aiPosition = aiPositionByIndex.get(i);
       const fromAi = aiPosition != null ? aiRows.get(aiPosition) : undefined;
 
-      // Weight: cache -> AI -> caller-supplied.
       let weightInGrams: number;
       if (p.negligible) {
         weightInGrams = 0;
@@ -368,8 +367,6 @@ export class AiImpactService {
     quantityKey: string,
     grams: number,
   ): Promise<void> {
-    // Zero-weight resolutions are not cached: a bad AI response would otherwise
-    // pin that ingredient at zero impact for the whole TTL.
     if (!(grams > 0)) return;
     try {
       await this.redisService.set(

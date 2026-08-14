@@ -15,7 +15,6 @@ export class AppSessionListener {
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
-  // Increment totalAppSessions when we detect a new app session
   @OnEvent('app.session', { async: true })
   async handleAppSession(payload: { userId: string }) {
     try {
@@ -26,7 +25,6 @@ export class AppSessionListener {
         { upsert: true, new: true },
       );
       this.logger.log(`Incremented totalAppSessions for user ${payload.userId}`);
-      // Emit a follow-up event so badges check runs after increment
       this.eventEmitter.emit('app.session.incremented', { userId: payload.userId });
     } catch (error) {
       this.logger.error(`Failed to increment totalAppSessions for user ${payload?.userId}: ${error?.message}`);

@@ -1,7 +1,6 @@
 import { AiImpactService } from './ai-impact.service';
 import { CO2E_KG_PER_KG_FALLBACK } from './utils/ai-impact.util';
 
-/** In-memory stand-in for RedisService with just the surface this service uses. */
 class FakeRedis {
   store = new Map<string, any>();
   getCalls: string[] = [];
@@ -20,7 +19,6 @@ class FakeRedis {
   }
 }
 
-/** AU survey rate: 0.004/g => flat reference of A$4/kg. */
 const AU_RATES = [
   { countryCode: 'AU', countryName: 'Australia', costPerGram: 0.004, isActive: true },
 ];
@@ -51,8 +49,8 @@ describe('AiImpactService', () => {
       const { service, callAi } = makeService([
         JSON.stringify({
           r: [
-            { i: 1, p: 25, c: 60 }, // beef: A$25/kg, 60 kg CO2e/kg
-            { i: 2, p: 3, c: 0.4 }, // potato: A$3/kg, 0.4 kg CO2e/kg
+            { i: 1, p: 25, c: 60 }, 
+            { i: 2, p: 3, c: 0.4 }, 
           ],
         }),
       ]);
@@ -68,7 +66,6 @@ describe('AiImpactService', () => {
 
       expect(callAi).toHaveBeenCalledTimes(1);
 
-      // 0.5 kg x 25 = 12.50 ; 500 g x 60 = 30000 g CO2e
       expect(out[0]).toMatchObject({
         ingredient: 'beef mince',
         weightInGrams: 500,
@@ -76,14 +73,12 @@ describe('AiImpactService', () => {
         co2SavedInGrams: 30000,
         source: 'ai',
       });
-      // 0.5 kg x 3 = 1.50 ; 500 g x 0.4 = 200 g CO2e
       expect(out[1]).toMatchObject({
         priceInLocalCurrency: 1.5,
         co2SavedInGrams: 200,
         source: 'ai',
       });
 
-      // The whole point of the change: same weight, very different impact.
       expect(out[0].co2SavedInGrams).toBeGreaterThan(out[1].co2SavedInGrams * 100);
     });
 
@@ -99,8 +94,8 @@ describe('AiImpactService', () => {
       );
 
       expect(onion.weightInGrams).toBe(220);
-      expect(onion.priceInLocalCurrency).toBe(0.66); // 0.22 kg x 3
-      expect(onion.co2SavedInGrams).toBe(88); // 220 g x 0.4
+      expect(onion.priceInLocalCurrency).toBe(0.66); 
+      expect(onion.co2SavedInGrams).toBe(88); 
     });
 
     it('returns one entry per input, in input order', async () => {
@@ -141,18 +136,16 @@ describe('AiImpactService', () => {
       );
       expect(first[0].source).toBe('ai');
 
-      // Let the fire-and-forget cache writes settle.
       await new Promise((r) => setImmediate(r));
 
       const second = await service.resolveBatch(
-        [{ name: 'Beef  Mince', weightGrams: 200 }], // different case/spacing + weight
+        [{ name: 'Beef  Mince', weightGrams: 200 }], 
         'Australia',
         AU_RATES,
       );
 
       expect(callAi).toHaveBeenCalledTimes(1);
       expect(second[0].source).toBe('cache');
-      // Cached RATES re-apply to a different weight: 0.2 kg x 25 = 5.00
       expect(second[0].priceInLocalCurrency).toBe(5);
       expect(second[0].co2SavedInGrams).toBe(12000);
       expect(redis.setCalls.some((c) => c.key.includes('impact:rate:v3'))).toBe(true);
@@ -209,13 +202,13 @@ describe('AiImpactService', () => {
       );
 
       expect(row.source).toBe('fallback');
-      expect(row.priceInLocalCurrency).toBe(4); // 1 kg x A$4/kg flat
+      expect(row.priceInLocalCurrency).toBe(4); 
       expect(row.co2SavedInGrams).toBe(1000 * CO2E_KG_PER_KG_FALLBACK);
     });
 
     it('falls back per-ingredient when the AI answers only some rows', async () => {
       const { service } = makeService([
-        JSON.stringify({ r: [{ i: 1, p: 25, c: 60 }] }), // row 2 missing
+        JSON.stringify({ r: [{ i: 1, p: 25, c: 60 }] }), 
       ]);
 
       const out = await service.resolveBatch(
@@ -242,7 +235,6 @@ describe('AiImpactService', () => {
         AU_RATES,
       );
 
-      // Price failed its clamp, so the whole rate pair is discarded.
       expect(row.source).toBe('fallback');
       expect(row.priceInLocalCurrency).toBe(4);
       expect(row.co2SavedInGrams).toBe(2100);
@@ -267,7 +259,7 @@ describe('AiImpactService', () => {
         'Atlantis',
         null,
       );
-      expect(row.priceInLocalCurrency).toBe(10); // 2 kg x $5/kg default
+      expect(row.priceInLocalCurrency).toBe(10);
     });
   });
 
@@ -349,7 +341,6 @@ describe('AiImpactService', () => {
         AU_RATES,
       );
 
-      // Second call carried only the uncached ingredient.
       const secondPrompt = callAi.mock.calls[1][0][1].content as string;
       expect(secondPrompt).toContain('potato');
       expect(secondPrompt).not.toContain('beef');

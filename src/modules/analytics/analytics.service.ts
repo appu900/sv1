@@ -266,12 +266,6 @@ async saveFood(
     }
   }
 
-  // Collect the ingredients to price.
-  //
-  // Two sources:
-  //   1. `ingredinatIds` → DB lookup, uses the stored averageWeight.
-  //   2. `directIngredients` → a free-form quantity string (the AI resolves
-  //      grams) or an already-known averageWeight.
   let impactItems: ImpactRequestItem[] = [];
 
   if (ingredinatIds && ingredinatIds.length > 0) {
@@ -299,8 +293,7 @@ async saveFood(
     this.logger.warn(`survey config unavailable for money calc: ${err?.message}`);
   }
 
-  // One batched AI call for the whole recipe. Ingredients already seen in this
-  // country are served from cache and cost nothing.
+ 
   const resolved = await this.aiImpactService.resolveBatch(
     impactItems,
     country,

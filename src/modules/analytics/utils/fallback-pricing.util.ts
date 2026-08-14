@@ -22,7 +22,6 @@ export function fallbackPriceInLocalCurrency(
   return Number((perKg * kg).toFixed(2));
 }
 
-/** kg CO₂e avoided per kg of food saved (platform standard). */
 const FALLBACK_CO2_PER_KG_FOOD = 2.1;
 
 export function fallbackCo2SavedKg(weightInGrams: number): number {

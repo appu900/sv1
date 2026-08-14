@@ -24,7 +24,6 @@ function getOffsetMs(utcMs: number, tz: string): number {
   }).formatToParts(d);
   const get = (t: string) =>
     parseInt(parts.find((p) => p.type === t)?.value ?? '0', 10);
-  // Intl sometimes returns hour="24" at midnight — normalise.
   const hour = get('hour') % 24;
   const asUTC = Date.UTC(
     get('year'),
