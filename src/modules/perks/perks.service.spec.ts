@@ -55,6 +55,7 @@ function cartDoc(items: unknown[] = []) {
     save: jest.fn().mockResolvedValue(undefined),
   };
   doc.toObject = () => ({ ...doc, items: doc.items });
+  doc.lean = jest.fn(async () => ({ ...doc, items: doc.items }));
   return doc;
 }
 
@@ -92,7 +93,7 @@ function createService(overrides: Record<string, unknown> = {}) {
   };
   const cart = cartDoc();
   const cartModel = {
-    findOne: jest.fn().mockResolvedValue(cart),
+    findOne: jest.fn(() => cart),
     create: jest.fn().mockResolvedValue(cart),
     updateOne: jest.fn().mockResolvedValue({}),
   };
@@ -308,6 +309,58 @@ describe('PerksService (corp)', () => {
     });
   });
 
+  describe('legacy memberships (pre-corp records)', () => {
+    const legacyDoc = () =>
+      membershipDoc({
+        status: PerksMembershipStatus.ACTIVE,
+        wmadUserId: '37463',
+        credentialVersion: undefined,
+      });
+
+    const withLegacy = () => {
+      const doc = legacyDoc();
+      return {
+        membershipModel: {
+          findOne: jest.fn(() => {
+            doc.lean = jest.fn().mockResolvedValue({ ...doc });
+            return doc;
+          }),
+        },
+      };
+    };
+
+    it('reports not_registered rather than the stale active flag', async () => {
+      const { service } = createService(withLegacy());
+      await expect(service.getMembershipStatus(userId)).resolves.toMatchObject({
+        status: 'not_registered',
+        wmadUserId: null,
+      });
+    });
+
+    it('re-registers instead of short-circuiting on the stale flag', async () => {
+      const ctx = withLegacy();
+      const { service, session } = createService(ctx);
+
+      const result = await service.ensureMembership(userId);
+      expect(session.login).toHaveBeenCalled();
+      expect(result.status).toBe(PerksMembershipStatus.ACTIVE);
+      expect(result.wmadUserId).toBe('119'); // corp id replaces the legacy one
+    });
+
+    it('blocks transacting until re-registered', async () => {
+      const { service } = createService(withLegacy());
+      await expect(service.checkoutCart(userId)).rejects.toMatchObject({
+        response: { code: 'PERKS_MEMBERSHIP_REQUIRED' },
+      });
+    });
+
+    it('shows the dashboard as not_registered', async () => {
+      const { service } = createService(withLegacy());
+      const dashboard = await service.getDashboard(userId);
+      expect(dashboard.membership).toMatchObject({ status: 'not_registered' });
+    });
+  });
+
   describe('membership gating', () => {
     const blocked = (status: PerksMembershipStatus) => ({
       membershipModel: {
@@ -413,9 +466,7 @@ describe('PerksService (corp)', () => {
       ).rejects.toThrow(/valid amount/i);
     });
 
-    // Regression: quoting once validated against the LISTING card, whose
-    // pricing is a generic fallback ladder. A card whose real max exceeds that
-    // ladder could be added but never quoted or checked out.
+  
     it('quotes against the detail card, not the listing fallback ladder', async () => {
       const listingCard = { ...CARD, provider_product: undefined };
       const detailCard = {
@@ -485,7 +536,6 @@ describe('PerksService (corp)', () => {
 
       await service.checkoutCart(userId);
 
-      // The corp cart has no quantity field — 3 units means 3 add calls.
       expect(api.addToCart).toHaveBeenCalledTimes(3);
       expect(api.addToCart).toHaveBeenCalledWith(
         'access-1',

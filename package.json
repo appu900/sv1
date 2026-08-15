@@ -33,7 +33,8 @@
     "rebuild:chef-impact-rollups": "ts-node -r tsconfig-paths/register scripts/rebuild-chef-impact-rollups.ts",
     "sync:unsubscribed-users": "ts-node -r tsconfig-paths/register scripts/sync-unsubscribed-users.ts",
     "grant:legend-access": "ts-node -r tsconfig-paths/register scripts/grant-legend-access.ts",
-    "export:ingredients": "ts-node -r tsconfig-paths/register scripts/export-ingredients.ts"
+    "export:ingredients": "ts-node -r tsconfig-paths/register scripts/export-ingredients.ts",
+    "reset:legacy-perks": "ts-node -r tsconfig-paths/register scripts/reset-legacy-perks-memberships.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.958.0",

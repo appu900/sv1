@@ -7,6 +7,8 @@ export enum PerksMembershipEventType {
   CANCELLED = 'cancelled',
   RESUMED = 'resumed',
   CHECKOUT_STARTED = 'checkout_started',
+  /** Membership from the retired WeMAD product, cleared so the user re-joins. */
+  LEGACY_RESET = 'legacy_reset',
 }
 
 /**

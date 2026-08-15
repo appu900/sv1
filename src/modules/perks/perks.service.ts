@@ -173,16 +173,10 @@ export class PerksService {
     if (!user) {
       throw new NotFoundException('Saveful user not found');
     }
-    const status = membership
-      ? this.membershipResponse(membership)
-      : {
-          wmadUserId: null,
-          status: 'not_registered',
-          registeredAt: null,
-          plan: PerksMembershipPlan.FREE,
-          cancelledAt: null,
-          accessEndsAt: null,
-        };
+    const status =
+      membership && !this.isLegacyMembership(membership)
+        ? this.membershipResponse(membership)
+        : this.notRegisteredResponse();
     return {
       ...status,
       missingFields: this.session.missingProfileFields(
@@ -201,11 +195,14 @@ export class PerksService {
   async ensureMembership(userId: string) {
     const objectId = this.toObjectId(userId);
     const existing = await this.membershipModel.findOne({ userId: objectId });
+    const legacy = existing ? this.isLegacyMembership(existing) : false;
 
-    if (existing?.status === PerksMembershipStatus.ACTIVE) {
+    // A legacy record's `active` refers to the retired product, so it must not
+    // short-circuit — fall through and register properly against the corp API.
+    if (existing?.status === PerksMembershipStatus.ACTIVE && !legacy) {
       return this.membershipResponse(existing.toObject());
     }
-    if (existing?.status === PerksMembershipStatus.CANCELLED) {
+    if (existing?.status === PerksMembershipStatus.CANCELLED && !legacy) {
       throw new ConflictException({
         message:
           'Your Perks membership was cancelled. Resume it to start using Perks again.',
@@ -818,10 +815,14 @@ export class PerksService {
       this.calculatorProfileModel.findOne({ userId: objectId }).lean(),
     ]);
 
+    const activeMember =
+      membership?.status === PerksMembershipStatus.ACTIVE &&
+      !this.isLegacyMembership(membership);
+
     // Orders live upstream now; the dashboard must still render if WeMAD is
     // slow or down, so a failure here degrades to an empty list.
     let recentOrders: Awaited<ReturnType<PerksService['fetchOrders']>> = [];
-    if (membership?.status === PerksMembershipStatus.ACTIVE) {
+    if (activeMember) {
       try {
         recentOrders = (await this.fetchOrders(userId)).slice(0, 5);
       } catch (error) {
@@ -832,16 +833,10 @@ export class PerksService {
     }
 
     return {
-      membership: membership
-        ? this.membershipResponse(membership)
-        : {
-            wmadUserId: null,
-            status: 'not_registered',
-            registeredAt: null,
-            plan: PerksMembershipPlan.FREE,
-            cancelledAt: null,
-            accessEndsAt: null,
-          },
+      membership:
+        membership && !this.isLegacyMembership(membership)
+          ? this.membershipResponse(membership)
+          : this.notRegisteredResponse(),
       favouriteCount,
       cart: cart ? this.cartResponse(cart) : null,
       recentOrders,
@@ -955,17 +950,25 @@ export class PerksService {
       .findOne({ userId: objectId })
       .lean();
 
-    if (!membership || membership.status !== PerksMembershipStatus.ACTIVE) {
+    // Legacy records are treated as absent — they have no corp account behind
+    // them, so letting them transact would fail confusingly downstream.
+    const usable =
+      membership &&
+      membership.status === PerksMembershipStatus.ACTIVE &&
+      !this.isLegacyMembership(membership);
+
+    if (!usable) {
+      const cancelled =
+        membership?.status === PerksMembershipStatus.CANCELLED &&
+        !this.isLegacyMembership(membership);
       throw new ForbiddenException({
-        message:
-          membership?.status === PerksMembershipStatus.CANCELLED
-            ? 'Your Perks membership was cancelled. Resume it to continue.'
-            : 'Join Perks to continue.',
-        code:
-          membership?.status === PerksMembershipStatus.CANCELLED
-            ? 'PERKS_MEMBERSHIP_CANCELLED'
-            : 'PERKS_MEMBERSHIP_REQUIRED',
-        status: membership?.status ?? 'not_registered',
+        message: cancelled
+          ? 'Your Perks membership was cancelled. Resume it to continue.'
+          : 'Join Perks to continue.',
+        code: cancelled
+          ? 'PERKS_MEMBERSHIP_CANCELLED'
+          : 'PERKS_MEMBERSHIP_REQUIRED',
+        status: cancelled ? membership!.status : 'not_registered',
       });
     }
 
@@ -1289,6 +1292,28 @@ export class PerksService {
 
   private currency(cents: number) {
     return Number((cents / 100).toFixed(2));
+  }
+
+  /**
+   * Records created by the retired WeMAD product. Their wmadUserId belongs to a
+   * different system and no corp account exists, so `active` there is a lie —
+   * treat them as not registered so the user re-joins cleanly.
+   * `credentialVersion` is the marker: it only exists on corp-era records.
+   */
+  private isLegacyMembership(membership: { credentialVersion?: number | null }) {
+    return membership.credentialVersion === undefined ||
+      membership.credentialVersion === null;
+  }
+
+  private notRegisteredResponse() {
+    return {
+      wmadUserId: null,
+      status: 'not_registered',
+      registeredAt: null,
+      plan: PerksMembershipPlan.FREE,
+      cancelledAt: null,
+      accessEndsAt: null,
+    };
   }
 
   private membershipResponse(membership: {
