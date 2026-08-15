@@ -130,12 +130,19 @@ function createService(overrides: Record<string, unknown> = {}) {
   const config = {
     get: jest.fn((_key: string, fallback: unknown) => fallback),
   };
+  // Stateful upstream cart: checkout verifies the rows actually landed, so a
+  // mock that always returns [] would fail that check just like a real outage.
+  let upstreamCart: Record<string, unknown>[] = [];
   const api = {
     listGiftCards: jest.fn().mockResolvedValue([CARD]),
     getGiftCard: jest.fn().mockResolvedValue({ gift_card: CARD }),
-    getCart: jest.fn().mockResolvedValue([]),
-    addToCart: jest.fn().mockResolvedValue(undefined),
-    removeFromCart: jest.fn().mockResolvedValue(undefined),
+    getCart: jest.fn(async () => [...upstreamCart]),
+    addToCart: jest.fn(async () => {
+      upstreamCart.push({ id: upstreamCart.length + 1 });
+    }),
+    removeFromCart: jest.fn(async (_t: string, id: number | string) => {
+      upstreamCart = upstreamCart.filter((row) => row.id !== id);
+    }),
     listOrders: jest.fn().mockResolvedValue({ orders: { data: [] } }),
     listMyGiftCards: jest.fn().mockResolvedValue([]),
     buildCheckoutUrl: jest.fn(
@@ -597,17 +604,27 @@ describe('PerksService (corp)', () => {
 
     it('clears stale upstream rows before syncing', async () => {
       const cart = cartWithItems();
+      // Seeded with rows left behind by an abandoned checkout; the mock stays
+      // stateful so the post-sync verification sees the real end state.
+      let upstream: Record<string, unknown>[] = [{ id: 40 }, { id: 41 }];
       const { service, api } = createService({
-        cartModel: {
-          findOne: jest.fn().mockResolvedValue(cart),
-          updateOne: jest.fn(),
+        cartModel: { findOne: jest.fn(() => cart), updateOne: jest.fn() },
+        api: {
+          getCart: jest.fn(async () => [...upstream]),
+          removeFromCart: jest.fn(async (_t: string, id: number | string) => {
+            upstream = upstream.filter(row => row.id !== id);
+          }),
+          addToCart: jest.fn(async () => {
+            upstream.push({ id: 100 + upstream.length });
+          }),
         },
-        api: { getCart: jest.fn().mockResolvedValue([{ id: 40 }, { id: 41 }]) },
       });
 
       await service.checkoutCart(userId);
       expect(api.removeFromCart).toHaveBeenCalledWith('access-1', 40);
       expect(api.removeFromCart).toHaveBeenCalledWith('access-1', 41);
+      // The stale rows are gone and only the 3 freshly-synced units remain.
+      expect(upstream).toHaveLength(3);
     });
 
     it('mints a fresh web token per checkout — they are single-use', async () => {
@@ -666,6 +683,44 @@ describe('PerksService (corp)', () => {
           gift_template_id: '2',
         }),
       );
+    });
+
+    // WeMAD routes to /checkout only when its cart has rows; a silently-failed
+    // sync would otherwise drop the customer on the wrong page unexplained.
+    it('fails loudly when the upstream cart did not receive the items', async () => {
+      const cart = cartWithItems(); // quantity 3
+      const { service } = createService({
+        cartModel: { findOne: jest.fn(() => cart), updateOne: jest.fn() },
+        api: {
+          // Sync appears to succeed but the cart comes back empty.
+          getCart: jest.fn().mockResolvedValue([]),
+          addToCart: jest.fn().mockResolvedValue(undefined),
+        },
+      });
+
+      await expect(service.checkoutCart(userId)).rejects.toMatchObject({
+        response: { code: 'PERKS_CART_SYNC_FAILED' },
+      });
+    });
+
+    it('proceeds when every unit reached the upstream cart', async () => {
+      const cart = cartWithItems(); // quantity 3
+      let added = 0;
+      const { service } = createService({
+        cartModel: { findOne: jest.fn(() => cart), updateOne: jest.fn() },
+        api: {
+          addToCart: jest.fn(async () => {
+            added += 1;
+          }),
+          getCart: jest.fn(async () =>
+            added === 0 ? [] : Array.from({ length: added }, (_, i) => ({ id: i + 1 })),
+          ),
+        },
+      });
+
+      await expect(service.checkoutCart(userId)).resolves.toMatchObject({
+        status: 'redirect',
+      });
     });
 
     it('refuses to check out an empty cart', async () => {

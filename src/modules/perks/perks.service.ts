@@ -157,8 +157,6 @@ export class PerksService {
     private readonly config: ConfigService,
   ) {}
 
-  // ---------------------------------------------------------------- membership
-
   async getMembershipStatus(userId: string) {
     const objectId = this.toObjectId(userId);
     const [membership, user, healthProfile] = await Promise.all([
@@ -185,19 +183,12 @@ export class PerksService {
     };
   }
 
-  /**
-   * Registers (first call) or re-authenticates the user with WeMAD.
-   * Idempotent: an already-active membership short-circuits without a network
-   * call. A cancelled membership is NOT auto-resumed — that needs an explicit
-   * resume so we never silently re-subscribe someone.
-   */
+
   async ensureMembership(userId: string) {
     const objectId = this.toObjectId(userId);
     const existing = await this.membershipModel.findOne({ userId: objectId });
     const legacy = existing ? this.isLegacyMembership(existing) : false;
 
-    // A legacy record's `active` refers to the retired product, so it must not
-    // short-circuit — fall through and register properly against the corp API.
     if (existing?.status === PerksMembershipStatus.ACTIVE && !legacy) {
       return this.membershipResponse(existing.toObject());
     }
@@ -283,7 +274,6 @@ export class PerksService {
     membership.cancellationReason = dto?.reason?.trim() || null;
     await membership.save();
 
-    // Drop the cached upstream token so nothing can keep transacting.
     await this.session.clearCachedToken(userId);
     await this.releaseCart(objectId);
 
@@ -371,11 +361,6 @@ export class PerksService {
     );
   }
 
-  /**
-   * The real WeMAD category tree (7 groups, ~50 leaves). The app previously
-   * guessed categories from card names against a hardcoded list of 7; this is
-   * the authoritative taxonomy instead.
-   */
   async getCategories() {
     const cacheKey = `perks:corp:categories:${CATALOGUE_CACHE_VERSION}`;
     const cached = await cacheAttempt(() =>
@@ -414,19 +399,21 @@ export class PerksService {
   async getGiftOptions(userId: string, ecardId?: string) {
     await this.requireActiveMembership(userId);
 
-    let targetId = ecardId;
-    if (!targetId) {
+    let requested = ecardId;
+    if (!requested) {
       const [firstCard] = await this.getCachedCatalogue();
-      targetId = firstCard?.id;
+      requested = firstCard?.id;
     }
-    if (!targetId) {
+    if (!requested) {
       return { templates: [], consultants: [], categories: [], subcategories: [] };
     }
 
+    // Copied to a const: the narrowing from the guard above does not survive
+    // into the closure below while this is a reassignable `let`.
+    const targetId = requested;
     const detail = await this.callUpstream(() => this.api.getGiftCard(targetId));
     return {
       templates: mapGiftTemplates(detail ?? {}),
-      // No corp equivalent — retained so the app's response shape is stable.
       consultants: [],
       categories: [],
       subcategories: [],
@@ -472,8 +459,6 @@ export class PerksService {
     });
     return { ecardId, removed: true };
   }
-
-  // ---------------------------------------------------------------------- cart
 
   async getCart(userId: string) {
     const cart = await this.getOrCreateActiveCart(userId);
@@ -586,8 +571,6 @@ export class PerksService {
 
     const quote = await this.buildCartQuote(cart.toObject());
 
-    // A fresh login every time: web tokens are single-use, so a cached one
-    // would drop the customer on a login page instead of their cart.
     const session = await this.session.login(userId, user, {
       credentialVersion: membership.credentialVersion ?? 1,
     });
@@ -639,6 +622,19 @@ export class PerksService {
         await this.callUpstream(() => this.api.addToCart(accessToken, line));
       }
     }
+
+    const expected = items.reduce((sum, item) => sum + item.quantity, 0);
+    const synced = await this.callUpstream(() => this.api.getCart(accessToken));
+    if (synced.length < expected) {
+      this.logger.error(
+        `Perks cart sync incomplete: expected ${expected} upstream rows, found ${synced.length}`,
+      );
+      throw new BadGatewayException({
+        message:
+          'We could not prepare your checkout just now. Please try again in a moment.',
+        code: 'PERKS_CART_SYNC_FAILED',
+      });
+    }
   }
 
 
@@ -654,11 +650,7 @@ export class PerksService {
     };
   }
 
-  /**
-   * Resolved from the list rather than the detail endpoint: the list already
-   * embeds order_item[], and it lets us match on either the display
-   * order_number or the internal id without guessing which the app holds.
-   */
+
   async getOrder(userId: string, orderNumber: string) {
     const orders = await this.fetchOrders(userId);
     const order = orders.find(
@@ -678,10 +670,6 @@ export class PerksService {
 
   private async fetchOrders(userId: string) {
     const { user, membership } = await this.requireActiveMembership(userId);
-    // callUpstream must wrap the OUTSIDE of withAccessToken: it converts
-    // PerksCorpApiError into HttpException, and withAccessToken's 401 retry
-    // tests for PerksCorpApiError. Nested the other way the retry never fires
-    // and a stale token 401s until its cache entry expires.
     const payload = await this.callUpstream(() =>
       this.session.withAccessToken(
         userId,
@@ -694,10 +682,6 @@ export class PerksService {
     const raw = (payload?.orders as Record<string, unknown>)?.data ?? payload;
     const list = Array.isArray(raw) ? raw : [];
     if (!list.length) return [];
-
-    // Order items reference a gift card by id only, so join the catalogue to
-    // give each line a name and image. Degrades to a placeholder if the
-    // catalogue is unavailable — an order list is more useful than an error.
     let cards: OrderCardLookup | undefined;
     try {
       const catalogue = await this.getCachedCatalogue();
@@ -716,12 +700,7 @@ export class PerksService {
     return list.map((order) => mapOrder(order as Record<string, unknown>, cards));
   }
 
-  // ------------------------------------------------------------------- wallet
 
-  /**
-   * Every wallet card the user owns, with local archive/hide state applied.
-   * Hidden cards are already dropped. One upstream call — callers filter.
-   */
   private async fetchWalletCards(userId: string) {
     const { user, membership } = await this.requireActiveMembership(userId);
     const objectId = this.toObjectId(userId);
@@ -774,7 +753,6 @@ export class PerksService {
 
   async getWalletCard(userId: string, cardKey: string) {
     this.validateCardKey(cardKey);
-    // Single upstream fetch covers owned/gifted and active/archived alike.
     const cards = await this.fetchWalletCards(userId);
     const card = cards.find((entry) => entry.cardKey === cardKey);
     if (!card) throw new NotFoundException('Wallet card not found');
@@ -842,8 +820,6 @@ export class PerksService {
       }
     }
     const recentOrders = allOrders.slice(0, 5);
-    // Computed across EVERY order, not just the 5 shown, so the headline
-    // figures mean "lifetime" rather than "recent".
     const savings = this.summariseSavings(allOrders);
 
     return {
@@ -865,7 +841,6 @@ export class PerksService {
     };
   }
 
-  // --------------------------------------------------------------- calculator
 
   getCalculatorCategories() {
     return PERKS_CATEGORIES.map((category) => ({
@@ -938,11 +913,6 @@ export class PerksService {
     };
   }
 
-  /**
-   * Headline money figures for the dashboard, derived from real order data:
-   * savings is face value minus what was actually paid; cashback is WeMAD's
-   * own per-order field (present in their model, currently always 0.00).
-   */
   private summariseSavings(
     orders: Awaited<ReturnType<PerksService['fetchOrders']>>,
   ) {
@@ -950,7 +920,6 @@ export class PerksService {
     let cashbackBalanceCents = 0;
 
     for (const order of orders) {
-      // Refunded orders never delivered value, so they must not inflate totals.
       if (order.status === 'refunded' || order.status === 'failed') continue;
       const faceCents = Math.round((order.totals.faceValue ?? 0) * 100);
       const paidCents = Math.round((order.totals.purchasePrice ?? 0) * 100);
@@ -964,8 +933,6 @@ export class PerksService {
       orderCount: orders.length,
     };
   }
-
-  // ------------------------------------------------------------------ helpers
 
   private async loadUserProfile(objectId: Types.ObjectId) {
     const [user, healthProfile] = await Promise.all([
@@ -1021,14 +988,12 @@ export class PerksService {
     try {
       await this.membershipEventModel.create({ userId, type, metadata });
     } catch (error) {
-      // The audit trail must never block the action it is describing.
       this.logger.warn(
         `Could not record perks event ${type}: ${(error as Error).message}`,
       );
     }
   }
 
-  /** Empties the cart when a membership ends so nothing lingers on resume. */
   private async releaseCart(userId: Types.ObjectId) {
     await this.cartModel.updateOne(
       {
@@ -1049,7 +1014,6 @@ export class PerksService {
 
   private async getCachedCatalogue(): Promise<CatalogueCard[]> {
     const cacheKey = `perks:corp:catalogue:${CATALOGUE_CACHE_VERSION}`;
-    // Bounded: a stalled cache must not stall the catalogue.
     const cached = await cacheAttempt(() =>
       this.redis.get<CatalogueCard[]>(cacheKey),
     );
@@ -1117,9 +1081,6 @@ export class PerksService {
     const raw = await this.callUpstream(() =>
       this.api.listGiftCards({ paginate }),
     );
-    // The tree lets a card tagged only with a leaf resolve to its real parent
-    // group, so browse tiles match WeMAD's own taxonomy. Non-fatal: without it
-    // such cards simply group under themselves.
     let parentIndex: ReturnType<typeof buildCategoryParentIndex> | undefined;
     try {
       parentIndex = buildCategoryParentIndex(await this.getCategories());
@@ -1134,7 +1095,6 @@ export class PerksService {
       .map((card) => mapCatalogueCard(card, tier, parentIndex))
       .filter((card) => Boolean(card.id && card.name));
 
-    // A cache write failure must not fail a successful upstream response.
     await cacheAttempt(() => this.redis.set(cacheKey, cards, this.catalogueTtl()));
     return cards;
   }
@@ -1322,12 +1282,6 @@ export class PerksService {
     return Number((cents / 100).toFixed(2));
   }
 
-  /**
-   * Records created by the retired WeMAD product. Their wmadUserId belongs to a
-   * different system and no corp account exists, so `active` there is a lie —
-   * treat them as not registered so the user re-joins cleanly.
-   * `credentialVersion` is the marker: it only exists on corp-era records.
-   */
   private isLegacyMembership(membership: { credentialVersion?: number | null }) {
     return membership.credentialVersion === undefined ||
       membership.credentialVersion === null;
