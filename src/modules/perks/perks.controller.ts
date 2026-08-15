@@ -17,9 +17,11 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import {
   AddPerksFavouriteDto,
   CalculatePerksDto,
-  CreatePerksOrderDto,
+  CancelPerksMembershipDto,
   PerksCartItemDto,
   PerksCatalogueQueryDto,
+  PerksGiftOptionsQueryDto,
+  PerksMembershipEventsQueryDto,
   PerksOrderListQueryDto,
   PerksWalletQueryDto,
   QuotePerksDto,
@@ -45,6 +47,33 @@ export class PerksController {
     return this.success(await this.perksService.ensureMembership(user.userId));
   }
 
+  @Post('membership/cancel')
+  @HttpCode(HttpStatus.OK)
+  async cancelMembership(
+    @GetUser() user: { userId: string },
+    @Body() dto: CancelPerksMembershipDto,
+  ) {
+    return this.success(
+      await this.perksService.cancelMembership(user.userId, dto),
+    );
+  }
+
+  @Post('membership/resume')
+  @HttpCode(HttpStatus.OK)
+  async resumeMembership(@GetUser() user: { userId: string }) {
+    return this.success(await this.perksService.resumeMembership(user.userId));
+  }
+
+  @Get('membership/events')
+  async getMembershipEvents(
+    @GetUser() user: { userId: string },
+    @Query() query: PerksMembershipEventsQueryDto,
+  ) {
+    return this.success(
+      await this.perksService.listMembershipEvents(user.userId, query.limit),
+    );
+  }
+
   @Get('ecards')
   async getEcards(@GetUser() user: { userId: string }) {
     return this.success(await this.perksService.getEcards(user.userId));
@@ -61,8 +90,13 @@ export class PerksController {
   }
 
   @Get('gift-options')
-  async getGiftOptions(@GetUser() user: { userId: string }) {
-    return this.success(await this.perksService.getGiftOptions(user.userId));
+  async getGiftOptions(
+    @GetUser() user: { userId: string },
+    @Query() query: PerksGiftOptionsQueryDto,
+  ) {
+    return this.success(
+      await this.perksService.getGiftOptions(user.userId, query.ecardId),
+    );
   }
 
   @Get('favourites')
@@ -139,26 +173,15 @@ export class PerksController {
     return this.success(await this.perksService.quote(dto));
   }
 
+  /**
+   * Returns a hosted-checkout redirect rather than an order: WeMAD owns
+   * payment and issuance. No idempotency key is needed because nothing is
+   * created on our side.
+   */
   @Post('cart/checkout')
   @HttpCode(HttpStatus.OK)
-  async checkoutCart(
-    @GetUser() user: { userId: string },
-    @Headers('idempotency-key') idempotencyKey: string,
-  ) {
-    return this.success(
-      await this.perksService.checkoutCart(user.userId, idempotencyKey),
-    );
-  }
-
-  @Post('orders')
-  async createOrder(
-    @GetUser() user: { userId: string },
-    @Headers('idempotency-key') idempotencyKey: string,
-    @Body() dto: CreatePerksOrderDto,
-  ) {
-    return this.success(
-      await this.perksService.createOrder(user.userId, idempotencyKey, dto),
-    );
+  async checkoutCart(@GetUser() user: { userId: string }) {
+    return this.success(await this.perksService.checkoutCart(user.userId));
   }
 
   @Get('orders')
@@ -176,17 +199,6 @@ export class PerksController {
   ) {
     return this.success(
       await this.perksService.getOrder(user.userId, orderNumber),
-    );
-  }
-
-  @Post('orders/:orderNumber/cancel')
-  @HttpCode(HttpStatus.OK)
-  async cancelOrder(
-    @GetUser() user: { userId: string },
-    @Param('orderNumber') orderNumber: string,
-  ) {
-    return this.success(
-      await this.perksService.cancelOrder(user.userId, orderNumber),
     );
   }
 

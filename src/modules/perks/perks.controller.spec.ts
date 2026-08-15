@@ -5,6 +5,9 @@ describe('PerksController', () => {
   const service = {
     getMembershipStatus: jest.fn(),
     ensureMembership: jest.fn(),
+    cancelMembership: jest.fn(),
+    resumeMembership: jest.fn(),
+    listMembershipEvents: jest.fn(),
     getEcards: jest.fn(),
     getCatalogue: jest.fn(),
     getCatalogueCard: jest.fn(),
@@ -20,10 +23,8 @@ describe('PerksController', () => {
     quoteCart: jest.fn(),
     quote: jest.fn(),
     checkoutCart: jest.fn(),
-    createOrder: jest.fn(),
     listOrders: jest.fn(),
     getOrder: jest.fn(),
-    cancelOrder: jest.fn(),
     getTaxReceipt: jest.fn(),
     getWallet: jest.fn(),
     getWalletCard: jest.fn(),
@@ -51,17 +52,24 @@ describe('PerksController', () => {
     expect(service.getEcards).toHaveBeenCalledWith(user.userId);
   });
 
-  it('passes the idempotency key to order creation', async () => {
-    const dto = { ecardId: '340', ecardValue: 50, quantity: 1 };
-    service.createOrder.mockResolvedValue({ orderNumber: '123' });
+  it('scopes membership cancellation to the authenticated user', async () => {
+    service.cancelMembership.mockResolvedValue({ status: 'cancelled' });
 
-    await controller.createOrder(user, 'checkout_123', dto);
+    await expect(
+      controller.cancelMembership(user, { reason: 'too pricey' }),
+    ).resolves.toEqual({ success: true, data: { status: 'cancelled' } });
+    expect(service.cancelMembership).toHaveBeenCalledWith(user.userId, {
+      reason: 'too pricey',
+    });
+  });
 
-    expect(service.createOrder).toHaveBeenCalledWith(
-      user.userId,
-      'checkout_123',
-      dto,
-    );
+  it('exposes the membership event trail', async () => {
+    service.listMembershipEvents.mockResolvedValue([{ type: 'registered' }]);
+
+    await expect(
+      controller.getMembershipEvents(user, { limit: 50 }),
+    ).resolves.toEqual({ success: true, data: [{ type: 'registered' }] });
+    expect(service.listMembershipEvents).toHaveBeenCalledWith(user.userId, 50);
   });
 
   it('exposes the authoritative card quote route without a user mutation', async () => {
@@ -81,26 +89,21 @@ describe('PerksController', () => {
     expect(service.quote).toHaveBeenCalledWith(dto);
   });
 
-  it('passes checkout idempotency and payment-required results through', async () => {
+  it('passes the hosted-checkout redirect through to the app', async () => {
     service.checkoutCart.mockResolvedValue({
-      status: 'payment_required',
-      issuanceEnabled: false,
+      status: 'redirect',
+      checkoutUrl: 'https://frontend.test/sso/login?token=web-1',
       quote: { currency: 'AUD' },
     });
 
-    await expect(
-      controller.checkoutCart(user, 'checkout_123'),
-    ).resolves.toMatchObject({
+    await expect(controller.checkoutCart(user)).resolves.toMatchObject({
       success: true,
       data: {
-        status: 'payment_required',
-        issuanceEnabled: false,
+        status: 'redirect',
+        checkoutUrl: 'https://frontend.test/sso/login?token=web-1',
       },
     });
-    expect(service.checkoutCart).toHaveBeenCalledWith(
-      user.userId,
-      'checkout_123',
-    );
+    expect(service.checkoutCart).toHaveBeenCalledWith(user.userId);
   });
 
   it('persists calculator results for the authenticated user', async () => {

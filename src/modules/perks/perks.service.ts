@@ -2,15 +2,17 @@ import {
   BadGatewayException,
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   HttpException,
   Injectable,
+  Logger,
   NotFoundException,
   ServiceUnavailableException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
-import { createHash, randomBytes, randomUUID } from 'crypto';
+import { randomUUID } from 'crypto';
 import { Model, Types } from 'mongoose';
 import {
   Gender,
@@ -31,15 +33,16 @@ import {
   PerksFavouriteDocument,
 } from '../../database/schemas/perks-favourite.schema';
 import {
+  PerksMembershipEvent,
+  PerksMembershipEventDocument,
+  PerksMembershipEventType,
+} from '../../database/schemas/perks-membership-event.schema';
+import {
   PerksMembership,
   PerksMembershipDocument,
+  PerksMembershipPlan,
   PerksMembershipStatus,
 } from '../../database/schemas/perks-membership.schema';
-import {
-  PerksOrder,
-  PerksOrderDocument,
-  PerksOrderStatus,
-} from '../../database/schemas/perks-order.schema';
 import {
   PerksWalletMetadata,
   PerksWalletMetadataDocument,
@@ -47,9 +50,24 @@ import {
 import { User, UserDocument } from '../../database/schemas/user.auth.schema';
 import { RedisService } from '../../redis/redis.service';
 import {
+  PerksCorpApiClient,
+  PerksCorpApiError,
+} from './corp/perks-corp-api.client';
+import { PerksCorpSessionService } from './corp/perks-corp-session.service';
+import {
+  CatalogueCard,
+  DEFAULT_DISCOUNT_TIER,
+  mapCatalogueCard,
+  mapGiftTemplates,
+  mapOrder,
+  mapWalletCard,
+  nullableStr,
+  str,
+} from './corp/perks-corp.mapper';
+import {
   AddPerksFavouriteDto,
   CalculatePerksDto,
-  CreatePerksOrderDto,
+  CancelPerksMembershipDto,
   PerksCartItemDto,
   PerksCatalogueQueryDto,
   PerksCatalogueSort,
@@ -58,21 +76,19 @@ import {
   QuotePerksDto,
   UpdatePerksCartItemDto,
 } from './dto/perks.dto';
-import {
-  PerksApiClient,
-  PerksApiError,
-  WmadGenderCode,
-  WmadOrderResult,
-} from './perks-api-client';
+
+export type { CatalogueCard } from './corp/perks-corp.mapper';
+
+/**
+ * Bump whenever the CatalogueCard shape changes — cached entries are written
+ * by the previous mapper and would otherwise be served until the TTL expires.
+ */
+const CATALOGUE_CACHE_VERSION = 'v2';
 
 export const PERKS_CATEGORIES = [
   { key: 'groceries', name: 'Groceries', discountBps: 450 },
   { key: 'fuel', name: 'Fuel', discountBps: 200 },
-  {
-    key: 'pharmacy',
-    name: 'Pharmacy, Health & Beauty',
-    discountBps: 500,
-  },
+  { key: 'pharmacy', name: 'Pharmacy, Health & Beauty', discountBps: 500 },
   { key: 'dining', name: 'Dining out', discountBps: 500 },
   { key: 'entertainment', name: 'Entertainment', discountBps: 500 },
   { key: 'fashion', name: 'Clothes & Fashion', discountBps: 500 },
@@ -105,24 +121,18 @@ const PERKS_CATEGORY_ALIASES: Record<string, string> = {
   'travel-accommodation': 'travel',
 };
 
-export interface CatalogueCard {
-  id: string;
-  name: string;
-  category: string | null;
-  discountPercent: number;
-  imageFilename: string | null;
-  imageUrl: string | null;
-  priceType: string;
-  availableValues: number[];
-  balanceLink: string | null;
-  description: string | null;
-  terms: string | null;
-  deliveryFee: number;
-  featured: boolean;
+interface CartLikeItem {
+  itemId: string;
+  ecardId: string;
+  quantity: number;
+  faceValueCents: number;
+  sendAsGift: boolean;
+  gift: Record<string, string> | null;
 }
 
 @Injectable()
 export class PerksService {
+  private readonly logger = new Logger(PerksService.name);
   private catalogueRefreshPromise: Promise<CatalogueCard[]> | null = null;
 
   constructor(
@@ -132,8 +142,8 @@ export class PerksService {
     private readonly healthProfileModel: Model<HealthProfileDocument>,
     @InjectModel(PerksMembership.name)
     private readonly membershipModel: Model<PerksMembershipDocument>,
-    @InjectModel(PerksOrder.name)
-    private readonly orderModel: Model<PerksOrderDocument>,
+    @InjectModel(PerksMembershipEvent.name)
+    private readonly membershipEventModel: Model<PerksMembershipEventDocument>,
     @InjectModel(PerksFavourite.name)
     private readonly favouriteModel: Model<PerksFavouriteDocument>,
     @InjectModel(PerksCart.name)
@@ -142,10 +152,13 @@ export class PerksService {
     private readonly walletMetadataModel: Model<PerksWalletMetadataDocument>,
     @InjectModel(PerksCalculatorProfile.name)
     private readonly calculatorProfileModel: Model<PerksCalculatorProfileDocument>,
-    private readonly api: PerksApiClient,
+    private readonly api: PerksCorpApiClient,
+    private readonly session: PerksCorpSessionService,
     private readonly redis: RedisService,
     private readonly config: ConfigService,
   ) {}
+
+  // ---------------------------------------------------------------- membership
 
   async getMembershipStatus(userId: string) {
     const objectId = this.toObjectId(userId);
@@ -166,135 +179,167 @@ export class PerksService {
           wmadUserId: null,
           status: 'not_registered',
           registeredAt: null,
+          plan: PerksMembershipPlan.FREE,
+          cancelledAt: null,
+          accessEndsAt: null,
         };
     return {
       ...status,
-      missingFields: this.profileMissingFields(
+      missingFields: this.session.missingProfileFields(
         user,
         (healthProfile?.gender as Gender | undefined) ?? null,
       ),
     };
   }
 
+  /**
+   * Registers (first call) or re-authenticates the user with WeMAD.
+   * Idempotent: an already-active membership short-circuits without a network
+   * call. A cancelled membership is NOT auto-resumed — that needs an explicit
+   * resume so we never silently re-subscribe someone.
+   */
   async ensureMembership(userId: string) {
     const objectId = this.toObjectId(userId);
-    const existing = await this.membershipModel
-      .findOne({
-        userId: objectId,
-        status: PerksMembershipStatus.ACTIVE,
-      })
-      .lean();
-    if (existing) {
-      return this.membershipResponse(existing);
+    const existing = await this.membershipModel.findOne({ userId: objectId });
+
+    if (existing?.status === PerksMembershipStatus.ACTIVE) {
+      return this.membershipResponse(existing.toObject());
+    }
+    if (existing?.status === PerksMembershipStatus.CANCELLED) {
+      throw new ConflictException({
+        message:
+          'Your Perks membership was cancelled. Resume it to start using Perks again.',
+        code: 'PERKS_MEMBERSHIP_CANCELLED',
+      });
     }
 
-    const [user, healthProfile] = await Promise.all([
-      this.userModel.findById(objectId).lean(),
-      this.healthProfileModel
-        .findOne({ userId: objectId })
-        .select({ gender: 1 })
-        .lean(),
-    ]);
-    if (!user) {
-      throw new NotFoundException('Saveful user not found');
-    }
-    const fallbackGender =
-      (healthProfile?.gender as Gender | undefined) ?? null;
-    const registration = this.mapRegistration(user, fallbackGender);
+    const { user, fallbackGender } = await this.loadUserProfile(objectId);
 
-    // Retry failed/unknown/stuck pending rows. Only ACTIVE short-circuits above.
-    let membership = await this.membershipModel.findOneAndUpdate(
-      {
-        userId: objectId,
-        status: {
-          $in: [
-            PerksMembershipStatus.FAILED,
-            PerksMembershipStatus.UNKNOWN,
-            PerksMembershipStatus.PENDING,
-          ],
-        },
-      },
-      {
-        $set: {
-          status: PerksMembershipStatus.PENDING,
-          lastErrorCode: null,
-          lastErrorMessage: null,
-        },
-      },
-      { new: true },
-    );
-
-    if (!membership) {
-      try {
-        membership = await this.membershipModel.create({
+    const membership =
+      existing ??
+      (await this.membershipModel
+        .create({
           userId: objectId,
           email: user.email.toLowerCase(),
-          wmadUserId: null,
           status: PerksMembershipStatus.PENDING,
-        });
-      } catch (error) {
-        if (this.isDuplicateKey(error)) {
-          const concurrent = await this.membershipModel
-            .findOne({ userId: objectId })
-            .lean();
-          if (concurrent?.status === PerksMembershipStatus.ACTIVE) {
-            return this.membershipResponse(concurrent);
-          }
-          membership = await this.membershipModel.findOneAndUpdate(
-            { userId: objectId },
-            {
-              $set: {
-                status: PerksMembershipStatus.PENDING,
-                lastErrorCode: null,
-                lastErrorMessage: null,
-              },
-            },
-            { new: true },
-          );
-          if (!membership) {
+        })
+        .catch(async (error) => {
+          if (!this.isDuplicateKey(error)) throw error;
+          const concurrent = await this.membershipModel.findOne({
+            userId: objectId,
+          });
+          if (!concurrent) {
             throw new ConflictException(
               'Perks registration is already in progress',
             );
           }
-        } else {
-          throw error;
-        }
-      }
-    }
+          return concurrent;
+        }));
 
     try {
-      const result = await this.api.registerUser(registration);
-      membership.wmadUserId = String(result.user_id);
+      const session = await this.session.login(userId, user, {
+        credentialVersion: membership.credentialVersion ?? 1,
+        fallbackGender,
+      });
+      membership.wmadUserId = session.wmadUserId;
+      membership.wmadEmail = user.email.toLowerCase();
       membership.status = PerksMembershipStatus.ACTIVE;
-      membership.registeredAt = new Date();
+      membership.registeredAt = membership.registeredAt ?? new Date();
+      membership.lastErrorCode = null;
+      membership.lastErrorMessage = null;
       await membership.save();
+
+      await this.recordEvent(objectId, PerksMembershipEventType.REGISTERED, {
+        wmadUserId: session.wmadUserId,
+      });
       return this.membershipResponse(membership.toObject());
     } catch (error) {
-      const apiError = this.asApiError(error);
-      membership.status = apiError.ambiguous
-        ? PerksMembershipStatus.UNKNOWN
-        : PerksMembershipStatus.FAILED;
-      membership.lastErrorCode = apiError.code;
-      membership.lastErrorMessage = apiError.message;
+      const code =
+        error instanceof PerksCorpApiError
+          ? error.code
+          : ((error as HttpException)?.getStatus?.() ?? 'REGISTRATION_FAILED');
+      membership.status = PerksMembershipStatus.FAILED;
+      membership.lastErrorCode = String(code);
+      membership.lastErrorMessage = (error as Error)?.message ?? null;
       await membership.save();
-      if (apiError.ambiguous || apiError.retryable) {
-        this.throwUpstream(apiError, 'Could not register the Saveful user');
-      }
-      // Surface profile gaps when WMAD rejects so the app can send users
-      // to complete autofilled details instead of a dead-end error.
-      const missingFields = this.profileMissingFields(user, fallbackGender);
-      throw new UnprocessableEntityException({
-        message:
-          'WeMAD could not register your account. Confirm your first name, last name, phone number, postcode and gender, then try again.',
-        missingFields:
-          missingFields.length > 0
-            ? missingFields
-            : ['name', 'phone', 'pincode', 'gender'],
-        code: apiError.code,
-        upstreamMessage: apiError.message,
-      });
+
+      await this.recordEvent(
+        objectId,
+        PerksMembershipEventType.REGISTRATION_FAILED,
+        { message: membership.lastErrorMessage },
+      );
+      throw error;
     }
   }
+
+  async cancelMembership(userId: string, dto: CancelPerksMembershipDto) {
+    const objectId = this.toObjectId(userId);
+    const membership = await this.membershipModel.findOne({ userId: objectId });
+    if (!membership) {
+      throw new NotFoundException('Perks membership not found');
+    }
+    if (membership.status === PerksMembershipStatus.CANCELLED) {
+      return this.membershipResponse(membership.toObject());
+    }
+
+    membership.status = PerksMembershipStatus.CANCELLED;
+    membership.cancelledAt = new Date();
+    membership.cancellationReason = dto?.reason?.trim() || null;
+    await membership.save();
+
+    // Drop the cached upstream token so nothing can keep transacting.
+    await this.session.clearCachedToken(userId);
+    await this.releaseCart(objectId);
+
+    await this.recordEvent(objectId, PerksMembershipEventType.CANCELLED, {
+      reason: membership.cancellationReason,
+    });
+    return this.membershipResponse(membership.toObject());
+  }
+
+  async resumeMembership(userId: string) {
+    const objectId = this.toObjectId(userId);
+    const membership = await this.membershipModel.findOne({ userId: objectId });
+    if (!membership) {
+      throw new NotFoundException('Perks membership not found');
+    }
+    if (membership.status === PerksMembershipStatus.ACTIVE) {
+      return this.membershipResponse(membership.toObject());
+    }
+
+    const { user, fallbackGender } = await this.loadUserProfile(objectId);
+    // Re-authenticate so a resumed member is provably still valid upstream.
+    const session = await this.session.login(userId, user, {
+      credentialVersion: membership.credentialVersion ?? 1,
+      fallbackGender,
+    });
+
+    membership.status = PerksMembershipStatus.ACTIVE;
+    membership.wmadUserId = session.wmadUserId;
+    membership.cancelledAt = null;
+    membership.cancellationReason = null;
+    membership.lastErrorCode = null;
+    membership.lastErrorMessage = null;
+    await membership.save();
+
+    await this.recordEvent(objectId, PerksMembershipEventType.RESUMED, null);
+    return this.membershipResponse(membership.toObject());
+  }
+
+  async listMembershipEvents(userId: string, limit = 50) {
+    const events = await this.membershipEventModel
+      .find({ userId: this.toObjectId(userId) })
+      .sort({ at: -1 })
+      .limit(Math.min(200, Math.max(1, limit)))
+      .lean();
+    return events.map((event) => ({
+      type: event.type,
+      at: event.at ?? null,
+      metadata: event.metadata ?? null,
+    }));
+  }
+
+  // ----------------------------------------------------------------- catalogue
 
   async getEcards(userId: string) {
     this.toObjectId(userId);
@@ -318,7 +363,7 @@ export class PerksService {
     if (query.featured !== undefined) {
       cards = cards.filter((card) => card.featured === query.featured);
     }
-    cards.sort((left, right) => {
+    cards = [...cards].sort((left, right) => {
       if (query.sort === PerksCatalogueSort.DISCOUNT_DESC) {
         return right.discountPercent - left.discountPercent;
       }
@@ -327,41 +372,71 @@ export class PerksService {
       }
       return left.name.localeCompare(right.name);
     });
-    return cards.map(({ description: _description, terms: _terms, ...card }) => card);
+    return cards.map(
+      ({ description: _description, terms: _terms, ...card }) => card,
+    );
   }
 
+  /**
+   * Card detail comes from the dedicated endpoint because only that response
+   * carries provider_product.available_denominations (the listing omits it).
+   */
   async getCatalogueCard(ecardId: string) {
     if (!/^\d+$/.test(ecardId)) {
       throw new BadRequestException('Invalid ecard ID');
     }
-    const card = (await this.getCachedCatalogue()).find(
-      (item) => item.id === ecardId,
-    );
-    if (!card) {
+    const cacheKey = `perks:corp:card:${CATALOGUE_CACHE_VERSION}:${ecardId}`;
+    try {
+      const cached = await this.redis.get<CatalogueCard>(cacheKey);
+      if (cached) return cached;
+    } catch {
+      // Detail stays available when Redis is down.
+    }
+
+    const detail = await this.callUpstream(() => this.api.getGiftCard(ecardId));
+    const giftCard = (detail?.gift_card ?? detail) as Record<string, unknown>;
+    if (!giftCard || !giftCard.id) {
       throw new NotFoundException('Perks card not found');
+    }
+    const card = mapCatalogueCard(giftCard, this.discountTier());
+
+    try {
+      await this.redis.set(cacheKey, card, this.catalogueTtl());
+    } catch {
+      // Cache write failures must not fail a successful upstream response.
     }
     return card;
   }
 
-  async getGiftOptions(userId: string) {
-    await this.ensureMembership(userId);
-    const data = await this.callUpstream(() => this.api.getGiftOptions());
+  /**
+   * Gift templates are per-card upstream, but the app asks for them globally
+   * (CardDetailScreen calls this with no arguments). Templates are configured
+   * per site rather than per card, so any card's detail response is
+   * representative — use the requested card when given, else the first one.
+   */
+  async getGiftOptions(userId: string, ecardId?: string) {
+    await this.requireActiveMembership(userId);
+
+    let targetId = ecardId;
+    if (!targetId) {
+      const [firstCard] = await this.getCachedCatalogue();
+      targetId = firstCard?.id;
+    }
+    if (!targetId) {
+      return { templates: [], consultants: [], categories: [], subcategories: [] };
+    }
+
+    const detail = await this.callUpstream(() => this.api.getGiftCard(targetId));
     return {
-      templates: this.arrayValue(data.gift_template).map((item) => ({
-        id: this.stringValue(item.template_id),
-        name: this.stringValue(item.template_name),
-        subject: this.stringValue(item.template_subject),
-      })),
-      consultants: this.arrayValue(data.gift_consultant).map((item) => ({
-        id: this.stringValue(item.consultant_id),
-        firstName: this.stringValue(item.consultant_firstname),
-        lastName: this.stringValue(item.consultant_lastname),
-        email: this.stringValue(item.consultant_email),
-      })),
-      categories: this.stringArray(data.gift_category),
-      subcategories: this.stringArray(data.gift_subcategory),
+      templates: mapGiftTemplates(detail ?? {}),
+      // No corp equivalent — retained so the app's response shape is stable.
+      consultants: [],
+      categories: [],
+      subcategories: [],
     };
   }
+
+  // ---------------------------------------------------------------- favourites
 
   async getFavourites(userId: string) {
     const objectId = this.toObjectId(userId);
@@ -369,9 +444,8 @@ export class PerksService {
       .find({ userId: objectId })
       .sort({ createdAt: -1 })
       .lean();
-    if (favourites.length === 0) {
-      return [];
-    }
+    if (favourites.length === 0) return [];
+
     const cards = await this.getCachedCatalogue();
     const byId = new Map(cards.map((card) => [card.id, card]));
     return favourites.map((favourite) => ({
@@ -383,11 +457,10 @@ export class PerksService {
 
   async addFavourite(userId: string, dto: AddPerksFavouriteDto) {
     await this.getCatalogueCard(dto.ecardId);
+    const objectId = this.toObjectId(userId);
     const favourite = await this.favouriteModel.findOneAndUpdate(
-      { userId: this.toObjectId(userId), ecardId: dto.ecardId },
-      {
-        $setOnInsert: { userId: this.toObjectId(userId), ecardId: dto.ecardId },
-      },
+      { userId: objectId, ecardId: dto.ecardId },
+      { $setOnInsert: { userId: objectId, ecardId: dto.ecardId } },
       { new: true, upsert: true },
     );
     return { ecardId: favourite.ecardId };
@@ -404,19 +477,24 @@ export class PerksService {
     return { ecardId, removed: true };
   }
 
+  // ---------------------------------------------------------------------- cart
+
   async getCart(userId: string) {
     const cart = await this.getOrCreateActiveCart(userId);
     return this.cartResponse(cart.toObject());
   }
 
   async addCartItem(userId: string, dto: PerksCartItemDto) {
+    await this.requireActiveMembership(userId);
     const card = await this.getCatalogueCard(dto.ecardId);
     this.assertCardValue(card, dto.ecardValue);
+
     const cart = await this.getOrCreateActiveCart(userId);
+    const faceValueCents = Math.round(dto.ecardValue * 100);
     const existing = cart.items.find(
       (item) =>
         item.ecardId === dto.ecardId &&
-        item.faceValueCents === Math.round(dto.ecardValue * 100) &&
+        item.faceValueCents === faceValueCents &&
         item.sendAsGift === Boolean(dto.sendAsGift),
     );
     if (existing) {
@@ -426,7 +504,7 @@ export class PerksService {
         itemId: randomUUID(),
         ecardId: dto.ecardId,
         quantity: dto.quantity,
-        faceValueCents: Math.round(dto.ecardValue * 100),
+        faceValueCents,
         sendAsGift: Boolean(dto.sendAsGift),
         gift: dto.sendAsGift
           ? {
@@ -446,11 +524,11 @@ export class PerksService {
     itemId: string,
     dto: UpdatePerksCartItemDto,
   ) {
+    await this.requireActiveMembership(userId);
     const cart = await this.getOrCreateActiveCart(userId);
     const item = cart.items.find((candidate) => candidate.itemId === itemId);
-    if (!item) {
-      throw new NotFoundException('Cart item not found');
-    }
+    if (!item) throw new NotFoundException('Cart item not found');
+
     if (dto.ecardValue !== undefined) {
       const card = await this.getCatalogueCard(item.ecardId);
       this.assertCardValue(card, dto.ecardValue);
@@ -465,9 +543,9 @@ export class PerksService {
 
   async deleteCartItem(userId: string, itemId: string) {
     const cart = await this.getOrCreateActiveCart(userId);
-    const length = cart.items.length;
+    const before = cart.items.length;
     cart.items = cart.items.filter((item) => item.itemId !== itemId);
-    if (cart.items.length === length) {
+    if (cart.items.length === before) {
       throw new NotFoundException('Cart item not found');
     }
     await cart.save();
@@ -502,47 +580,271 @@ export class PerksService {
     });
   }
 
-  async listOrders(userId: string, query: PerksOrderListQueryDto) {
-    const [orders, total] = await Promise.all([
-      this.orderModel
-        .find({ userId: this.toObjectId(userId) })
-        .sort({ createdAt: -1 })
-        .skip(query.offset)
-        .limit(query.limit)
-        .lean(),
-      this.orderModel.countDocuments({ userId: this.toObjectId(userId) }),
-    ]);
+  // ------------------------------------------------------------------ checkout
+
+  /**
+   * WeMAD owns payment and issuance. We mirror the local cart into their cart,
+   * mint a FRESH single-use web token, and hand the app a hosted checkout URL.
+   * No order is created here — orders appear via listOrders once WeMAD has
+   * taken payment.
+   */
+  async checkoutCart(userId: string) {
+    const { user, membership } = await this.requireActiveMembership(userId);
+    const cart = await this.getOrCreateActiveCart(userId);
+    if (!cart.items.length) {
+      throw new BadRequestException('An active cart with items is required');
+    }
+
+    const quote = await this.buildCartQuote(cart.toObject());
+
+    // A fresh login every time: web tokens are single-use, so a cached one
+    // would drop the customer on a login page instead of their cart.
+    const session = await this.session.login(userId, user, {
+      credentialVersion: membership.credentialVersion ?? 1,
+    });
+
+    await this.syncCartUpstream(session.accessToken, cart.items);
+
+    await this.recordEvent(
+      this.toObjectId(userId),
+      PerksMembershipEventType.CHECKOUT_STARTED,
+      {
+        itemCount: cart.items.length,
+        totalCents: quote.totals.totalCents,
+      },
+    );
+
     return {
-      items: orders.map((order) => this.orderResponse(order)),
-      total,
-      limit: query.limit,
-      offset: query.offset,
+      status: 'redirect' as const,
+      checkoutUrl: this.api.buildCheckoutUrl(session.webToken),
+      quote,
     };
   }
 
+  /**
+   * Replaces the upstream cart with the local one. Cleared first so an
+   * abandoned checkout never leaves stale rows behind, and expanded per unit
+   * because the corp cart has no quantity concept — one row per card.
+   */
+  private async syncCartUpstream(accessToken: string, items: CartLikeItem[]) {
+    const existing = await this.callUpstream(() =>
+      this.api.getCart(accessToken),
+    );
+    for (const row of existing) {
+      const cartId = row?.id;
+      if (cartId === undefined || cartId === null) continue;
+      await this.callUpstream(() =>
+        this.api.removeFromCart(accessToken, cartId as number | string),
+      );
+    }
+
+    for (const item of items) {
+      const line = {
+        gift_card_id: item.ecardId,
+        amount: this.currency(item.faceValueCents),
+        purchase_type: item.sendAsGift ? ('gift' as const) : ('self' as const),
+        ...(item.sendAsGift && item.gift
+          ? {
+              recipient_name: item.gift.recipientName,
+              recipient_email: item.gift.recipientEmail,
+              gift_template_id: item.gift.templateId,
+            }
+          : {}),
+      };
+      for (let unit = 0; unit < item.quantity; unit += 1) {
+        await this.callUpstream(() => this.api.addToCart(accessToken, line));
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------- orders
+
+  async listOrders(userId: string, query: PerksOrderListQueryDto) {
+    const orders = await this.fetchOrders(userId);
+    const offset = query.offset ?? 0;
+    const limit = query.limit ?? 20;
+    return {
+      items: orders.slice(offset, offset + limit),
+      total: orders.length,
+      limit,
+      offset,
+    };
+  }
+
+  /**
+   * Resolved from the list rather than the detail endpoint: the list already
+   * embeds order_item[], and it lets us match on either the display
+   * order_number or the internal id without guessing which the app holds.
+   */
+  async getOrder(userId: string, orderNumber: string) {
+    const orders = await this.fetchOrders(userId);
+    const order = orders.find(
+      (candidate) =>
+        candidate.orderNumber === orderNumber ||
+        candidate.orderReference === orderNumber,
+    );
+    if (!order) throw new NotFoundException('Perks order not found');
+    return { ...order, upstream: { cardUrl: order.cardUrl } };
+  }
+
+  /**
+   * WeMAD's corp API has no tax-receipt endpoint. The route is retained so the
+   * app's existing "Receipt unavailable" path fires instead of erroring.
+   */
+  async getTaxReceipt(userId: string, orderNumber: string) {
+    await this.requireActiveMembership(userId);
+    return { orderNumber, receiptUrl: null as string | null };
+  }
+
+  private async fetchOrders(userId: string) {
+    const { user, membership } = await this.requireActiveMembership(userId);
+    const payload = await this.session.withAccessToken(
+      userId,
+      user,
+      (token) => this.callUpstream(() => this.api.listOrders(token)),
+      { credentialVersion: membership.credentialVersion ?? 1 },
+    );
+
+    const raw = (payload?.orders as Record<string, unknown>)?.data ?? payload;
+    const list = Array.isArray(raw) ? raw : [];
+    return list.map((order) => mapOrder(order as Record<string, unknown>));
+  }
+
+  // ------------------------------------------------------------------- wallet
+
+  /**
+   * Every wallet card the user owns, with local archive/hide state applied.
+   * Hidden cards are already dropped. One upstream call — callers filter.
+   */
+  private async fetchWalletCards(userId: string) {
+    const { user, membership } = await this.requireActiveMembership(userId);
+    const objectId = this.toObjectId(userId);
+
+    const entries = await this.session.withAccessToken(
+      userId,
+      user,
+      (token) => this.callUpstream(() => this.api.listMyGiftCards(token)),
+      { credentialVersion: membership.credentialVersion ?? 1 },
+    );
+
+    const mapped = entries.map((entry) => mapWalletCard(entry));
+    const metadata = await this.walletMetadataModel
+      .find({
+        userId: objectId,
+        cardKey: { $in: mapped.map((entry) => entry.cardKey) },
+      })
+      .lean();
+    const byKey = new Map(metadata.map((entry) => [entry.cardKey, entry]));
+
+    return mapped
+      .map((entry) => {
+        const local = byKey.get(entry.cardKey);
+        return {
+          ...entry,
+          archived: local?.archived ?? false,
+          archivedAt: local?.archivedAt ?? null,
+          hidden: local?.hidden ?? false,
+        };
+      })
+      .filter((entry) => !entry.hidden);
+  }
+
+  async getWallet(
+    userId: string,
+    gifted: boolean,
+    state: 'active' | 'archived' = 'active',
+  ) {
+    const cards = await this.fetchWalletCards(userId);
+    return cards
+      .filter(
+        (card) =>
+          card.gifted === gifted &&
+          (state === 'archived' ? card.archived : !card.archived),
+      )
+      .map(({ hidden: _hidden, ...card }) => card);
+  }
+
+  async getWalletCard(userId: string, cardKey: string) {
+    this.validateCardKey(cardKey);
+    // Single upstream fetch covers owned/gifted and active/archived alike.
+    const cards = await this.fetchWalletCards(userId);
+    const card = cards.find((entry) => entry.cardKey === cardKey);
+    if (!card) throw new NotFoundException('Wallet card not found');
+    const { hidden: _hidden, ...result } = card;
+    return result;
+  }
+
+  async setWalletArchived(userId: string, cardKey: string, archived: boolean) {
+    this.validateCardKey(cardKey);
+    await this.getWalletCard(userId, cardKey);
+    const objectId = this.toObjectId(userId);
+    await this.walletMetadataModel.findOneAndUpdate(
+      { userId: objectId, cardKey },
+      {
+        $set: {
+          archived,
+          archivedAt: archived ? new Date() : null,
+          hidden: false,
+        },
+        $setOnInsert: { userId: objectId, cardKey },
+      },
+      { upsert: true, new: true },
+    );
+    return { cardKey, archived };
+  }
+
+  async hideWalletCard(userId: string, cardKey: string) {
+    this.validateCardKey(cardKey);
+    await this.getWalletCard(userId, cardKey);
+    const objectId = this.toObjectId(userId);
+    await this.walletMetadataModel.findOneAndUpdate(
+      { userId: objectId, cardKey },
+      { $set: { hidden: true }, $setOnInsert: { userId: objectId, cardKey } },
+      { upsert: true },
+    );
+    return { cardKey, hidden: true };
+  }
+
+  // ---------------------------------------------------------------- dashboard
+
   async getDashboard(userId: string) {
     const objectId = this.toObjectId(userId);
-    const [membership, favouriteCount, cart, recentOrders, calculator] =
-      await Promise.all([
-        this.membershipModel.findOne({ userId: objectId }).lean(),
-        this.favouriteModel.countDocuments({ userId: objectId }),
-        this.cartModel
-          .findOne({ userId: objectId, status: PerksCartStatus.ACTIVE })
-          .lean(),
-        this.orderModel
-          .find({ userId: objectId })
-          .sort({ createdAt: -1 })
-          .limit(5)
-          .lean(),
-        this.calculatorProfileModel.findOne({ userId: objectId }).lean(),
-      ]);
+    const [membership, favouriteCount, cart, calculator] = await Promise.all([
+      this.membershipModel.findOne({ userId: objectId }).lean(),
+      this.favouriteModel.countDocuments({ userId: objectId }),
+      this.cartModel
+        .findOne({ userId: objectId, status: PerksCartStatus.ACTIVE })
+        .lean(),
+      this.calculatorProfileModel.findOne({ userId: objectId }).lean(),
+    ]);
+
+    // Orders live upstream now; the dashboard must still render if WeMAD is
+    // slow or down, so a failure here degrades to an empty list.
+    let recentOrders: Awaited<ReturnType<PerksService['fetchOrders']>> = [];
+    if (membership?.status === PerksMembershipStatus.ACTIVE) {
+      try {
+        recentOrders = (await this.fetchOrders(userId)).slice(0, 5);
+      } catch (error) {
+        this.logger.warn(
+          `Perks dashboard could not load orders: ${(error as Error).message}`,
+        );
+      }
+    }
+
     return {
       membership: membership
         ? this.membershipResponse(membership)
-        : { wmadUserId: null, status: 'not_registered', registeredAt: null },
+        : {
+            wmadUserId: null,
+            status: 'not_registered',
+            registeredAt: null,
+            plan: PerksMembershipPlan.FREE,
+            cancelledAt: null,
+            accessEndsAt: null,
+          },
       favouriteCount,
       cart: cart ? this.cartResponse(cart) : null,
-      recentOrders: recentOrders.map((order) => this.orderResponse(order)),
+      recentOrders,
       latestCalculator: calculator
         ? {
             inputs: calculator.inputs,
@@ -553,462 +855,7 @@ export class PerksService {
     };
   }
 
-  async createOrder(
-    userId: string,
-    idempotencyKey: string,
-    dto: CreatePerksOrderDto,
-  ) {
-    this.assertIssuanceEnabled();
-    await this.ensureMembership(userId);
-    this.validateIdempotencyKey(idempotencyKey);
-    const objectId = this.toObjectId(userId);
-    const requestHash = createHash('sha256')
-      .update(JSON.stringify(dto))
-      .digest('hex');
-
-    const existing = await this.orderModel
-      .findOne({ userId: objectId, idempotencyKey })
-      .lean();
-    if (existing) {
-      if (existing.requestHash !== requestHash) {
-        throw new ConflictException(
-          'Idempotency-Key was already used with a different order',
-        );
-      }
-      return this.orderResponse(existing);
-    }
-
-    const card = await this.getCatalogueCard(dto.ecardId);
-    this.assertCardValue(card, dto.ecardValue);
-    const orderReference = this.createOrderReference(userId);
-    const snapshot = this.quoteLine(
-      {
-        itemId: 'single',
-        ecardId: dto.ecardId,
-        faceValueCents: Math.round(dto.ecardValue * 100),
-        quantity: dto.quantity,
-      },
-      card,
-    );
-    let order: PerksOrderDocument;
-    try {
-      order = await this.orderModel.create({
-        userId: objectId,
-        idempotencyKey,
-        requestHash,
-        orderReference,
-        status: PerksOrderStatus.STARTED,
-        currency: 'AUD',
-        faceValueCents: snapshot.faceValueCents,
-        purchasePriceCents: snapshot.purchasePriceCents,
-        deliveryFeeCents: snapshot.deliveryFeeCents,
-        totalCents: snapshot.totalCents,
-        lines: [
-          {
-            ...snapshot,
-            lineId: 'single',
-            idempotencyKey: `${idempotencyKey}:single`,
-            orderReference,
-            status: PerksOrderStatus.STARTED,
-          },
-        ],
-      });
-    } catch (error) {
-      if (this.isDuplicateKey(error)) {
-        const concurrent = await this.orderModel
-          .findOne({ userId: objectId, idempotencyKey })
-          .lean();
-        if (concurrent?.requestHash === requestHash) {
-          return this.orderResponse(concurrent);
-        }
-      }
-      throw error;
-    }
-
-    try {
-      const result = await this.api.createOrder(
-        this.mapOrderPayload(dto, orderReference),
-      );
-      this.applyOrderResult(order, result);
-      if (order.lines[0]) {
-        order.lines[0].wmadOrderNumber = String(result.order_number);
-        order.lines[0].status = this.mapOrderStatus(result.order_status);
-        order.lines[0].cardUrl = result.cardurl ?? null;
-        order.lines[0].completedAt = new Date();
-      }
-      order.completedAt = new Date();
-      await order.save();
-      return this.orderResponse(order.toObject());
-    } catch (error) {
-      const apiError = this.asApiError(error);
-      order.status = apiError.ambiguous
-        ? PerksOrderStatus.UNKNOWN
-        : PerksOrderStatus.FAILED;
-      order.lastErrorCode = apiError.code;
-      order.lastErrorMessage = apiError.message;
-      if (order.lines[0]) {
-        order.lines[0].status = order.status;
-        order.lines[0].lastErrorCode = apiError.code;
-        order.lines[0].lastErrorMessage = apiError.message;
-      }
-      await order.save();
-      this.throwUpstream(apiError, 'Could not place the gift-card order');
-    }
-  }
-
-  async checkoutCart(userId: string, idempotencyKey: string) {
-    this.validateIdempotencyKey(idempotencyKey);
-    if (!this.isIssuanceEnabled()) {
-      const cart = await this.getOrCreateActiveCart(userId);
-      if (cart.items.length === 0) {
-        throw new BadRequestException('An active cart with items is required');
-      }
-      const quote = await this.buildCartQuote(cart.toObject());
-      return {
-        status: 'payment_required',
-        issuanceEnabled: false,
-        quote,
-        message:
-          'Perks checkout is ready, but payment and order issuance are not yet enabled.',
-      };
-    }
-
-    const objectId = this.toObjectId(userId);
-    const prior = await this.orderModel.findOne({
-      userId: objectId,
-      idempotencyKey,
-    });
-    if (
-      prior &&
-      [PerksOrderStatus.COMPLETED, PerksOrderStatus.PROCESSING].includes(
-        prior.status,
-      ) &&
-      prior.lines.every((line) =>
-        [PerksOrderStatus.COMPLETED, PerksOrderStatus.PROCESSING].includes(
-          line.status,
-        ),
-      )
-    ) {
-      return this.orderResponse(prior.toObject());
-    }
-
-    const cart = await this.cartModel.findOneAndUpdate(
-      {
-        userId: objectId,
-        $or: [
-          {
-            status: PerksCartStatus.ACTIVE,
-            $or: [
-              { checkoutIdempotencyKey: null },
-              { checkoutIdempotencyKey: { $exists: false } },
-              { checkoutIdempotencyKey: idempotencyKey },
-            ],
-          },
-          {
-            status: PerksCartStatus.CHECKING_OUT,
-            checkoutIdempotencyKey: idempotencyKey,
-          },
-        ],
-      },
-      {
-        $set: {
-          status: PerksCartStatus.CHECKING_OUT,
-          checkoutIdempotencyKey: idempotencyKey,
-        },
-      },
-      { new: true },
-    );
-    if (!cart) {
-      const resumable = await this.cartModel.findOne({
-        userId: objectId,
-        status: {
-          $in: [PerksCartStatus.ACTIVE, PerksCartStatus.CHECKING_OUT],
-        },
-      });
-      if (resumable?.checkoutIdempotencyKey) {
-        throw new ConflictException(
-          'Cart checkout must resume with its original Idempotency-Key',
-        );
-      }
-    }
-    if (!cart || cart.items.length === 0) {
-      throw new BadRequestException('An active cart with items is required');
-    }
-
-    let quote: Awaited<ReturnType<PerksService['buildCartQuote']>>;
-    try {
-      await this.ensureMembership(userId);
-      quote = await this.buildCartQuote(cart.toObject());
-    } catch (error) {
-      await this.releaseCartForRetry(cart);
-      throw error;
-    }
-    const requestHash = createHash('sha256')
-      .update(JSON.stringify(quote.items))
-      .digest('hex');
-    if (prior && prior.requestHash !== requestHash) {
-      await this.releaseCartForRetry(cart);
-      throw new ConflictException(
-        'Idempotency-Key was already used with a different cart',
-      );
-    }
-
-    let order = prior;
-    if (!order) {
-      const orderReference = this.createOrderReference(userId);
-      try {
-        order = await this.orderModel.create({
-          userId: objectId,
-          cartId: cart._id,
-          idempotencyKey,
-          requestHash,
-          orderReference,
-          status: PerksOrderStatus.STARTED,
-          currency: 'AUD',
-          faceValueCents: quote.totals.faceValueCents,
-          purchasePriceCents: quote.totals.purchasePriceCents,
-          deliveryFeeCents: quote.totals.deliveryFeeCents,
-          totalCents: quote.totals.totalCents,
-          lines: quote.items.map((item) => ({
-            ...item,
-            lineId: item.itemId,
-            idempotencyKey: `${idempotencyKey}:${item.itemId}`,
-            orderReference: `${orderReference}-${item.itemId.slice(0, 8)}`,
-            status: PerksOrderStatus.STARTED,
-          })),
-        });
-      } catch (error) {
-        if (!this.isDuplicateKey(error)) {
-          await this.releaseCartForRetry(cart);
-          throw error;
-        }
-        order = await this.orderModel.findOne({
-          userId: objectId,
-          idempotencyKey,
-        });
-        if (!order || order.requestHash !== requestHash) {
-          await this.releaseCartForRetry(cart);
-          throw new ConflictException('Checkout is already in progress');
-        }
-      }
-    }
-
-    if (order.lines.some((line) => line.status === PerksOrderStatus.UNKNOWN)) {
-      await this.releaseCartForRetry(cart);
-      throw new ConflictException(
-        'Checkout contains an ambiguous line and requires reconciliation',
-      );
-    }
-
-    for (const line of order.lines) {
-      if (
-        line.status === PerksOrderStatus.COMPLETED ||
-        line.status === PerksOrderStatus.PROCESSING
-      ) {
-        continue;
-      }
-      const cartItem = cart.items.find((item) => item.itemId === line.lineId);
-      if (!cartItem) {
-        throw new ConflictException('Cart changed during checkout');
-      }
-      try {
-        const result = await this.api.createOrder(
-          this.mapCartOrderPayload(cartItem, line.orderReference),
-        );
-        line.wmadOrderNumber = String(result.order_number);
-        line.status = this.mapOrderStatus(result.order_status);
-        line.cardUrl = result.cardurl ?? null;
-        line.completedAt = new Date();
-        line.lastErrorCode = null;
-        line.lastErrorMessage = null;
-        await order.save();
-      } catch (error) {
-        const apiError = this.asApiError(error);
-        line.status = apiError.ambiguous
-          ? PerksOrderStatus.UNKNOWN
-          : PerksOrderStatus.FAILED;
-        line.lastErrorCode = apiError.code;
-        line.lastErrorMessage = apiError.message;
-        order.status = line.status;
-        order.lastErrorCode = apiError.code;
-        order.lastErrorMessage = apiError.message;
-        await order.save();
-        await this.releaseCartForRetry(cart);
-        this.throwUpstream(apiError, 'Could not complete cart checkout');
-      }
-    }
-
-    const allIssued = order.lines.every((line) =>
-      [PerksOrderStatus.COMPLETED, PerksOrderStatus.PROCESSING].includes(
-        line.status,
-      ),
-    );
-    order.status = order.lines.every(
-      (line) => line.status === PerksOrderStatus.COMPLETED,
-    )
-      ? PerksOrderStatus.COMPLETED
-      : allIssued
-        ? PerksOrderStatus.PROCESSING
-        : PerksOrderStatus.FAILED;
-    order.completedAt = allIssued ? new Date() : null;
-    await order.save();
-    if (allIssued) {
-      cart.status = PerksCartStatus.CHECKED_OUT;
-      cart.orderId = order._id as Types.ObjectId;
-      cart.checkedOutAt = new Date();
-      await cart.save();
-    }
-    return this.orderResponse(order.toObject());
-  }
-
-  async getOrder(userId: string, orderNumber: string) {
-    const order = await this.findOwnedOrder(userId, orderNumber);
-    const detail = await this.callUpstream(() =>
-      this.api.getOrderDetail(orderNumber, order.orderReference),
-    );
-    order.status = this.mapOrderStatus(detail.order_status);
-    order.cardUrl = this.nullableString(detail.cardurl);
-    await order.save();
-    return {
-      ...this.orderResponse(order.toObject()),
-      upstream: {
-        cardUrl: order.cardUrl,
-      },
-    };
-  }
-
-  async cancelOrder(userId: string, orderNumber: string) {
-    const order = await this.findOwnedOrder(userId, orderNumber);
-    await this.callUpstream(() => this.api.cancelOrder(orderNumber));
-    order.status = PerksOrderStatus.REFUNDED;
-    await order.save();
-    return this.orderResponse(order.toObject());
-  }
-
-  async getTaxReceipt(userId: string, orderNumber: string) {
-    const order = await this.findOwnedOrder(userId, orderNumber);
-    const result = await this.callUpstream(() =>
-      this.api.getTaxReceipt(orderNumber),
-    );
-    order.receiptUrl = this.nullableString(result.receipturl);
-    await order.save();
-    return {
-      orderNumber,
-      receiptUrl: order.receiptUrl,
-    };
-  }
-
-  async getWallet(
-    userId: string,
-    gifted: boolean,
-    state: 'active' | 'archived' = 'active',
-  ) {
-    await this.ensureMembership(userId);
-    const objectId = this.toObjectId(userId);
-    const orders = await this.orderModel
-      .find({ userId: objectId })
-      .select({
-        wmadOrderNumber: 1,
-        orderReference: 1,
-        'lines.wmadOrderNumber': 1,
-        'lines.orderReference': 1,
-      })
-      .lean();
-    const allowed = new Set(
-      orders.flatMap((order) =>
-        [
-          order.wmadOrderNumber,
-          order.orderReference,
-          ...(order.lines ?? []).flatMap((line) => [
-            line.wmadOrderNumber,
-            line.orderReference,
-          ]),
-        ].filter((value): value is string => Boolean(value)),
-      ),
-    );
-    const entries = await this.callUpstream(() =>
-      gifted ? this.api.getGiftedWallet() : this.api.getWallet(),
-    );
-    const mapped = entries
-      .filter((entry) => {
-        const number = this.stringValue(entry.order_number);
-        const reference = this.stringValue(entry.order_reference);
-        return allowed.has(number) || allowed.has(reference);
-      })
-      .map((entry) => this.mapWalletEntry(entry, gifted));
-    const metadata = await this.walletMetadataModel
-      .find({
-        userId: objectId,
-        cardKey: { $in: mapped.map((entry) => entry.cardKey) },
-      })
-      .lean();
-    const metadataByKey = new Map(
-      metadata.map((entry) => [entry.cardKey, entry]),
-    );
-    return mapped
-      .map((entry) => {
-        const local = metadataByKey.get(entry.cardKey);
-        return {
-          ...entry,
-          archived: local?.archived ?? false,
-          archivedAt: local?.archivedAt ?? null,
-        };
-      })
-      .filter((entry) => {
-        const local = metadataByKey.get(entry.cardKey);
-        return (
-          !local?.hidden &&
-          (state === 'archived' ? entry.archived : !entry.archived)
-        );
-      });
-  }
-
-  async getWalletCard(userId: string, cardKey: string) {
-    this.validateCardKey(cardKey);
-    const cards = [
-      ...(await this.getWallet(userId, false, 'active')),
-      ...(await this.getWallet(userId, false, 'archived')),
-      ...(await this.getWallet(userId, true, 'active')),
-      ...(await this.getWallet(userId, true, 'archived')),
-    ];
-    const card = cards.find((entry) => entry.cardKey === cardKey);
-    if (!card) {
-      throw new NotFoundException('Wallet card not found');
-    }
-    return card;
-  }
-
-  async setWalletArchived(userId: string, cardKey: string, archived: boolean) {
-    this.validateCardKey(cardKey);
-    await this.getWalletCard(userId, cardKey);
-    await this.walletMetadataModel.findOneAndUpdate(
-      { userId: this.toObjectId(userId), cardKey },
-      {
-        $set: {
-          archived,
-          archivedAt: archived ? new Date() : null,
-          hidden: false,
-        },
-        $setOnInsert: { userId: this.toObjectId(userId), cardKey },
-      },
-      { upsert: true, new: true },
-    );
-    return { cardKey, archived };
-  }
-
-  async hideWalletCard(userId: string, cardKey: string) {
-    this.validateCardKey(cardKey);
-    await this.getWalletCard(userId, cardKey);
-    await this.walletMetadataModel.findOneAndUpdate(
-      { userId: this.toObjectId(userId), cardKey },
-      {
-        $set: { hidden: true },
-        $setOnInsert: { userId: this.toObjectId(userId), cardKey },
-      },
-      { upsert: true },
-    );
-    return { cardKey, hidden: true };
-  }
+  // --------------------------------------------------------------- calculator
 
   getCalculatorCategories() {
     return PERKS_CATEGORIES.map((category) => ({
@@ -1057,15 +904,12 @@ export class PerksService {
   async calculateAndSave(userId: string, dto: CalculatePerksDto) {
     const result = this.calculate(dto);
     const calculatedAt = new Date();
+    const objectId = this.toObjectId(userId);
     await this.calculatorProfileModel.findOneAndUpdate(
-      { userId: this.toObjectId(userId) },
+      { userId: objectId },
       {
-        $set: {
-          inputs: dto.items,
-          result,
-          calculatedAt,
-        },
-        $setOnInsert: { userId: this.toObjectId(userId) },
+        $set: { inputs: dto.items, result, calculatedAt },
+        $setOnInsert: { userId: objectId },
       },
       { upsert: true },
     );
@@ -1076,9 +920,7 @@ export class PerksService {
     const profile = await this.calculatorProfileModel
       .findOne({ userId: this.toObjectId(userId) })
       .lean();
-    if (!profile) {
-      return null;
-    }
+    if (!profile) return null;
     return {
       inputs: profile.inputs,
       result: profile.result,
@@ -1086,20 +928,95 @@ export class PerksService {
     };
   }
 
+  // ------------------------------------------------------------------ helpers
+
+  private async loadUserProfile(objectId: Types.ObjectId) {
+    const [user, healthProfile] = await Promise.all([
+      this.userModel.findById(objectId).lean(),
+      this.healthProfileModel
+        .findOne({ userId: objectId })
+        .select({ gender: 1 })
+        .lean(),
+    ]);
+    if (!user) throw new NotFoundException('Saveful user not found');
+    return {
+      user: user as User,
+      fallbackGender: (healthProfile?.gender as Gender | undefined) ?? null,
+    };
+  }
+
+  /**
+   * Single gate for every member-only action. Mirrors the app's
+   * `usePerksMembership()` check so the server can't be bypassed.
+   */
+  private async requireActiveMembership(userId: string) {
+    const objectId = this.toObjectId(userId);
+    const membership = await this.membershipModel
+      .findOne({ userId: objectId })
+      .lean();
+
+    if (!membership || membership.status !== PerksMembershipStatus.ACTIVE) {
+      throw new ForbiddenException({
+        message:
+          membership?.status === PerksMembershipStatus.CANCELLED
+            ? 'Your Perks membership was cancelled. Resume it to continue.'
+            : 'Join Perks to continue.',
+        code:
+          membership?.status === PerksMembershipStatus.CANCELLED
+            ? 'PERKS_MEMBERSHIP_CANCELLED'
+            : 'PERKS_MEMBERSHIP_REQUIRED',
+        status: membership?.status ?? 'not_registered',
+      });
+    }
+
+    const { user } = await this.loadUserProfile(objectId);
+    return { user, membership };
+  }
+
+  private async recordEvent(
+    userId: Types.ObjectId,
+    type: PerksMembershipEventType,
+    metadata: Record<string, unknown> | null,
+  ) {
+    try {
+      await this.membershipEventModel.create({ userId, type, metadata });
+    } catch (error) {
+      // The audit trail must never block the action it is describing.
+      this.logger.warn(
+        `Could not record perks event ${type}: ${(error as Error).message}`,
+      );
+    }
+  }
+
+  /** Empties the cart when a membership ends so nothing lingers on resume. */
+  private async releaseCart(userId: Types.ObjectId) {
+    await this.cartModel.updateOne(
+      {
+        userId,
+        status: { $in: [PerksCartStatus.ACTIVE, PerksCartStatus.CHECKING_OUT] },
+      },
+      { $set: { items: [], status: PerksCartStatus.ACTIVE } },
+    );
+  }
+
+  private discountTier() {
+    return this.config.get<string>('PERKS_DISCOUNT_TIER', DEFAULT_DISCOUNT_TIER);
+  }
+
+  private catalogueTtl() {
+    return this.positiveConfigNumber('PERKS_CATALOGUE_CACHE_TTL_SECONDS', 300);
+  }
+
   private async getCachedCatalogue(): Promise<CatalogueCard[]> {
-    const cacheKey = 'perks:catalogue:v1';
+    const cacheKey = `perks:corp:catalogue:${CATALOGUE_CACHE_VERSION}`;
     try {
       const cached = await this.redis.get<CatalogueCard[]>(cacheKey);
-      if (cached) {
-        return cached;
-      }
+      if (cached) return cached;
     } catch {
       // Catalogue remains available if Redis is temporarily unavailable.
     }
 
-    if (this.catalogueRefreshPromise) {
-      return this.catalogueRefreshPromise;
-    }
+    if (this.catalogueRefreshPromise) return this.catalogueRefreshPromise;
 
     const refresh = this.refreshCatalogue(cacheKey);
     this.catalogueRefreshPromise = refresh;
@@ -1119,14 +1036,8 @@ export class PerksService {
     let hasLock = false;
 
     try {
-      hasLock = await this.redis.setIfAbsent(
-        lockKey,
-        lockToken,
-        lockTtlSeconds,
-      );
+      hasLock = await this.redis.setIfAbsent(lockKey, lockToken, lockTtlSeconds);
     } catch {
-      // Redis is optional for availability; the in-process promise still
-      // prevents duplicate WMAD requests inside this API instance.
       return this.fetchAndCacheCatalogue(cacheKey);
     }
 
@@ -1140,17 +1051,13 @@ export class PerksService {
         await this.delay(Math.min(250, Math.max(1, deadline - Date.now())));
         try {
           const cached = await this.redis.get<CatalogueCard[]>(cacheKey);
-          if (cached) {
-            return cached;
-          }
+          if (cached) return cached;
           hasLock = await this.redis.setIfAbsent(
             lockKey,
             lockToken,
             lockTtlSeconds,
           );
-          if (hasLock) {
-            break;
-          }
+          if (hasLock) break;
         } catch {
           return this.fetchAndCacheCatalogue(cacheKey);
         }
@@ -1164,7 +1071,7 @@ export class PerksService {
         try {
           await this.redis.releaseLock(lockKey, lockToken);
         } catch {
-          // The lock has a short TTL, so release failures are self-healing.
+          // Short TTL makes release failures self-healing.
         }
       }
     }
@@ -1173,18 +1080,19 @@ export class PerksService {
   private async fetchAndCacheCatalogue(
     cacheKey: string,
   ): Promise<CatalogueCard[]> {
-    const rawCards = await this.callUpstream(() => this.api.getEcards());
-    const cards = rawCards
-      .map((card) => this.mapCatalogueCard(card))
+    const paginate = this.positiveConfigNumber('PERKS_CATALOGUE_PAGE_SIZE', 100);
+    const raw = await this.callUpstream(() =>
+      this.api.listGiftCards({ paginate }),
+    );
+    const tier = this.discountTier();
+    const cards = raw
+      .map((card) => mapCatalogueCard(card, tier))
       .filter((card) => Boolean(card.id && card.name));
+
     try {
-      const ttl = this.positiveConfigNumber(
-        'PERKS_CATALOGUE_CACHE_TTL_SECONDS',
-        300,
-      );
-      await this.redis.set(cacheKey, cards, ttl);
+      await this.redis.set(cacheKey, cards, this.catalogueTtl());
     } catch {
-      // A cache write failure must not fail a successful WMAD response.
+      // A cache write failure must not fail a successful upstream response.
     }
     return cards;
   }
@@ -1196,131 +1104,6 @@ export class PerksService {
 
   private delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  private mapCatalogueCard(card: Record<string, unknown>): CatalogueCard {
-    const featured = card.ecard_featured ?? card.featured;
-    const name = this.stringValue(card.ecard_name).trim();
-    const explicitCategory = this.nullableString(
-      card.ecard_category ?? card.category ?? card.ecard_type,
-    );
-    return {
-      id: this.stringValue(card.ecard_id),
-      name,
-      // WMAD /ecard currently omits category fields; infer browse groups from name.
-      category: explicitCategory ?? this.inferCatalogueCategory(name),
-      discountPercent:
-        this.numberValue(card.discount ?? card.ecard_discount) ?? 0,
-      imageFilename: this.safeImageFilename(card.ecard_image),
-      imageUrl: this.cardImageUrl(card.ecard_image),
-      priceType: this.stringValue(card.ecard_pricetype),
-      availableValues: this.parseCardValues(card.ecard_price),
-      balanceLink: this.nullableString(card.ecard_balancelink),
-      description: this.nullableString(card.ecard_desc),
-      terms: this.nullableString(card.ecard_term),
-      deliveryFee: this.numberValue(card.delivery_fee) ?? 0,
-      featured:
-        featured === true ||
-        featured === 1 ||
-        String(featured).toLowerCase() === 'true' ||
-        String(featured) === '1' ||
-        (this.numberValue(card.discount ?? card.ecard_discount) ?? 0) >= 5,
-    };
-  }
-
-  private inferCatalogueCategory(name: string): string {
-    const haystack = name.toLowerCase();
-    const rules: Array<{ category: string; keywords: string[] }> = [
-      {
-        category: 'groceries',
-        keywords: [
-          'woolworths',
-          'coles',
-          'aldi',
-          'iga',
-          'harris farm',
-          'supermarket',
-          'grocery',
-          'foodland',
-          'drakes',
-        ],
-      },
-      {
-        category: 'fuel',
-        keywords: [
-          'fuel',
-          'shell',
-          'caltex',
-          'ampol',
-          'petrol',
-          'bp gift',
-          '7-eleven',
-        ],
-      },
-      {
-        category: 'dining',
-        keywords: [
-          'restaurant',
-          'cafe',
-          'coffee',
-          'dining',
-          'mcdonald',
-          'kfc',
-          'hungry jack',
-          'dominos',
-          'uber eats',
-          'menulog',
-        ],
-      },
-      {
-        category: 'home',
-        keywords: [
-          'bunnings',
-          'ikea',
-          'bedroom',
-          'homewares',
-          'harvey norman',
-          'the good guys',
-          'jb hi-fi',
-          'officeworks',
-        ],
-      },
-      {
-        category: 'fashion',
-        keywords: [
-          'cotton on',
-          'country road',
-          'target',
-          'kmart',
-          'myer',
-          'david jones',
-          'uniqlo',
-          'fashion',
-          'apparel',
-        ],
-      },
-      {
-        category: 'entertainment',
-        keywords: [
-          'netflix',
-          'spotify',
-          'steam',
-          'playstation',
-          'xbox',
-          'cinema',
-          'movie',
-          'entertainment',
-          'ticket',
-          'rebel',
-        ],
-      },
-    ];
-    for (const rule of rules) {
-      if (rule.keywords.some((keyword) => haystack.includes(keyword))) {
-        return rule.category;
-      }
-    }
-    return 'other';
   }
 
   private async getOrCreateActiveCart(
@@ -1347,9 +1130,7 @@ export class PerksService {
         items: [],
       });
     } catch (error) {
-      if (!this.isDuplicateKey(error)) {
-        throw error;
-      }
+      if (!this.isDuplicateKey(error)) throw error;
       const concurrent = await this.cartModel.findOne({
         userId: objectId,
         status: PerksCartStatus.ACTIVE,
@@ -1361,22 +1142,10 @@ export class PerksService {
     }
   }
 
-  private async releaseCartForRetry(cart: PerksCartDocument) {
-    cart.status = PerksCartStatus.ACTIVE;
-    await cart.save();
-  }
-
   private cartResponse(cart: {
     _id?: unknown;
     status: PerksCartStatus;
-    items: Array<{
-      itemId: string;
-      ecardId: string;
-      quantity: number;
-      faceValueCents: number;
-      sendAsGift: boolean;
-      gift: Record<string, string> | null;
-    }>;
+    items: CartLikeItem[];
     updatedAt?: Date;
   }) {
     return {
@@ -1394,36 +1163,26 @@ export class PerksService {
     };
   }
 
-  private async buildCartQuote(cart: {
-    items: Array<{
-      itemId: string;
-      ecardId: string;
-      quantity: number;
-      faceValueCents: number;
-      sendAsGift: boolean;
-      gift: Record<string, string> | null;
-    }>;
-  }) {
-    const cards = await this.getCachedCatalogue();
-    const byId = new Map(cards.map((card) => [card.id, card]));
-    const items = cart.items.map((item) => {
-      const card = byId.get(item.ecardId);
-      if (!card) {
-        throw new UnprocessableEntityException(
-          `Card ${item.ecardId} is no longer available`,
-        );
-      }
-      this.assertCardValue(card, this.currency(item.faceValueCents));
-      return this.quoteLine(item, card);
-    });
+  private async buildCartQuote(cart: { items: CartLikeItem[] }) {
+    const items = await Promise.all(
+      cart.items.map(async (item) => {
+        // Always price against the DETAIL card, never the listing. Listing
+        // payloads carry no provider_product, so their pricing is a generic
+        // fallback ladder — validating against it would disagree with
+        // addCartItem and could strand a legitimately-added item that the
+        // looser/narrower ladder happens to exclude. Detail is Redis-cached
+        // per card, so repeat lines cost nothing.
+        const card = await this.getCatalogueCard(item.ecardId);
+        this.assertCardValue(card, this.currency(item.faceValueCents));
+        return this.quoteLine(item, card);
+      }),
+    );
+
     return {
       currency: 'AUD',
       items,
       totals: {
-        faceValueCents: items.reduce(
-          (sum, item) => sum + item.faceValueCents,
-          0,
-        ),
+        faceValueCents: items.reduce((sum, item) => sum + item.faceValueCents, 0),
         purchasePriceCents: items.reduce(
           (sum, item) => sum + item.purchasePriceCents,
           0,
@@ -1438,12 +1197,7 @@ export class PerksService {
   }
 
   private quoteLine(
-    item: {
-      itemId: string;
-      ecardId: string;
-      quantity: number;
-      faceValueCents: number;
-    },
+    item: { itemId: string; ecardId: string; quantity: number; faceValueCents: number },
     card: CatalogueCard,
   ) {
     const unitPurchasePriceCents = Math.max(
@@ -1468,7 +1222,30 @@ export class PerksService {
     };
   }
 
+  /**
+   * The only place card values are validated. WeMAD's cart accepts ANY amount
+   * (confirmed live: a $100-max card took $999, and a fixed-denomination card
+   * took an off-denomination $77), so if this passes, nothing downstream will
+   * catch a bad value.
+   */
   private assertCardValue(card: CatalogueCard, value: number) {
+    if (!Number.isFinite(value) || value <= 0) {
+      throw new UnprocessableEntityException(
+        `Enter a valid amount for ${card.name}`,
+      );
+    }
+
+    if (card.variablePrice) {
+      const min = card.minAmount ?? 0;
+      const max = card.maxAmount ?? Number.POSITIVE_INFINITY;
+      if (value < min || value > max) {
+        throw new UnprocessableEntityException(
+          `${card.name} accepts between $${min} and $${max}`,
+        );
+      }
+      return;
+    }
+
     if (
       card.availableValues.length > 0 &&
       !card.availableValues.some(
@@ -1479,219 +1256,6 @@ export class PerksService {
         `Value is not available for ${card.name}`,
       );
     }
-  }
-
-  private mapCartOrderPayload(
-    item: {
-      ecardId: string;
-      faceValueCents: number;
-      quantity: number;
-      sendAsGift: boolean;
-      gift: Record<string, string> | null;
-    },
-    orderReference: string,
-  ) {
-    return {
-      ecard_id: item.ecardId,
-      ecard_value: this.currency(item.faceValueCents),
-      ecard_qty: item.quantity,
-      order_reference: orderReference,
-      ecard_sendasgift: item.sendAsGift ? 1 : 0,
-      ...(item.sendAsGift
-        ? {
-            gift_templateid: item.gift?.templateId,
-            gift_recipient_name: item.gift?.recipientName,
-            gift_recipient_email: item.gift?.recipientEmail,
-          }
-        : {}),
-    };
-  }
-
-  private isIssuanceEnabled() {
-    const value = this.config.get<string | boolean>(
-      'PERKS_ORDER_ISSUANCE_ENABLED',
-      false,
-    );
-    return value === true || String(value).toLowerCase() === 'true';
-  }
-
-  private assertIssuanceEnabled() {
-    if (!this.isIssuanceEnabled()) {
-      throw new ServiceUnavailableException({
-        message: 'Perks order issuance is disabled',
-        code: 'PERKS_ORDER_ISSUANCE_DISABLED',
-      });
-    }
-  }
-
-  private profileMissingFields(
-    user: Pick<User, 'name' | 'pincode' | 'gender' | 'phoneNumber'>,
-    fallbackGender?: Gender | null,
-  ) {
-    const nameParts = (user.name ?? '').trim().split(/\s+/).filter(Boolean);
-    const postcode = (user.pincode ?? '').trim();
-    const missingFields: string[] = [];
-    if (nameParts.length < 2) {
-      missingFields.push('name');
-    }
-    if (!this.toWmadPhoneNumber(user.phoneNumber)) {
-      missingFields.push('phone');
-    }
-    if (!/^\d{4,}$/.test(postcode)) {
-      missingFields.push('pincode');
-    }
-    // Gender is optional in WMAD docs, but incomplete Saveful profiles are a
-    // common reject cause, so require it before calling upstream.
-    if (!user.gender && !fallbackGender) {
-      missingFields.push('gender');
-    }
-    return missingFields;
-  }
-
-  private mapRegistration(user: User, fallbackGender?: Gender | null) {
-    const nameParts = user.name.trim().split(/\s+/).filter(Boolean);
-    const postcode = (user.pincode ?? '').trim();
-    const missingFields = this.profileMissingFields(user, fallbackGender);
-    if (missingFields.length > 0) {
-      throw new UnprocessableEntityException({
-        message: 'Complete your Saveful profile before using Perks',
-        missingFields,
-      });
-    }
-    const gender = this.toWmadGenderCode(user.gender ?? fallbackGender ?? null);
-    const phone = this.toWmadPhoneNumber(user.phoneNumber);
-    return {
-      firstname: nameParts[0],
-      lastname: nameParts.slice(1).join(' '),
-      email: user.email.toLowerCase(),
-      // WMAD only accepts 4-digit postcodes, so keep Saveful's stored pincode
-      // intact and trim only the upstream registration payload.
-      postcode: postcode.slice(0, 4),
-      phone: phone as string,
-      gender: gender as WmadGenderCode,
-    };
-  }
-
-  private mapOrderPayload(
-    dto: CreatePerksOrderDto,
-    orderReference: string,
-  ): Record<string, unknown> {
-    return {
-      ecard_id: dto.ecardId,
-      ecard_value: dto.ecardValue,
-      ecard_qty: dto.quantity,
-      order_reference: orderReference,
-      ecard_sendasgift: dto.sendAsGift ? 1 : 0,
-      ...(dto.sendAsGift
-        ? {
-            gift_templateid: dto.giftTemplateId,
-            gift_recipient_name: dto.giftRecipientName,
-            gift_recipient_email: dto.giftRecipientEmail,
-          }
-        : {}),
-      ...(dto.giftRecipientPhone
-        ? { gift_recipient_phone: dto.giftRecipientPhone }
-        : {}),
-      ...(dto.giftUseCode ? { gift_usecode: dto.giftUseCode } : {}),
-      ...(dto.giftReferenceNumber
-        ? { gift_refnumber: dto.giftReferenceNumber }
-        : {}),
-      ...(dto.giftCategory ? { gift_category: dto.giftCategory } : {}),
-      ...(dto.giftSubcategory ? { gift_subcategory: dto.giftSubcategory } : {}),
-      ...(dto.giftConsultantName
-        ? { gift_consultant_name: dto.giftConsultantName }
-        : {}),
-      ...(dto.giftConsultantEmail
-        ? { gift_consultant_email: dto.giftConsultantEmail }
-        : {}),
-    };
-  }
-
-  private applyOrderResult(order: PerksOrderDocument, result: WmadOrderResult) {
-    order.wmadOrderNumber = String(result.order_number);
-    order.status = this.mapOrderStatus(result.order_status);
-    order.cardUrl = result.cardurl ?? null;
-  }
-
-  private mapOrderStatus(status: unknown): PerksOrderStatus {
-    switch (String(status)) {
-      case '1':
-        return PerksOrderStatus.PROCESSING;
-      case '2':
-        return PerksOrderStatus.COMPLETED;
-      case '5':
-        return PerksOrderStatus.REFUNDED;
-      case '6':
-        return PerksOrderStatus.FAILED;
-      default:
-        return PerksOrderStatus.UNKNOWN;
-    }
-  }
-
-  private async findOwnedOrder(userId: string, orderNumber: string) {
-    if (!/^\d+$/.test(orderNumber)) {
-      throw new BadRequestException('Invalid order number');
-    }
-    const order = await this.orderModel.findOne({
-      userId: this.toObjectId(userId),
-      wmadOrderNumber: orderNumber,
-    });
-    if (!order) {
-      throw new NotFoundException('Perks order not found');
-    }
-    return order;
-  }
-
-  private mapWalletEntry(entry: Record<string, unknown>, gifted: boolean) {
-    const orderNumber = this.nullableString(entry.order_number);
-    const orderReference = this.nullableString(entry.order_reference);
-    const cardName = this.stringValue(entry.ecard_name);
-    const issuedAt =
-      this.nullableString(entry.ecard_issuedate) ??
-      this.nullableString(entry.card_senddate);
-    const cardKey = createHash('sha256')
-      .update(
-        [
-          gifted ? 'gifted' : 'owned',
-          orderNumber ?? '',
-          orderReference ?? '',
-          this.stringValue(entry.ecard_id),
-          cardName,
-          issuedAt ?? '',
-          this.stringValue(
-            entry.ecard_number ?? entry.card_number ?? entry.cardno,
-          ),
-        ].join('|'),
-      )
-      .digest('hex');
-    return {
-      cardKey,
-      gifted,
-      cardName,
-      value: this.numberValue(entry.ecard_value),
-      issuedAt,
-      expiresIn: this.nullableString(entry.ecard_expiry),
-      orderReference,
-      orderNumber,
-      orderStatus: this.mapOrderStatus(entry.order_status),
-      cardUrl: this.nullableString(entry.cardurl ?? entry.card_url),
-      cardNumber: this.nullableString(
-        entry.ecard_number ?? entry.card_number ?? entry.cardno,
-      ),
-      pin: this.nullableString(
-        entry.ecard_pin ?? entry.card_pin ?? entry.cardpin,
-      ),
-      barcode: this.nullableString(entry.ecard_barcode ?? entry.barcode),
-      balance: this.numberValue(entry.ecard_balance ?? entry.card_balance),
-      ...(gifted
-        ? {
-            recipientName: this.nullableString(entry.recipient_name),
-            recipientEmail: this.nullableString(entry.recipient_email),
-            cardOpenedAt: this.nullableString(entry.card_openip),
-            linkOpenedAt: this.nullableString(entry.card_linkopendate),
-          }
-        : {}),
-    };
   }
 
   private validateCardKey(cardKey: string) {
@@ -1727,168 +1291,22 @@ export class PerksService {
     return Number((cents / 100).toFixed(2));
   }
 
-  private cardImageUrl(value: unknown): string | null {
-    const filename = this.safeImageFilename(value);
-    return filename
-      ? `https://www.wemad.com.au/upload/ecards/${encodeURIComponent(filename)}`
-      : null;
-  }
-
-  private safeImageFilename(value: unknown): string | null {
-    const filename = this.nullableString(value);
-    if (
-      !filename ||
-      filename.includes('..') ||
-      !/^[A-Za-z0-9._-]+$/.test(filename)
-    ) {
-      return null;
-    }
-    return filename;
-  }
-
-  private parseCardValues(value: unknown): number[] {
-    return this.stringValue(value)
-      .split(',')
-      .map((part) => Number(part.trim()))
-      .filter((part) => Number.isFinite(part) && part > 0);
-  }
-
-  private arrayValue(value: unknown): Record<string, unknown>[] {
-    return Array.isArray(value)
-      ? value.filter(
-          (item): item is Record<string, unknown> =>
-            Boolean(item) && typeof item === 'object',
-        )
-      : [];
-  }
-
-  private stringArray(value: unknown): string[] {
-    return Array.isArray(value)
-      ? value.filter((item): item is string => typeof item === 'string')
-      : [];
-  }
-
-  private stringValue(value: unknown): string {
-    return value === null || value === undefined ? '' : String(value);
-  }
-
-  private nullableString(value: unknown): string | null {
-    const result = this.stringValue(value).trim();
-    return !result || result.toLowerCase() === 'null' ? null : result;
-  }
-
-  private toWmadPhoneNumber(value: unknown): string | null {
-    const digits = this.stringValue(value).replace(/\D+/g, '');
-    return digits.length >= 8 && digits.length <= 11 ? digits : null;
-  }
-
-  private toWmadGenderCode(value: unknown): WmadGenderCode | null {
-    switch (this.nullableString(value)?.toLowerCase()) {
-      case Gender.MALE:
-        return 0;
-      case Gender.FEMALE:
-        return 1;
-      case Gender.OTHER:
-        return 2;
-      default:
-        return null;
-    }
-  }
-
-  private numberValue(value: unknown): number | null {
-    const number = Number(value);
-    return Number.isFinite(number) ? number : null;
-  }
-
   private membershipResponse(membership: {
     wmadUserId?: string | null;
     status: PerksMembershipStatus;
     registeredAt?: Date | null;
+    plan?: PerksMembershipPlan;
+    cancelledAt?: Date | null;
+    accessEndsAt?: Date | null;
   }) {
     return {
       wmadUserId: membership.wmadUserId ?? null,
       status: membership.status,
       registeredAt: membership.registeredAt ?? null,
+      plan: membership.plan ?? PerksMembershipPlan.FREE,
+      cancelledAt: membership.cancelledAt ?? null,
+      accessEndsAt: membership.accessEndsAt ?? null,
     };
-  }
-
-  private orderResponse(order: {
-    orderReference: string;
-    wmadOrderNumber?: string | null;
-    status: PerksOrderStatus;
-    cardUrl?: string | null;
-    receiptUrl?: string | null;
-    currency?: string;
-    faceValueCents?: number;
-    purchasePriceCents?: number;
-    deliveryFeeCents?: number;
-    totalCents?: number;
-    completedAt?: Date | null;
-    lines?: Array<{
-      lineId: string;
-      ecardId: string;
-      ecardName: string;
-      ecardImageUrl?: string | null;
-      quantity: number;
-      discountBps: number;
-      faceValueCents: number;
-      purchasePriceCents: number;
-      deliveryFeeCents: number;
-      totalCents: number;
-      status: PerksOrderStatus;
-      orderReference: string;
-      wmadOrderNumber?: string | null;
-      cardUrl?: string | null;
-    }>;
-    createdAt?: Date;
-  }) {
-    return {
-      orderReference: order.orderReference,
-      orderNumber: order.wmadOrderNumber ?? null,
-      status: order.status,
-      cardUrl: order.cardUrl ?? null,
-      receiptUrl: order.receiptUrl ?? null,
-      currency: order.currency ?? 'AUD',
-      totals: {
-        faceValue: this.currency(order.faceValueCents ?? 0),
-        purchasePrice: this.currency(order.purchasePriceCents ?? 0),
-        deliveryFee: this.currency(order.deliveryFeeCents ?? 0),
-        total: this.currency(order.totalCents ?? 0),
-      },
-      lines: (order.lines ?? []).map((line) => ({
-        lineId: line.lineId,
-        ecardId: line.ecardId,
-        ecardName: line.ecardName,
-        ecardImageUrl: line.ecardImageUrl ?? null,
-        quantity: line.quantity,
-        discountPercent: line.discountBps / 100,
-        faceValue: this.currency(line.faceValueCents),
-        purchasePrice: this.currency(line.purchasePriceCents),
-        deliveryFee: this.currency(line.deliveryFeeCents),
-        total: this.currency(line.totalCents),
-        status: line.status,
-        orderReference: line.orderReference,
-        orderNumber: line.wmadOrderNumber ?? null,
-        cardUrl: line.cardUrl ?? null,
-      })),
-      createdAt: order.createdAt ?? null,
-      completedAt: order.completedAt ?? null,
-    };
-  }
-
-  private createOrderReference(userId: string): string {
-    const timestamp = Date.now().toString(36).toUpperCase();
-    const random = randomBytes(5).toString('hex').toUpperCase();
-    const user = userId.slice(-6).toUpperCase();
-    return `SV${timestamp}${user}${random}`;
-  }
-
-  private validateIdempotencyKey(value: string) {
-    if (!/^[A-Za-z0-9_-]{8,128}$/.test(value ?? '')) {
-      throw new BadRequestException(
-        'Idempotency-Key must be 8-128 letters, numbers, underscores, or hyphens',
-      );
-    }
   }
 
   private toObjectId(userId: string): Types.ObjectId {
@@ -1903,20 +1321,7 @@ export class PerksService {
       typeof error === 'object' &&
       error !== null &&
       'code' in error &&
-      error.code === 11000
-    );
-  }
-
-  private asApiError(error: unknown): PerksApiError {
-    if (error instanceof PerksApiError) {
-      return error;
-    }
-    return new PerksApiError(
-      'Unexpected WMAD integration error',
-      502,
-      'UNEXPECTED_UPSTREAM_ERROR',
-      false,
-      false,
+      (error as { code: unknown }).code === 11000
     );
   }
 
@@ -1924,11 +1329,23 @@ export class PerksService {
     try {
       return await operation();
     } catch (error) {
+      if (error instanceof HttpException) throw error;
       this.throwUpstream(this.asApiError(error));
     }
   }
 
-  private throwUpstream(error: PerksApiError, prefix?: string): never {
+  private asApiError(error: unknown): PerksCorpApiError {
+    if (error instanceof PerksCorpApiError) return error;
+    return new PerksCorpApiError(
+      'Unexpected WeMAD integration error',
+      502,
+      'UNEXPECTED_UPSTREAM_ERROR',
+      false,
+      false,
+    );
+  }
+
+  private throwUpstream(error: PerksCorpApiError, prefix?: string): never {
     const message = prefix ? `${prefix}: ${error.message}` : error.message;
     if (error.retryable) {
       throw new ServiceUnavailableException({

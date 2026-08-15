@@ -1,0 +1,373 @@
+import {
+  Injectable,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { createHmac } from 'crypto';
+
+/**
+ * Every corp response is wrapped in this envelope. `errors` is inconsistently
+ * typed upstream (sometimes a number, sometimes an object, sometimes absent).
+ */
+interface CorpEnvelope<T> {
+  success: boolean;
+  message?: unknown;
+  errors?: unknown;
+  data: T;
+}
+
+export interface CorpSession {
+  accessToken: string;
+  /** Single-use / short-lived. Only ever used for the hosted checkout redirect. */
+  webToken: string;
+  wmadUserId: string;
+}
+
+export interface CorpAutologinPayload {
+  email: string;
+  phone: string;
+  firstname: string;
+  lastname: string;
+  password: string;
+}
+
+export interface CorpCartLine {
+  gift_card_id: number | string;
+  amount: number;
+  purchase_type: 'self' | 'gift';
+  recipient_name?: string;
+  recipient_email?: string;
+  recipient_phone?: string;
+  message?: string;
+  gift_template_id?: number | string;
+  gift_template_design_id?: number | string;
+}
+
+export class PerksCorpApiError extends Error {
+  constructor(
+    message: string,
+    public readonly statusCode: number,
+    public readonly code: string,
+    public readonly retryable: boolean,
+    public readonly ambiguous: boolean,
+  ) {
+    super(message);
+    this.name = 'PerksCorpApiError';
+  }
+}
+
+/**
+ * Client for the Wemad "corp" API (sandbox.wemad.com.au/api/corp).
+ *
+ * Differs fundamentally from the legacy PerksApiClient: auth is per-END-USER,
+ * not a single shared merchant token. Each Saveful user maps to one Wemad user
+ * created/logged-in via /auth/autologin, and every cart/order/wallet call is
+ * scoped by that user's bearer token.
+ *
+ * This class is stateless — it knows nothing about Saveful users or token
+ * caching. PerksCorpSessionService owns that.
+ */
+@Injectable()
+export class PerksCorpApiClient {
+  private readonly logger = new Logger(PerksCorpApiClient.name);
+  private readonly baseUrl: string;
+  private readonly frontendUrl: string;
+  private readonly clientKey: string;
+  private readonly clientSecret: string;
+  private readonly siteId: string;
+  private readonly requestType: string;
+  private readonly timeoutMs: number;
+
+  constructor(private readonly config: ConfigService) {
+    this.baseUrl = this.config
+      .get<string>(
+        'WMAD_CORP_BASE_URL',
+        'https://sandbox.wemad.com.au/api/corp',
+      )
+      .replace(/\/+$/, '');
+    this.frontendUrl = this.config
+      .get<string>(
+        'WMAD_CORP_FRONTEND_URL',
+        'https://sandbox.wemad.com.au/frontend',
+      )
+      .replace(/\/+$/, '');
+    this.clientKey = this.config
+      .get<string>('WMAD_CORP_CLIENT_KEY', 'android_app')
+      .trim();
+    this.clientSecret = this.config
+      .get<string>('WMAD_CORP_CLIENT_SECRET', '')
+      .trim();
+    this.siteId = String(this.config.get<string>('WMAD_CORP_SITE_ID', '2')).trim();
+    this.requestType = this.config
+      .get<string>('WMAD_CORP_REQUEST_TYPE', 'CORP')
+      .trim();
+    this.timeoutMs = Number(
+      this.config.get<number>('WMAD_CORP_TIMEOUT_MS', 12_000),
+    );
+  }
+
+  /** Hosted checkout URL. The web token is single-use — always pass a fresh one. */
+  buildCheckoutUrl(webToken: string): string {
+    return `${this.frontendUrl}/sso/login?token=${encodeURIComponent(webToken)}`;
+  }
+
+  /**
+   * Creates the Wemad user on first call, authenticates on subsequent calls.
+   * The password is checked upstream every time, so callers must pass the same
+   * derived value for a given user (see PerksCredentialsService).
+   */
+  async autologin(payload: CorpAutologinPayload): Promise<CorpSession> {
+    const data = await this.request<{
+      access_token: string;
+      web_token: string;
+      user: { id: number | string };
+    }>('/auth/autologin', { method: 'POST', body: JSON.stringify(payload) });
+
+    if (!data?.access_token) {
+      throw new PerksCorpApiError(
+        'WeMAD login did not return an access token',
+        502,
+        'INVALID_AUTH_RESPONSE',
+        false,
+        false,
+      );
+    }
+
+    return {
+      accessToken: data.access_token,
+      webToken: data.web_token,
+      wmadUserId: String(data.user?.id ?? ''),
+    };
+  }
+
+  async changePassword(
+    accessToken: string,
+    currentPassword: string,
+    newPassword: string,
+  ): Promise<void> {
+    await this.request('/change-password', {
+      method: 'POST',
+      body: JSON.stringify({
+        password: currentPassword,
+        newpassword: newPassword,
+        newpassword_confirmation: newPassword,
+      }),
+    }, accessToken);
+  }
+
+  // ---------------------------------------------------------------- catalogue
+
+  /** Catalogue listing is POST (GET returns 405). Category is a body field. */
+  async listGiftCards(filters: {
+    paginate?: number;
+    page?: number;
+    category?: string | number;
+    search?: string;
+    redeemable?: string;
+  } = {}): Promise<Record<string, unknown>[]> {
+    const { page = 1, ...body } = filters;
+    const data = await this.request<Record<string, unknown>[]>(
+      `/gift-cards?page=${page}`,
+      { method: 'POST', body: JSON.stringify(body) },
+    );
+    return Array.isArray(data) ? data : [];
+  }
+
+  async getGiftCard(idOrSlug: string): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>(
+      `/gift-cards/${encodeURIComponent(idOrSlug)}`,
+      { method: 'GET' },
+    );
+  }
+
+  async getCategories(): Promise<Record<string, unknown>[]> {
+    const data = await this.request<{ categories?: Record<string, unknown>[] }>(
+      '/category',
+      { method: 'GET' },
+    );
+    return Array.isArray(data?.categories) ? data.categories : [];
+  }
+
+  // --------------------------------------------------------------------- cart
+
+  async getCart(accessToken: string): Promise<Record<string, unknown>[]> {
+    const data = await this.request<Record<string, unknown>[]>(
+      '/cart',
+      { method: 'GET' },
+      accessToken,
+    );
+    return Array.isArray(data) ? data : [];
+  }
+
+  /** One call == one cart row. There is no quantity field upstream. */
+  async addToCart(accessToken: string, line: CorpCartLine): Promise<void> {
+    await this.request(
+      '/cart/add',
+      { method: 'POST', body: JSON.stringify(line) },
+      accessToken,
+    );
+  }
+
+  async removeFromCart(
+    accessToken: string,
+    cartId: number | string,
+  ): Promise<void> {
+    await this.request(
+      '/cart/remove',
+      { method: 'POST', body: JSON.stringify({ cart_id: cartId }) },
+      accessToken,
+    );
+  }
+
+  // ----------------------------------------------------------- orders / wallet
+
+  async listOrders(accessToken: string): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>(
+      '/orders',
+      { method: 'GET' },
+      accessToken,
+    );
+  }
+
+  async getOrder(
+    accessToken: string,
+    orderId: string,
+  ): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>(
+      `/orders/${encodeURIComponent(orderId)}`,
+      { method: 'GET' },
+      accessToken,
+    );
+  }
+
+  async listMyGiftCards(accessToken: string): Promise<Record<string, unknown>[]> {
+    const data = await this.request<
+      { items?: Record<string, unknown>[] } | Record<string, unknown>[]
+    >('/my-gift-cards', { method: 'GET' }, accessToken);
+    if (Array.isArray(data)) return data;
+    return Array.isArray(data?.items) ? data.items : [];
+  }
+
+  // ------------------------------------------------------------------ plumbing
+
+  private signedHeaders(accessToken?: string): Record<string, string> {
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const signature = createHmac('sha256', this.clientSecret)
+      .update(`${this.siteId}|${this.clientKey}|${timestamp}`)
+      .digest('hex');
+
+    const headers: Record<string, string> = {
+      'X-CLIENT-KEY': this.clientKey,
+      'X-TIMESTAMP': timestamp,
+      'X-SIGNATURE': signature,
+      'X-SITE-ID': this.siteId,
+      'X-REQUEST-TYPE': this.requestType,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    };
+    if (accessToken) {
+      headers.Authorization = `Bearer ${accessToken}`;
+    }
+    return headers;
+  }
+
+  private async request<T>(
+    path: string,
+    init: RequestInit,
+    accessToken?: string,
+  ): Promise<T> {
+    if (!this.clientSecret) {
+      this.logger.error('WMAD_CORP_CLIENT_SECRET is not configured');
+      throw new ServiceUnavailableException(
+        'Perks integration is not configured',
+      );
+    }
+
+    const ambiguousOnFailure = init.method === 'POST';
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+
+    let httpStatus: number;
+    let raw: string;
+    try {
+      const response = await fetch(`${this.baseUrl}${path}`, {
+        ...init,
+        headers: this.signedHeaders(accessToken),
+        signal: controller.signal,
+      });
+      httpStatus = response.status;
+      raw = await response.text();
+    } catch (error) {
+      const timedOut = error instanceof Error && error.name === 'AbortError';
+      throw new PerksCorpApiError(
+        timedOut ? 'WeMAD request timed out' : 'WeMAD request failed',
+        503,
+        timedOut ? 'UPSTREAM_TIMEOUT' : 'UPSTREAM_UNAVAILABLE',
+        true,
+        ambiguousOnFailure,
+      );
+    } finally {
+      clearTimeout(timer);
+    }
+
+    // The sandbox returns raw Laravel HTML on unhandled exceptions (confirmed
+    // on duplicate-phone registration and the broken category route), so a
+    // parse failure here is an upstream fault, not a client bug.
+    let body: CorpEnvelope<T> | null = null;
+    if (raw) {
+      try {
+        body = JSON.parse(raw) as CorpEnvelope<T>;
+      } catch {
+        this.logger.warn(
+          `WeMAD returned non-JSON path=${path} status=${httpStatus}`,
+        );
+        throw new PerksCorpApiError(
+          httpStatus >= 500
+            ? 'WeMAD is currently unavailable. Please try again.'
+            : 'WeMAD returned an unreadable response',
+          httpStatus >= 500 ? 502 : httpStatus,
+          httpStatus >= 500 ? 'UPSTREAM_ERROR' : 'INVALID_RESPONSE',
+          httpStatus >= 500,
+          ambiguousOnFailure,
+        );
+      }
+    }
+
+    if (httpStatus >= 200 && httpStatus < 300 && body?.success !== false) {
+      return body?.data as T;
+    }
+
+    const message = this.extractMessage(body?.message);
+    const code = `WMAD_CORP_${httpStatus}`;
+    this.logger.warn(
+      `WeMAD rejected request path=${path} status=${httpStatus} message=${message}`,
+    );
+    throw new PerksCorpApiError(
+      message,
+      httpStatus || 502,
+      code,
+      httpStatus === 429 || httpStatus >= 500,
+      false,
+    );
+  }
+
+  private extractMessage(value: unknown): string {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    if (Array.isArray(value)) {
+      const parts = value.filter(
+        (part): part is string => typeof part === 'string' && part.trim().length > 0,
+      );
+      if (parts.length) return parts.join(', ');
+    }
+    if (
+      value &&
+      typeof value === 'object' &&
+      typeof (value as { message?: unknown }).message === 'string'
+    ) {
+      const nested = String((value as { message: string }).message).trim();
+      if (nested) return nested;
+    }
+    return 'WeMAD rejected the request';
+  }
+}

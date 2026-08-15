@@ -13,13 +13,13 @@ import {
   PerksFavouriteSchema,
 } from '../../database/schemas/perks-favourite.schema';
 import {
+  PerksMembershipEvent,
+  PerksMembershipEventSchema,
+} from '../../database/schemas/perks-membership-event.schema';
+import {
   PerksMembership,
   PerksMembershipSchema,
 } from '../../database/schemas/perks-membership.schema';
-import {
-  PerksOrder,
-  PerksOrderSchema,
-} from '../../database/schemas/perks-order.schema';
 import {
   PerksWalletMetadata,
   PerksWalletMetadataSchema,
@@ -29,7 +29,8 @@ import {
   HealthProfileSchema,
 } from '../../database/schemas/nutrition/health-profile.schema';
 import { User, UserSchema } from '../../database/schemas/user.auth.schema';
-import { PerksApiClient } from './perks-api-client';
+import { PerksCorpApiClient } from './corp/perks-corp-api.client';
+import { PerksCorpSessionService } from './corp/perks-corp-session.service';
 import { PerksController } from './perks.controller';
 import { PerksService } from './perks.service';
 
@@ -39,7 +40,7 @@ import { PerksService } from './perks.service';
       { name: User.name, schema: UserSchema },
       { name: HealthProfile.name, schema: HealthProfileSchema },
       { name: PerksMembership.name, schema: PerksMembershipSchema },
-      { name: PerksOrder.name, schema: PerksOrderSchema },
+      { name: PerksMembershipEvent.name, schema: PerksMembershipEventSchema },
       { name: PerksFavourite.name, schema: PerksFavouriteSchema },
       { name: PerksCart.name, schema: PerksCartSchema },
       { name: PerksWalletMetadata.name, schema: PerksWalletMetadataSchema },
@@ -50,7 +51,7 @@ import { PerksService } from './perks.service';
     ]),
   ],
   controllers: [PerksController],
-  providers: [PerksApiClient, PerksService],
+  providers: [PerksCorpApiClient, PerksCorpSessionService, PerksService],
   exports: [PerksService],
 })
 export class PerksModule {}

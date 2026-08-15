@@ -75,6 +75,30 @@ export class PerksWalletQueryDto {
   state: 'active' | 'archived' = 'active';
 }
 
+export class CancelPerksMembershipDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  reason?: string;
+}
+
+export class PerksGiftOptionsQueryDto {
+  /** Optional — templates are configured per site, so any card is representative. */
+  @IsOptional()
+  @IsString()
+  @Matches(/^\d+$/)
+  ecardId?: string;
+}
+
+export class PerksMembershipEventsQueryDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(200)
+  limit = 50;
+}
+
 export class AddPerksFavouriteDto {
   @IsString()
   @Matches(/^\d+$/)
