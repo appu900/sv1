@@ -1,35 +1,50 @@
-/**
- * RedisService configures ioredis with `maxRetriesPerRequest: null` plus the
- * default offline queue, so a command issued while Redis is unreachable never
- * settles — it queues indefinitely instead of rejecting (verified: a GET was
- * still pending after 8s against a black-holed host). A plain try/catch cannot
- * protect a request path from that; only a timeout can.
- *
- * Perks uses Redis purely as a cache, so every access is bounded here. If it
- * does not answer promptly the caller carries on without it — a slower request
- * beats a hung one.
- */
+
 export const CACHE_TIMEOUT_MS = 1500;
 
-/**
- * Runs a cache operation, resolving to `null` if it fails OR does not answer in
- * time. `null` means "cache unavailable", which callers treat as a miss.
- */
+const CIRCUIT_COOLDOWN_MS = 30_000;
+
+let circuitOpenedAt: number | null = null;
+
+const circuitIsOpen = () =>
+  circuitOpenedAt !== null && Date.now() - circuitOpenedAt < CIRCUIT_COOLDOWN_MS;
+
+export function resetCacheCircuit() {
+  circuitOpenedAt = null;
+}
+
+export function cacheCircuitIsOpen() {
+  return circuitIsOpen();
+}
+
 export async function cacheAttempt<T>(
   operation: () => Promise<T>,
   timeoutMs: number = CACHE_TIMEOUT_MS,
 ): Promise<T | null> {
+  if (circuitIsOpen()) return null;
+
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return await Promise.race([
+    const result = await Promise.race([
       operation(),
-      new Promise<null>((resolve) => {
-        timer = setTimeout(() => resolve(null), timeoutMs);
+      new Promise<typeof TIMED_OUT>((resolve) => {
+        timer = setTimeout(() => resolve(TIMED_OUT), timeoutMs);
       }),
     ]);
+
+    if (result === TIMED_OUT) {
+      circuitOpenedAt = Date.now();
+      return null;
+    }
+
+    // A healthy response closes the circuit again.
+    circuitOpenedAt = null;
+    return result as T;
   } catch {
+    circuitOpenedAt = Date.now();
     return null;
   } finally {
     if (timer) clearTimeout(timer);
   }
 }
+
+const TIMED_OUT = Symbol('cache-timeout');

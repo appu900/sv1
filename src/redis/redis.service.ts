@@ -5,16 +5,20 @@ import Redis, { RedisOptions } from 'ioredis';
 export class RedisService implements OnModuleDestroy {
   private readonly client: Redis;
   private readonly JOIN_CODE_SET_KEY = 'community:join_codes';
+  private hadError = false;
+  private errorCount = 0;
 
   constructor() {
     const options: RedisOptions = {
-      maxRetriesPerRequest: null,
-      enableReadyCheck: false, 
+      maxRetriesPerRequest: 2,
+      enableReadyCheck: false,
+      enableOfflineQueue: false,
+      connectTimeout: 10_000,
       retryStrategy: (attempt) => {
-        console.log(`Redis reconnect attempt #${attempt}`);
-        return Math.min(attempt * 200, 2000);
+        this.logReconnect(attempt);
+        return Math.min(attempt * 500, 30_000);
       },
-      tls: {}, 
+      tls: {},
       username: process.env.REDIS_USERNAME,
       password: process.env.REDIS_PASSWORD,
     };
@@ -33,12 +37,33 @@ export class RedisService implements OnModuleDestroy {
 
     this.setupEventHandlers();
   }
+
+  private logReconnect(attempt: number) {
+    if (attempt <= 3 || attempt % 50 === 0) {
+      console.warn(
+        `Redis: reconnect attempt #${attempt}${attempt > 3 ? ' (further attempts logged every 50th)' : ''}`,
+      );
+    }
+  }
+
   private setupEventHandlers() {
-    this.client.on('connect', () => console.log('Redis: connected'));
+    this.client.on('connect', () => {
+      if (this.hadError) console.log('Redis: reconnected');
+      this.hadError = false;
+      this.errorCount = 0;
+    });
     this.client.on('ready', () => console.log('Redis: ready'));
-    this.client.on('reconnecting', () => console.log('Redis: reconnecting...'));
     this.client.on('end', () => console.log('Redis: closed'));
-    this.client.on('error', (err) => console.error('Redis: error:', err));
+    this.client.on('error', (err) => {
+      this.errorCount += 1;
+      if (!this.hadError || this.errorCount % 50 === 0) {
+        console.error(
+          `Redis: error (${this.errorCount} since last healthy):`,
+          err?.message ?? err,
+        );
+      }
+      this.hadError = true;
+    });
   }
 
   async isHealthy(): Promise<boolean> {
@@ -158,7 +183,6 @@ async expire(key: string, ttlSeconds: number) {
     const oldVersion = await this.getVersion(baseKey)
     const newVersion = await this.incrementVersion(baseKey);
     await this.client.set(`${baseKey}:v${newVersion}`,JSON.stringify(value),'EX',ttlSeconds)
-    // Keep the version pointer alive at least as long as the data
     await this.client.expire(`${baseKey}:version`, ttlSeconds)
     return{oldVersion,newVersion}
   }
@@ -202,10 +226,8 @@ async expire(key: string, ttlSeconds: number) {
     await this.client.del(`auth:pending:${email}`);
   }
 
-  // Rate limiting for OTP requests
   async incrementOTPRequests(email: string, ttlSeconds: number = 3600): Promise<number> {
     const key = `auth:otp:rate:${email}`;
-    // Atomically INCR and set TTL only on first creation via Lua script
     const count = await this.client.eval(
       `local count = redis.call('INCR', KEYS[1])
        if count == 1 then
@@ -249,7 +271,6 @@ async expire(key: string, ttlSeconds: number) {
 
   async incrementResetAttempts(email: string): Promise<number> {
     const key = `auth:reset-attempts:${email}`;
-    // Atomically INCR and set TTL only on first creation via Lua script
     const count = await this.client.eval(
       `local count = redis.call('INCR', KEYS[1])
        if count == 1 then
