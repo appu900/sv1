@@ -6,10 +6,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { createHmac } from 'crypto';
 
-/**
- * Every corp response is wrapped in this envelope. `errors` is inconsistently
- * typed upstream (sometimes a number, sometimes an object, sometimes absent).
- */
+
 interface CorpEnvelope<T> {
   success: boolean;
   message?: unknown;
@@ -19,7 +16,6 @@ interface CorpEnvelope<T> {
 
 export interface CorpSession {
   accessToken: string;
-  /** Single-use / short-lived. Only ever used for the hosted checkout redirect. */
   webToken: string;
   wmadUserId: string;
 }
@@ -57,17 +53,6 @@ export class PerksCorpApiError extends Error {
   }
 }
 
-/**
- * Client for the Wemad "corp" API (sandbox.wemad.com.au/api/corp).
- *
- * Differs fundamentally from the legacy PerksApiClient: auth is per-END-USER,
- * not a single shared merchant token. Each Saveful user maps to one Wemad user
- * created/logged-in via /auth/autologin, and every cart/order/wallet call is
- * scoped by that user's bearer token.
- *
- * This class is stateless — it knows nothing about Saveful users or token
- * caching. PerksCorpSessionService owns that.
- */
 @Injectable()
 export class PerksCorpApiClient {
   private readonly logger = new Logger(PerksCorpApiClient.name);
@@ -107,16 +92,10 @@ export class PerksCorpApiClient {
     );
   }
 
-  /** Hosted checkout URL. The web token is single-use — always pass a fresh one. */
   buildCheckoutUrl(webToken: string): string {
     return `${this.frontendUrl}/sso/login?token=${encodeURIComponent(webToken)}`;
   }
 
-  /**
-   * Creates the Wemad user on first call, authenticates on subsequent calls.
-   * The password is checked upstream every time, so callers must pass the same
-   * derived value for a given user (see PerksCredentialsService).
-   */
   async autologin(payload: CorpAutologinPayload): Promise<CorpSession> {
     const data = await this.request<{
       access_token: string;
@@ -156,9 +135,6 @@ export class PerksCorpApiClient {
     }, accessToken);
   }
 
-  // ---------------------------------------------------------------- catalogue
-
-  /** Catalogue listing is POST (GET returns 405). Category is a body field. */
   async listGiftCards(filters: {
     paginate?: number;
     page?: number;
@@ -189,7 +165,6 @@ export class PerksCorpApiClient {
     return Array.isArray(data?.categories) ? data.categories : [];
   }
 
-  // --------------------------------------------------------------------- cart
 
   async getCart(accessToken: string): Promise<Record<string, unknown>[]> {
     const data = await this.request<Record<string, unknown>[]>(
@@ -200,7 +175,6 @@ export class PerksCorpApiClient {
     return Array.isArray(data) ? data : [];
   }
 
-  /** One call == one cart row. There is no quantity field upstream. */
   async addToCart(accessToken: string, line: CorpCartLine): Promise<void> {
     await this.request(
       '/cart/add',
@@ -219,8 +193,6 @@ export class PerksCorpApiClient {
       accessToken,
     );
   }
-
-  // ----------------------------------------------------------- orders / wallet
 
   async listOrders(accessToken: string): Promise<Record<string, unknown>> {
     return this.request<Record<string, unknown>>(
@@ -248,8 +220,6 @@ export class PerksCorpApiClient {
     if (Array.isArray(data)) return data;
     return Array.isArray(data?.items) ? data.items : [];
   }
-
-  // ------------------------------------------------------------------ plumbing
 
   private signedHeaders(accessToken?: string): Record<string, string> {
     const timestamp = Math.floor(Date.now() / 1000).toString();
@@ -311,9 +281,6 @@ export class PerksCorpApiClient {
       clearTimeout(timer);
     }
 
-    // The sandbox returns raw Laravel HTML on unhandled exceptions (confirmed
-    // on duplicate-phone registration and the broken category route), so a
-    // parse failure here is an upstream fault, not a client bug.
     let body: CorpEnvelope<T> | null = null;
     if (raw) {
       try {

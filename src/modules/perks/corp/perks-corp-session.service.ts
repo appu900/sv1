@@ -18,10 +18,7 @@ interface CachedCorpToken {
   wmadUserId: string;
 }
 
-/**
- * Owns the Saveful-user ↔ Wemad-user relationship: derives the per-user
- * credentials, performs autologin, and caches the resulting access token.
- */
+
 @Injectable()
 export class PerksCorpSessionService {
   private readonly logger = new Logger(PerksCorpSessionService.name);
@@ -41,13 +38,7 @@ export class PerksCorpSessionService {
     );
   }
 
-  /**
-   * Deterministic per-user password. WeMAD checks this on every autologin, so
-   * it must be reproducible for the lifetime of the membership — but we never
-   * persist it, which keeps sv1 free of reversible secret storage.
-   *
-   * Shape satisfies WeMAD's complexity rules (upper + lower + digit + symbol).
-   */
+ 
   derivePassword(userId: string, credentialVersion = 1): string {
     if (!this.credentialSecret) {
       this.logger.error('PERKS_CREDENTIAL_SECRET is not configured');
@@ -62,11 +53,6 @@ export class PerksCorpSessionService {
     return `Sv${digest.slice(0, 16)}@1`;
   }
 
-  /**
-   * Fields WeMAD requires that the Saveful profile may not have yet. The app
-   * renders these as chips in the registration modal, so the names here are a
-   * contract with the frontend (PerksMissingField in the app's types.ts).
-   */
   missingProfileFields(
     user: Pick<User, 'name' | 'pincode' | 'gender' | 'phoneNumber'>,
     fallbackGender?: Gender | null,
@@ -80,10 +66,6 @@ export class PerksCorpSessionService {
     return missing;
   }
 
-  /**
-   * Logs the user into WeMAD, creating the account on first call.
-   * Always returns a FRESH web token — it is single-use, so it is never cached.
-   */
   async login(
     userId: string,
     user: User,
@@ -117,10 +99,6 @@ export class PerksCorpSessionService {
     }
   }
 
-  /**
-   * Access token for API calls. Reuses the cached token when present; falls
-   * back to a full login. Use `login()` directly when you need a web token.
-   */
   async getAccessToken(
     userId: string,
     user: User,
@@ -132,10 +110,6 @@ export class PerksCorpSessionService {
     return session.accessToken;
   }
 
-  /**
-   * Runs an authenticated call, transparently re-logging-in once if the cached
-   * token has been revoked upstream.
-   */
   async withAccessToken<T>(
     userId: string,
     user: User,
@@ -154,12 +128,10 @@ export class PerksCorpSessionService {
   }
 
   async clearCachedToken(userId: string): Promise<void> {
-    // A failure here is harmless — the token expires on its own TTL.
     await cacheAttempt(() => this.redis.del(this.tokenKey(userId)));
   }
 
   private async cacheToken(userId: string, session: CorpSession) {
-    // Redis is optional here; a cache write failure must not fail the login.
     await cacheAttempt(() =>
       this.redis.set(
         this.tokenKey(userId),
@@ -170,7 +142,6 @@ export class PerksCorpSessionService {
   }
 
   private async readCachedToken(userId: string): Promise<CachedCorpToken | null> {
-    // Bounded: an unreachable Redis must cost one login, not a hung request.
     return cacheAttempt(() =>
       this.redis.get<CachedCorpToken>(this.tokenKey(userId)),
     );
@@ -189,11 +160,6 @@ export class PerksCorpSessionService {
     return digits.length >= 8 && digits.length <= 11 ? digits : null;
   }
 
-  /**
-   * WeMAD returns an unhandled 500 when a phone number is already attached to a
-   * different account, and a 400 when the password does not match an existing
-   * account. Both are dead ends for the user unless we say which field to fix.
-   */
   private explainLoginFailure(
     error: unknown,
     user: User,

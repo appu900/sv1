@@ -36,7 +36,6 @@ export async function cacheAttempt<T>(
       return null;
     }
 
-    // A healthy response closes the circuit again.
     circuitOpenedAt = null;
     return result as T;
   } catch {

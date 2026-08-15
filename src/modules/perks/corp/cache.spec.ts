@@ -40,7 +40,6 @@ describe('cacheAttempt', () => {
     const started = Date.now();
     await expect(cacheAttempt(operation, 5000)).resolves.toBeNull();
 
-    // Skipped entirely — never even calls Redis.
     expect(operation).not.toHaveBeenCalled();
     expect(Date.now() - started).toBeLessThan(100);
   });
@@ -49,7 +48,7 @@ describe('cacheAttempt', () => {
     await cacheAttempt(hang, 50);
     expect(cacheCircuitIsOpen()).toBe(true);
 
-    resetCacheCircuit(); // stand-in for the cooldown elapsing
+    resetCacheCircuit(); 
     await expect(cacheAttempt(async () => 'back')).resolves.toBe('back');
     expect(cacheCircuitIsOpen()).toBe(false);
   });

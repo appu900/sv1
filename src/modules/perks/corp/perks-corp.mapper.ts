@@ -5,10 +5,8 @@ const CARD_IMAGE_BASE = 'https://sandbox.wemad.com.au/storage';
 export interface CatalogueCard {
   id: string;
   name: string;
-  /** Leaf category slug, e.g. "groceries", "department-store". */
   category: string | null;
   categoryName: string | null;
-  /** Top-level group slug, e.g. "food-drink", "shop". Used for browse tiles. */
   categoryGroup: string | null;
   categoryGroupName: string | null;
   discountPercent: number;
@@ -16,7 +14,6 @@ export interface CatalogueCard {
   imageUrl: string | null;
   priceType: string;
   availableValues: number[];
-  /** True when availableValues are a suggested ladder, not fixed denominations. */
   variablePrice: boolean;
   minAmount: number | null;
   maxAmount: number | null;
@@ -92,18 +89,10 @@ export function resolveAvailableValues(
     .sort((left, right) => left - right);
 }
 
-/** Amounts offered when a card has no fixed denominations. */
 const LADDER = [10, 20, 25, 50, 75, 100, 150, 200, 250, 300, 500, 1000];
 const DEFAULT_MIN = 10;
 const DEFAULT_MAX = 500;
 
-/**
- * Most sandbox cards expose no denominations at all, and the ones marked
- * `variable` give only min/max — yet WeMAD's cart accepts ANY amount without
- * validating it (confirmed live: a $100-max card accepted $999, and a
- * fixed-denomination card accepted an off-denomination $77). So we build a
- * usable ladder here and enforce the bounds ourselves; upstream will not.
- */
 export function resolvePricing(card: Record<string, unknown>): {
   priceType: string;
   availableValues: number[];
@@ -129,7 +118,6 @@ export function resolvePricing(card: Record<string, unknown>): {
   const min = num(providerProduct.min_amount) ?? DEFAULT_MIN;
   const max = num(providerProduct.max_amount) ?? DEFAULT_MAX;
   const bounded = LADDER.filter((value) => value >= min && value <= max);
-  // Always offer the exact bounds so the extremes stay reachable.
   const values = Array.from(new Set([min, ...bounded, max]))
     .filter((value) => value > 0)
     .sort((left, right) => left - right);
@@ -143,19 +131,8 @@ export function resolvePricing(card: Record<string, unknown>): {
   };
 }
 
-/**
- * Corp cards carry both their top-level group ("Shop") and the leaf beneath it
- * ("Department Stores") in one flat array, distinguished by parent_id. The leaf
- * is the precise label; the group is what makes a sensible browse tile.
- */
 export type CategoryParentIndex = Map<string, { slug: string; name: string }>;
 
-/**
- * leaf slug/id -> its top-level group, built from GET /category. Some cards are
- * tagged only with a child category and omit its parent, so without this they
- * would each become their own browse tile ("Accommodation" sitting beside
- * "Travel & Exp" rather than inside it).
- */
 export function buildCategoryParentIndex(
   tree: ReturnType<typeof mapCategoryTree>,
 ): CategoryParentIndex {
@@ -195,9 +172,6 @@ export function resolveCategories(
     inlineParent ??
     categories[0];
   const leafSlug = nullableStr(leaf.slug);
-
-  // Prefer the parent the card carries; else look the leaf up in the tree;
-  // else the leaf is genuinely top-level and is its own group.
   const fromIndex =
     !inlineParent && parentIndex
       ? parentIndex.get(leafSlug ?? '') ?? parentIndex.get(str(leaf.id))
@@ -219,13 +193,10 @@ export function resolveCategories(
     categoryGroupName: group.name,
   };
 }
-
-/** Leaf slug only — kept for callers that just need the precise category. */
 export function resolveCategory(card: Record<string, unknown>): string | null {
   return resolveCategories(card).category;
 }
 
-/** Flattens the corp category tree into the shape the app browses. */
 export function mapCategoryTree(categories: Record<string, unknown>[]) {
   return categories.map((parent) => ({
     id: str(parent.id),
@@ -324,8 +295,6 @@ export function mapOrder(order: Record<string, unknown>) {
       purchasePrice: Math.max(0, faceValueCents - toCents(item.discount)) / 100,
       deliveryFee: deliveryFeeCents / 100,
       total: totalCents / 100,
-      // Real corp field. Always 0.00 in sandbox today, but wired so it becomes
-      // live the moment WeMAD starts populating it.
       cashback: num(item.cashback) ?? 0,
       status: mapOrderStatus(item.status),
       orderReference: str(order.order_reference),
@@ -349,7 +318,6 @@ export function mapOrder(order: Record<string, unknown>) {
       ) / 100,
       deliveryFee: num(order.delivery_fee) ?? 0,
       total: num(order.grand_total) ?? 0,
-      // What the member actually saved off face value on this order.
       savings: (num(order.discount_amount) ?? 0),
       cashback: num(order.cashback_amount) ?? 0,
     },

@@ -83,7 +83,6 @@ export class CancelPerksMembershipDto {
 }
 
 export class PerksGiftOptionsQueryDto {
-  /** Optional — templates are configured per site, so any card is representative. */
   @IsOptional()
   @IsString()
   @Matches(/^\d+$/)

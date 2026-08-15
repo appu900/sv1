@@ -140,8 +140,6 @@ describe('perks corp mapper', () => {
     });
 
     it('still offers usable amounts when the card has no provider product', () => {
-      // ~96% of sandbox cards look like this; without a ladder the app's value
-      // picker would render nothing and the card could not be bought.
       const pricing = resolvePricing({ id: 5, name: 'BigW' });
       expect(pricing.availableValues.length).toBeGreaterThan(0);
       expect(pricing.variablePrice).toBe(true);
@@ -199,8 +197,6 @@ describe('perks corp mapper', () => {
       });
     });
 
-    // Many cards omit the parent; without the tree each leaf became its own
-    // browse tile ("Accommodation" beside "Travel & Exp" instead of inside it).
     it('resolves a leaf-only card to its real group via the tree', () => {
       const card = {
         categories: [
