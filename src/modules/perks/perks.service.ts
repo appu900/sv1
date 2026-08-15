@@ -677,11 +677,17 @@ export class PerksService {
 
   private async fetchOrders(userId: string) {
     const { user, membership } = await this.requireActiveMembership(userId);
-    const payload = await this.session.withAccessToken(
-      userId,
-      user,
-      (token) => this.callUpstream(() => this.api.listOrders(token)),
-      { credentialVersion: membership.credentialVersion ?? 1 },
+    // callUpstream must wrap the OUTSIDE of withAccessToken: it converts
+    // PerksCorpApiError into HttpException, and withAccessToken's 401 retry
+    // tests for PerksCorpApiError. Nested the other way the retry never fires
+    // and a stale token 401s until its cache entry expires.
+    const payload = await this.callUpstream(() =>
+      this.session.withAccessToken(
+        userId,
+        user,
+        (token) => this.api.listOrders(token),
+        { credentialVersion: membership.credentialVersion ?? 1 },
+      ),
     );
 
     const raw = (payload?.orders as Record<string, unknown>)?.data ?? payload;
@@ -699,11 +705,13 @@ export class PerksService {
     const { user, membership } = await this.requireActiveMembership(userId);
     const objectId = this.toObjectId(userId);
 
-    const entries = await this.session.withAccessToken(
-      userId,
-      user,
-      (token) => this.callUpstream(() => this.api.listMyGiftCards(token)),
-      { credentialVersion: membership.credentialVersion ?? 1 },
+    const entries = await this.callUpstream(() =>
+      this.session.withAccessToken(
+        userId,
+        user,
+        (token) => this.api.listMyGiftCards(token),
+        { credentialVersion: membership.credentialVersion ?? 1 },
+      ),
     );
 
     const mapped = entries.map((entry) => mapWalletCard(entry));

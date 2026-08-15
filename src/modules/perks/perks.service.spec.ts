@@ -6,6 +6,7 @@ import {
 } from '../../database/schemas/perks-membership.schema';
 import { PerksCartStatus } from '../../database/schemas/perks-cart.schema';
 import { PerksSpendFrequency } from './dto/perks.dto';
+import { PerksCorpApiError } from './corp/perks-corp-api.client';
 import { PerksService } from './perks.service';
 
 const userId = new Types.ObjectId().toString();
@@ -728,6 +729,83 @@ describe('PerksService (corp)', () => {
       await expect(service.getOrder(userId, 'nope')).rejects.toThrow(
         /not found/i,
       );
+    });
+  });
+
+  // Production bug: callUpstream (which converts PerksCorpApiError into
+  // HttpException) was nested INSIDE withAccessToken, whose retry tests for
+  // PerksCorpApiError. The 401 refresh therefore never fired and a stale
+  // cached token failed for its full 6h TTL — the app showed WeMAD's
+  // "Unauthenticated" on Orders and Wallet.
+  describe('expired upstream token', () => {
+    const expiredThenOk = (method: 'listOrders' | 'listMyGiftCards', ok: unknown) => {
+      let calls = 0;
+      return jest.fn(async () => {
+        calls += 1;
+        if (calls === 1) {
+          throw new PerksCorpApiError('Unauthenticated', 401, 'INVALID_TOKEN', false, false);
+        }
+        return ok;
+      });
+    };
+
+    /** Mirrors the real service: refresh the token once, then replay. */
+    const retryingSession = () => ({
+      withAccessToken: jest.fn(
+        async (_u: string, _user: unknown, run: (t: string) => Promise<unknown>) => {
+          try {
+            return await run('stale-token');
+          } catch (error) {
+            if (
+              error instanceof PerksCorpApiError &&
+              error.statusCode === 401
+            ) {
+              return run('fresh-token');
+            }
+            throw error;
+          }
+        },
+      ),
+    });
+
+    it('refreshes the token and retries orders', async () => {
+      const listOrders = expiredThenOk('listOrders', { orders: { data: [] } });
+      const { service } = createService({
+        api: { listOrders },
+        session: retryingSession(),
+      });
+
+      await expect(
+        service.listOrders(userId, { limit: 20, offset: 0 } as never),
+      ).resolves.toMatchObject({ total: 0 });
+      expect(listOrders).toHaveBeenCalledTimes(2);
+      expect(listOrders).toHaveBeenNthCalledWith(1, 'stale-token');
+      expect(listOrders).toHaveBeenNthCalledWith(2, 'fresh-token');
+    });
+
+    it('refreshes the token and retries the wallet', async () => {
+      const listMyGiftCards = expiredThenOk('listMyGiftCards', []);
+      const { service } = createService({
+        api: { listMyGiftCards },
+        session: retryingSession(),
+      });
+
+      await expect(service.getWallet(userId, false, 'active')).resolves.toEqual([]);
+      expect(listMyGiftCards).toHaveBeenCalledTimes(2);
+    });
+
+    it('surfaces a 401 that survives the retry', async () => {
+      const alwaysExpired = jest.fn(async () => {
+        throw new PerksCorpApiError('Unauthenticated', 401, 'INVALID_TOKEN', false, false);
+      });
+      const { service } = createService({
+        api: { listOrders: alwaysExpired },
+        session: retryingSession(),
+      });
+
+      await expect(
+        service.listOrders(userId, { limit: 20, offset: 0 } as never),
+      ).rejects.toMatchObject({ status: 401 });
     });
   });
 

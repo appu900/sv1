@@ -1,4 +1,9 @@
-import { Injectable, Logger, UnprocessableEntityException } from '@nestjs/common';
+import {
+  HttpException,
+  Injectable,
+  Logger,
+  UnprocessableEntityException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHmac } from 'crypto';
 import { Gender } from '../../../database/schemas/nutrition/health-profile.schema';
@@ -151,8 +156,15 @@ export class PerksCorpSessionService {
     return `perks:corp:token:${userId}`;
   }
 
+  /**
+   * Also accepts an already-converted HttpException so the retry still works if
+   * a caller wraps the upstream call in error translation — getting that
+   * nesting wrong previously disabled token refresh silently.
+   */
   private isUnauthorised(error: unknown) {
-    return error instanceof PerksCorpApiError && error.statusCode === 401;
+    if (error instanceof PerksCorpApiError) return error.statusCode === 401;
+    if (error instanceof HttpException) return error.getStatus() === 401;
+    return false;
   }
 
   private normalisePhone(value: unknown): string | null {
