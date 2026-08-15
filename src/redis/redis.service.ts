@@ -1,8 +1,9 @@
-import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import Redis, { RedisOptions } from 'ioredis';
 
 @Injectable()
 export class RedisService implements OnModuleDestroy {
+  private readonly logger = new Logger(RedisService.name);
   private readonly client: Redis;
   private readonly JOIN_CODE_SET_KEY = 'community:join_codes';
   private hadError = false;
@@ -40,7 +41,7 @@ export class RedisService implements OnModuleDestroy {
 
   private logReconnect(attempt: number) {
     if (attempt <= 3 || attempt % 50 === 0) {
-      console.warn(
+      this.logger.warn(
         `Redis: reconnect attempt #${attempt}${attempt > 3 ? ' (further attempts logged every 50th)' : ''}`,
       );
     }
@@ -48,18 +49,19 @@ export class RedisService implements OnModuleDestroy {
 
   private setupEventHandlers() {
     this.client.on('connect', () => {
-      if (this.hadError) console.log('Redis: reconnected');
+      if (this.hadError) this.logger.log('Redis: reconnected');
       this.hadError = false;
       this.errorCount = 0;
     });
-    this.client.on('ready', () => console.log('Redis: ready'));
-    this.client.on('end', () => console.log('Redis: closed'));
+    this.client.on('ready', () =>
+      this.logger.log('Redis connection established'),
+    );
+    this.client.on('end', () => this.logger.log('Redis: closed'));
     this.client.on('error', (err) => {
       this.errorCount += 1;
       if (!this.hadError || this.errorCount % 50 === 0) {
-        console.error(
-          `Redis: error (${this.errorCount} since last healthy):`,
-          err?.message ?? err,
+        this.logger.error(
+          `Redis: error (${this.errorCount} since last healthy): ${err?.message ?? err}`,
         );
       }
       this.hadError = true;
