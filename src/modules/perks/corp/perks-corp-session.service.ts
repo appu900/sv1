@@ -4,6 +4,7 @@ import { createHmac } from 'crypto';
 import { Gender } from '../../../database/schemas/nutrition/health-profile.schema';
 import { User } from '../../../database/schemas/user.auth.schema';
 import { RedisService } from '../../../redis/redis.service';
+import { cacheAttempt } from './cache';
 import {
   CorpSession,
   PerksCorpApiClient,
@@ -153,31 +154,26 @@ export class PerksCorpSessionService {
   }
 
   async clearCachedToken(userId: string): Promise<void> {
-    try {
-      await this.redis.del(this.tokenKey(userId));
-    } catch {
-      // A cache miss on logout is harmless — the token simply expires.
-    }
+    // A failure here is harmless — the token expires on its own TTL.
+    await cacheAttempt(() => this.redis.del(this.tokenKey(userId)));
   }
 
   private async cacheToken(userId: string, session: CorpSession) {
-    try {
-      await this.redis.set(
+    // Redis is optional here; a cache write failure must not fail the login.
+    await cacheAttempt(() =>
+      this.redis.set(
         this.tokenKey(userId),
         { accessToken: session.accessToken, wmadUserId: session.wmadUserId },
         this.tokenTtlSeconds,
-      );
-    } catch {
-      // Redis is optional here; a cache write failure must not fail the login.
-    }
+      ),
+    );
   }
 
   private async readCachedToken(userId: string): Promise<CachedCorpToken | null> {
-    try {
-      return await this.redis.get<CachedCorpToken>(this.tokenKey(userId));
-    } catch {
-      return null;
-    }
+    // Bounded: an unreachable Redis must cost one login, not a hung request.
+    return cacheAttempt(() =>
+      this.redis.get<CachedCorpToken>(this.tokenKey(userId)),
+    );
   }
 
   private tokenKey(userId: string) {

@@ -49,6 +49,7 @@ import {
 } from '../../database/schemas/perks-wallet-metadata.schema';
 import { User, UserDocument } from '../../database/schemas/user.auth.schema';
 import { RedisService } from '../../redis/redis.service';
+import { cacheAttempt } from './corp/cache';
 import {
   PerksCorpApiClient,
   PerksCorpApiError,
@@ -79,10 +80,6 @@ import {
 
 export type { CatalogueCard } from './corp/perks-corp.mapper';
 
-/**
- * Bump whenever the CatalogueCard shape changes — cached entries are written
- * by the previous mapper and would otherwise be served until the TTL expires.
- */
 const CATALOGUE_CACHE_VERSION = 'v2';
 
 export const PERKS_CATEGORIES = [
@@ -97,7 +94,6 @@ export const PERKS_CATEGORIES = [
   { key: 'travel', name: 'Travel & Accommodation', discountBps: 1000 },
 ] as const;
 
-/** Older calculator keys that still resolve to the canonical set. */
 const PERKS_CATEGORY_ALIASES: Record<string, string> = {
   grocery: 'groceries',
   petrol: 'fuel',
@@ -305,7 +301,6 @@ export class PerksService {
     }
 
     const { user, fallbackGender } = await this.loadUserProfile(objectId);
-    // Re-authenticate so a resumed member is provably still valid upstream.
     const session = await this.session.login(userId, user, {
       credentialVersion: membership.credentialVersion ?? 1,
       fallbackGender,
@@ -336,7 +331,6 @@ export class PerksService {
     }));
   }
 
-  // ----------------------------------------------------------------- catalogue
 
   async getEcards(userId: string) {
     this.toObjectId(userId);
@@ -374,21 +368,15 @@ export class PerksService {
     );
   }
 
-  /**
-   * Card detail comes from the dedicated endpoint because only that response
-   * carries provider_product.available_denominations (the listing omits it).
-   */
   async getCatalogueCard(ecardId: string) {
     if (!/^\d+$/.test(ecardId)) {
       throw new BadRequestException('Invalid ecard ID');
     }
     const cacheKey = `perks:corp:card:${CATALOGUE_CACHE_VERSION}:${ecardId}`;
-    try {
-      const cached = await this.redis.get<CatalogueCard>(cacheKey);
-      if (cached) return cached;
-    } catch {
-      // Detail stays available when Redis is down.
-    }
+    const cached = await cacheAttempt(() =>
+      this.redis.get<CatalogueCard>(cacheKey),
+    );
+    if (cached) return cached;
 
     const detail = await this.callUpstream(() => this.api.getGiftCard(ecardId));
     const giftCard = (detail?.gift_card ?? detail) as Record<string, unknown>;
@@ -397,20 +385,11 @@ export class PerksService {
     }
     const card = mapCatalogueCard(giftCard, this.discountTier());
 
-    try {
-      await this.redis.set(cacheKey, card, this.catalogueTtl());
-    } catch {
-      // Cache write failures must not fail a successful upstream response.
-    }
+    await cacheAttempt(() => this.redis.set(cacheKey, card, this.catalogueTtl()));
     return card;
   }
 
-  /**
-   * Gift templates are per-card upstream, but the app asks for them globally
-   * (CardDetailScreen calls this with no arguments). Templates are configured
-   * per site rather than per card, so any card's detail response is
-   * representative — use the requested card when given, else the first one.
-   */
+
   async getGiftOptions(userId: string, ecardId?: string) {
     await this.requireActiveMembership(userId);
 
@@ -433,7 +412,6 @@ export class PerksService {
     };
   }
 
-  // ---------------------------------------------------------------- favourites
 
   async getFavourites(userId: string) {
     const objectId = this.toObjectId(userId);
@@ -577,14 +555,7 @@ export class PerksService {
     });
   }
 
-  // ------------------------------------------------------------------ checkout
 
-  /**
-   * WeMAD owns payment and issuance. We mirror the local cart into their cart,
-   * mint a FRESH single-use web token, and hand the app a hosted checkout URL.
-   * No order is created here — orders appear via listOrders once WeMAD has
-   * taken payment.
-   */
   async checkoutCart(userId: string) {
     const { user, membership } = await this.requireActiveMembership(userId);
     const cart = await this.getOrCreateActiveCart(userId);
@@ -618,11 +589,6 @@ export class PerksService {
     };
   }
 
-  /**
-   * Replaces the upstream cart with the local one. Cleared first so an
-   * abandoned checkout never leaves stale rows behind, and expanded per unit
-   * because the corp cart has no quantity concept — one row per card.
-   */
   private async syncCartUpstream(accessToken: string, items: CartLikeItem[]) {
     const existing = await this.callUpstream(() =>
       this.api.getCart(accessToken),
@@ -654,7 +620,6 @@ export class PerksService {
     }
   }
 
-  // ------------------------------------------------------------------- orders
 
   async listOrders(userId: string, query: PerksOrderListQueryDto) {
     const orders = await this.fetchOrders(userId);
@@ -684,10 +649,7 @@ export class PerksService {
     return { ...order, upstream: { cardUrl: order.cardUrl } };
   }
 
-  /**
-   * WeMAD's corp API has no tax-receipt endpoint. The route is retained so the
-   * app's existing "Receipt unavailable" path fires instead of erroring.
-   */
+
   async getTaxReceipt(userId: string, orderNumber: string) {
     await this.requireActiveMembership(userId);
     return { orderNumber, receiptUrl: null as string | null };
@@ -802,8 +764,6 @@ export class PerksService {
     return { cardKey, hidden: true };
   }
 
-  // ---------------------------------------------------------------- dashboard
-
   async getDashboard(userId: string) {
     const objectId = this.toObjectId(userId);
     const [membership, favouriteCount, cart, calculator] = await Promise.all([
@@ -819,8 +779,7 @@ export class PerksService {
       membership?.status === PerksMembershipStatus.ACTIVE &&
       !this.isLegacyMembership(membership);
 
-    // Orders live upstream now; the dashboard must still render if WeMAD is
-    // slow or down, so a failure here degrades to an empty list.
+ 
     let recentOrders: Awaited<ReturnType<PerksService['fetchOrders']>> = [];
     if (activeMember) {
       try {
@@ -940,18 +899,13 @@ export class PerksService {
     };
   }
 
-  /**
-   * Single gate for every member-only action. Mirrors the app's
-   * `usePerksMembership()` check so the server can't be bypassed.
-   */
+
   private async requireActiveMembership(userId: string) {
     const objectId = this.toObjectId(userId);
     const membership = await this.membershipModel
       .findOne({ userId: objectId })
       .lean();
 
-    // Legacy records are treated as absent — they have no corp account behind
-    // them, so letting them transact would fail confusingly downstream.
     const usable =
       membership &&
       membership.status === PerksMembershipStatus.ACTIVE &&
@@ -1012,12 +966,11 @@ export class PerksService {
 
   private async getCachedCatalogue(): Promise<CatalogueCard[]> {
     const cacheKey = `perks:corp:catalogue:${CATALOGUE_CACHE_VERSION}`;
-    try {
-      const cached = await this.redis.get<CatalogueCard[]>(cacheKey);
-      if (cached) return cached;
-    } catch {
-      // Catalogue remains available if Redis is temporarily unavailable.
-    }
+    // Bounded: a stalled cache must not stall the catalogue.
+    const cached = await cacheAttempt(() =>
+      this.redis.get<CatalogueCard[]>(cacheKey),
+    );
+    if (cached) return cached;
 
     if (this.catalogueRefreshPromise) return this.catalogueRefreshPromise;
 
@@ -1036,14 +989,12 @@ export class PerksService {
     const lockKey = `${cacheKey}:lock`;
     const lockToken = randomUUID();
     const lockTtlSeconds = 15;
-    let hasLock = false;
+    const acquired = await cacheAttempt(() =>
+      this.redis.setIfAbsent(lockKey, lockToken, lockTtlSeconds),
+    );
+    if (acquired === null) return this.fetchAndCacheCatalogue(cacheKey);
 
-    try {
-      hasLock = await this.redis.setIfAbsent(lockKey, lockToken, lockTtlSeconds);
-    } catch {
-      return this.fetchAndCacheCatalogue(cacheKey);
-    }
-
+    let hasLock = acquired;
     if (!hasLock) {
       const waitMs = this.positiveConfigNumber(
         'PERKS_CATALOGUE_LOCK_WAIT_MS',
@@ -1052,17 +1003,17 @@ export class PerksService {
       const deadline = Date.now() + waitMs;
       while (Date.now() < deadline) {
         await this.delay(Math.min(250, Math.max(1, deadline - Date.now())));
-        try {
-          const cached = await this.redis.get<CatalogueCard[]>(cacheKey);
-          if (cached) return cached;
-          hasLock = await this.redis.setIfAbsent(
-            lockKey,
-            lockToken,
-            lockTtlSeconds,
-          );
-          if (hasLock) break;
-        } catch {
-          return this.fetchAndCacheCatalogue(cacheKey);
+        const cached = await cacheAttempt(() =>
+          this.redis.get<CatalogueCard[]>(cacheKey),
+        );
+        if (cached) return cached;
+        const retry = await cacheAttempt(() =>
+          this.redis.setIfAbsent(lockKey, lockToken, lockTtlSeconds),
+        );
+        if (retry === null) return this.fetchAndCacheCatalogue(cacheKey);
+        if (retry) {
+          hasLock = true;
+          break;
         }
       }
     }
@@ -1071,11 +1022,7 @@ export class PerksService {
       return await this.fetchAndCacheCatalogue(cacheKey);
     } finally {
       if (hasLock) {
-        try {
-          await this.redis.releaseLock(lockKey, lockToken);
-        } catch {
-          // Short TTL makes release failures self-healing.
-        }
+        await cacheAttempt(() => this.redis.releaseLock(lockKey, lockToken));
       }
     }
   }
@@ -1092,11 +1039,8 @@ export class PerksService {
       .map((card) => mapCatalogueCard(card, tier))
       .filter((card) => Boolean(card.id && card.name));
 
-    try {
-      await this.redis.set(cacheKey, cards, this.catalogueTtl());
-    } catch {
-      // A cache write failure must not fail a successful upstream response.
-    }
+    // A cache write failure must not fail a successful upstream response.
+    await cacheAttempt(() => this.redis.set(cacheKey, cards, this.catalogueTtl()));
     return cards;
   }
 
@@ -1169,12 +1113,6 @@ export class PerksService {
   private async buildCartQuote(cart: { items: CartLikeItem[] }) {
     const items = await Promise.all(
       cart.items.map(async (item) => {
-        // Always price against the DETAIL card, never the listing. Listing
-        // payloads carry no provider_product, so their pricing is a generic
-        // fallback ladder — validating against it would disagree with
-        // addCartItem and could strand a legitimately-added item that the
-        // looser/narrower ladder happens to exclude. Detail is Redis-cached
-        // per card, so repeat lines cost nothing.
         const card = await this.getCatalogueCard(item.ecardId);
         this.assertCardValue(card, this.currency(item.faceValueCents));
         return this.quoteLine(item, card);
@@ -1225,12 +1163,7 @@ export class PerksService {
     };
   }
 
-  /**
-   * The only place card values are validated. WeMAD's cart accepts ANY amount
-   * (confirmed live: a $100-max card took $999, and a fixed-denomination card
-   * took an off-denomination $77), so if this passes, nothing downstream will
-   * catch a bad value.
-   */
+
   private assertCardValue(card: CatalogueCard, value: number) {
     if (!Number.isFinite(value) || value <= 0) {
       throw new UnprocessableEntityException(

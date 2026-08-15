@@ -160,6 +160,7 @@ function createService(overrides: Record<string, unknown> = {}) {
   Object.assign(membershipModel, overrides.membershipModel);
   Object.assign(cartModel, overrides.cartModel);
   Object.assign(walletMetadataModel, overrides.walletMetadataModel);
+  Object.assign(redis, overrides.redis);
   Object.assign(config, overrides.config);
 
   return {
@@ -225,6 +226,52 @@ describe('PerksService (corp)', () => {
       await expect(service.getCatalogueCard('../secrets')).rejects.toThrow();
       expect(api.getGiftCard).not.toHaveBeenCalled();
     });
+  });
+
+  describe('when Redis is unreachable (commands hang, never reject)', () => {
+    const hangingRedis = () => ({
+      redis: {
+        get: jest.fn(() => new Promise(() => {})),
+        set: jest.fn(() => new Promise(() => {})),
+        del: jest.fn(() => new Promise(() => {})),
+        setIfAbsent: jest.fn(() => new Promise(() => {})),
+        releaseLock: jest.fn(() => new Promise(() => {})),
+      },
+    });
+
+    it('still serves the catalogue instead of hanging', async () => {
+      const { service, api } = createService(hangingRedis());
+      const cards = await service.getCatalogue({});
+      expect(cards).toHaveLength(1);
+      expect(api.listGiftCards).toHaveBeenCalled();
+    }, 15000);
+
+    it('still serves card detail', async () => {
+      const { service } = createService(hangingRedis());
+      await expect(service.getCatalogueCard('1')).resolves.toMatchObject({
+        id: '1',
+      });
+    }, 15000);
+
+    it('still completes checkout', async () => {
+      const cart = cartDoc([
+        {
+          itemId: 'a',
+          ecardId: '1',
+          quantity: 1,
+          faceValueCents: 5000,
+          sendAsGift: false,
+          gift: null,
+        },
+      ]);
+      const { service } = createService({
+        ...hangingRedis(),
+        cartModel: { findOne: jest.fn(() => cart), updateOne: jest.fn() },
+      });
+      await expect(service.checkoutCart(userId)).resolves.toMatchObject({
+        status: 'redirect',
+      });
+    }, 15000);
   });
 
   describe('membership', () => {
@@ -344,7 +391,7 @@ describe('PerksService (corp)', () => {
       const result = await service.ensureMembership(userId);
       expect(session.login).toHaveBeenCalled();
       expect(result.status).toBe(PerksMembershipStatus.ACTIVE);
-      expect(result.wmadUserId).toBe('119'); // corp id replaces the legacy one
+      expect(result.wmadUserId).toBe('119'); 
     });
 
     it('blocks transacting until re-registered', async () => {
@@ -738,14 +785,12 @@ describe('PerksService (corp)', () => {
         },
       });
 
-      // Archived card moves out of active and into archived.
       await expect(service.getWallet(userId, false, 'active')).resolves.toEqual(
         [],
       );
       const archived = await service.getWallet(userId, false, 'archived');
       expect(archived.map((c) => c.cardName)).toEqual(['Coles']);
 
-      // Hidden card is gone from both states.
       expect(archived.some((c) => c.cardName === 'Kmart')).toBe(false);
     });
 
@@ -770,7 +815,6 @@ describe('PerksService (corp)', () => {
           },
         ],
       });
-      // $100/wk × 52 = $5,200 × 4.5% = $234
       expect(result.totals.annual).toBe(234);
     });
 
