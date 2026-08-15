@@ -5,7 +5,12 @@ const CARD_IMAGE_BASE = 'https://sandbox.wemad.com.au/storage';
 export interface CatalogueCard {
   id: string;
   name: string;
+  /** Leaf category slug, e.g. "groceries", "department-store". */
   category: string | null;
+  categoryName: string | null;
+  /** Top-level group slug, e.g. "food-drink", "shop". Used for browse tiles. */
+  categoryGroup: string | null;
+  categoryGroupName: string | null;
   discountPercent: number;
   imageFilename: string | null;
   imageUrl: string | null;
@@ -138,17 +143,108 @@ export function resolvePricing(card: Record<string, unknown>): {
   };
 }
 
-export function resolveCategory(card: Record<string, unknown>): string | null {
+/**
+ * Corp cards carry both their top-level group ("Shop") and the leaf beneath it
+ * ("Department Stores") in one flat array, distinguished by parent_id. The leaf
+ * is the precise label; the group is what makes a sensible browse tile.
+ */
+export type CategoryParentIndex = Map<string, { slug: string; name: string }>;
+
+/**
+ * leaf slug/id -> its top-level group, built from GET /category. Some cards are
+ * tagged only with a child category and omit its parent, so without this they
+ * would each become their own browse tile ("Accommodation" sitting beside
+ * "Travel & Exp" rather than inside it).
+ */
+export function buildCategoryParentIndex(
+  tree: ReturnType<typeof mapCategoryTree>,
+): CategoryParentIndex {
+  const index: CategoryParentIndex = new Map();
+  for (const group of tree) {
+    const parent = { slug: group.slug, name: group.name };
+    for (const child of group.children) {
+      index.set(child.slug, parent);
+      index.set(child.id, parent);
+    }
+  }
+  return index;
+}
+
+export function resolveCategories(
+  card: Record<string, unknown>,
+  parentIndex?: CategoryParentIndex,
+): {
+  category: string | null;
+  categoryName: string | null;
+  categoryGroup: string | null;
+  categoryGroupName: string | null;
+} {
   const categories = arr(card.categories);
-  if (!categories.length) return null;
+  if (!categories.length) {
+    return {
+      category: null,
+      categoryName: null,
+      categoryGroup: null,
+      categoryGroupName: null,
+    };
+  }
+
+  const inlineParent = categories.find((entry) => entry.parent_id === null);
   const leaf =
-    categories.find((category) => category.parent_id !== null) ?? categories[0];
-  return nullableStr(leaf.slug) ?? nullableStr(leaf.name);
+    categories.find((entry) => entry.parent_id !== null) ??
+    inlineParent ??
+    categories[0];
+  const leafSlug = nullableStr(leaf.slug);
+
+  // Prefer the parent the card carries; else look the leaf up in the tree;
+  // else the leaf is genuinely top-level and is its own group.
+  const fromIndex =
+    !inlineParent && parentIndex
+      ? parentIndex.get(leafSlug ?? '') ?? parentIndex.get(str(leaf.id))
+      : undefined;
+
+  const group = inlineParent
+    ? {
+        slug: nullableStr(inlineParent.slug) ?? nullableStr(inlineParent.name),
+        name: nullableStr(inlineParent.name),
+      }
+    : fromIndex
+      ? { slug: fromIndex.slug, name: fromIndex.name }
+      : { slug: leafSlug ?? nullableStr(leaf.name), name: nullableStr(leaf.name) };
+
+  return {
+    category: leafSlug ?? nullableStr(leaf.name),
+    categoryName: nullableStr(leaf.name),
+    categoryGroup: group.slug,
+    categoryGroupName: group.name,
+  };
+}
+
+/** Leaf slug only — kept for callers that just need the precise category. */
+export function resolveCategory(card: Record<string, unknown>): string | null {
+  return resolveCategories(card).category;
+}
+
+/** Flattens the corp category tree into the shape the app browses. */
+export function mapCategoryTree(categories: Record<string, unknown>[]) {
+  return categories.map((parent) => ({
+    id: str(parent.id),
+    slug: nullableStr(parent.slug) ?? str(parent.id),
+    name: str(parent.name),
+    imageUrl: resolveImageUrl(parent.image),
+    children: arr(parent.children).map((child) => ({
+      id: str(child.id),
+      slug: nullableStr(child.slug) ?? str(child.id),
+      name: str(child.name),
+      imageUrl: resolveImageUrl(child.image),
+    })),
+  }));
 }
 
 export function mapCatalogueCard(
   card: Record<string, unknown>,
   tier?: string,
+  parentIndex?: CategoryParentIndex,
 ): CatalogueCard {
   const discountPercent = resolveDiscountPercent(card, tier);
   const isPopular = num(card.is_popular) ?? 0;
@@ -156,7 +252,7 @@ export function mapCatalogueCard(
   return {
     id: str(card.id),
     name: str(card.name).trim(),
-    category: resolveCategory(card),
+    ...resolveCategories(card, parentIndex),
     discountPercent,
     imageFilename: nullableStr(card.image),
     imageUrl: resolveImageUrl(card.image),
@@ -228,6 +324,9 @@ export function mapOrder(order: Record<string, unknown>) {
       purchasePrice: Math.max(0, faceValueCents - toCents(item.discount)) / 100,
       deliveryFee: deliveryFeeCents / 100,
       total: totalCents / 100,
+      // Real corp field. Always 0.00 in sandbox today, but wired so it becomes
+      // live the moment WeMAD starts populating it.
+      cashback: num(item.cashback) ?? 0,
       status: mapOrderStatus(item.status),
       orderReference: str(order.order_reference),
       orderNumber: nullableStr(order.order_number),
@@ -250,6 +349,9 @@ export function mapOrder(order: Record<string, unknown>) {
       ) / 100,
       deliveryFee: num(order.delivery_fee) ?? 0,
       total: num(order.grand_total) ?? 0,
+      // What the member actually saved off face value on this order.
+      savings: (num(order.discount_amount) ?? 0),
+      cashback: num(order.cashback_amount) ?? 0,
     },
     lines,
     createdAt: nullableStr(order.created_at),

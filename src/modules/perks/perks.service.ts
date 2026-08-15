@@ -58,7 +58,9 @@ import { PerksCorpSessionService } from './corp/perks-corp-session.service';
 import {
   CatalogueCard,
   DEFAULT_DISCOUNT_TIER,
+  buildCategoryParentIndex,
   mapCatalogueCard,
+  mapCategoryTree,
   mapGiftTemplates,
   mapOrder,
   mapWalletCard,
@@ -80,7 +82,7 @@ import {
 
 export type { CatalogueCard } from './corp/perks-corp.mapper';
 
-const CATALOGUE_CACHE_VERSION = 'v2';
+const CATALOGUE_CACHE_VERSION = 'v4';
 
 export const PERKS_CATEGORIES = [
   { key: 'groceries', name: 'Groceries', discountBps: 450 },
@@ -366,6 +368,24 @@ export class PerksService {
     return cards.map(
       ({ description: _description, terms: _terms, ...card }) => card,
     );
+  }
+
+  /**
+   * The real WeMAD category tree (7 groups, ~50 leaves). The app previously
+   * guessed categories from card names against a hardcoded list of 7; this is
+   * the authoritative taxonomy instead.
+   */
+  async getCategories() {
+    const cacheKey = `perks:corp:categories:${CATALOGUE_CACHE_VERSION}`;
+    const cached = await cacheAttempt(() =>
+      this.redis.get<ReturnType<typeof mapCategoryTree>>(cacheKey),
+    );
+    if (cached) return cached;
+
+    const raw = await this.callUpstream(() => this.api.getCategories());
+    const tree = mapCategoryTree(raw).filter((group) => group.name);
+    await cacheAttempt(() => this.redis.set(cacheKey, tree, this.catalogueTtl()));
+    return tree;
   }
 
   async getCatalogueCard(ecardId: string) {
@@ -780,16 +800,22 @@ export class PerksService {
       !this.isLegacyMembership(membership);
 
  
-    let recentOrders: Awaited<ReturnType<PerksService['fetchOrders']>> = [];
+    // Orders live upstream now; the dashboard must still render if WeMAD is
+    // slow or down, so a failure here degrades to empty totals.
+    let allOrders: Awaited<ReturnType<PerksService['fetchOrders']>> = [];
     if (activeMember) {
       try {
-        recentOrders = (await this.fetchOrders(userId)).slice(0, 5);
+        allOrders = await this.fetchOrders(userId);
       } catch (error) {
         this.logger.warn(
           `Perks dashboard could not load orders: ${(error as Error).message}`,
         );
       }
     }
+    const recentOrders = allOrders.slice(0, 5);
+    // Computed across EVERY order, not just the 5 shown, so the headline
+    // figures mean "lifetime" rather than "recent".
+    const savings = this.summariseSavings(allOrders);
 
     return {
       membership:
@@ -799,6 +825,7 @@ export class PerksService {
       favouriteCount,
       cart: cart ? this.cartResponse(cart) : null,
       recentOrders,
+      savings,
       latestCalculator: calculator
         ? {
             inputs: calculator.inputs,
@@ -879,6 +906,33 @@ export class PerksService {
       inputs: profile.inputs,
       result: profile.result,
       calculatedAt: profile.calculatedAt,
+    };
+  }
+
+  /**
+   * Headline money figures for the dashboard, derived from real order data:
+   * savings is face value minus what was actually paid; cashback is WeMAD's
+   * own per-order field (present in their model, currently always 0.00).
+   */
+  private summariseSavings(
+    orders: Awaited<ReturnType<PerksService['fetchOrders']>>,
+  ) {
+    let giftCardSavingsCents = 0;
+    let cashbackBalanceCents = 0;
+
+    for (const order of orders) {
+      // Refunded orders never delivered value, so they must not inflate totals.
+      if (order.status === 'refunded' || order.status === 'failed') continue;
+      const faceCents = Math.round((order.totals.faceValue ?? 0) * 100);
+      const paidCents = Math.round((order.totals.purchasePrice ?? 0) * 100);
+      giftCardSavingsCents += Math.max(0, faceCents - paidCents);
+      cashbackBalanceCents += Math.round((order.totals.cashback ?? 0) * 100);
+    }
+
+    return {
+      giftCardSavings: this.currency(giftCardSavingsCents),
+      cashbackBalance: this.currency(cashbackBalanceCents),
+      orderCount: orders.length,
     };
   }
 
@@ -1034,9 +1088,21 @@ export class PerksService {
     const raw = await this.callUpstream(() =>
       this.api.listGiftCards({ paginate }),
     );
+    // The tree lets a card tagged only with a leaf resolve to its real parent
+    // group, so browse tiles match WeMAD's own taxonomy. Non-fatal: without it
+    // such cards simply group under themselves.
+    let parentIndex: ReturnType<typeof buildCategoryParentIndex> | undefined;
+    try {
+      parentIndex = buildCategoryParentIndex(await this.getCategories());
+    } catch (error) {
+      this.logger.warn(
+        `Perks catalogue could not load categories: ${(error as Error).message}`,
+      );
+    }
+
     const tier = this.discountTier();
     const cards = raw
-      .map((card) => mapCatalogueCard(card, tier))
+      .map((card) => mapCatalogueCard(card, tier, parentIndex))
       .filter((card) => Boolean(card.id && card.name));
 
     // A cache write failure must not fail a successful upstream response.

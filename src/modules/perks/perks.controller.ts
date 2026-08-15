@@ -84,6 +84,12 @@ export class PerksController {
     return this.success(await this.perksService.getCatalogue(query));
   }
 
+  /** Real WeMAD category tree — replaces the app's hardcoded guesswork. */
+  @Get('categories')
+  async getCategories() {
+    return this.success(await this.perksService.getCategories());
+  }
+
   @Get('catalogue/:ecardId')
   async getCatalogueCard(@Param('ecardId') ecardId: string) {
     return this.success(await this.perksService.getCatalogueCard(ecardId));

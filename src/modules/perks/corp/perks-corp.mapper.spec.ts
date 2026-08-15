@@ -1,5 +1,8 @@
 import {
+  buildCategoryParentIndex,
   mapCatalogueCard,
+  mapCategoryTree,
+  resolveCategories,
   mapGiftTemplates,
   mapOrder,
   mapOrderStatus,
@@ -169,6 +172,66 @@ describe('perks corp mapper', () => {
     });
   });
 
+  describe('resolveCategories (browse grouping)', () => {
+    const tree = mapCategoryTree([
+      {
+        id: 43, slug: 'travel-and-exp-', name: 'Travel & Exp',
+        children: [{ id: 16, slug: 'accommodation', name: 'Accommodation' }],
+      },
+      {
+        id: 40, slug: 'shop', name: 'Shop',
+        children: [{ id: 5, slug: 'department-store', name: 'Department Stores' }],
+      },
+    ]);
+    const index = buildCategoryParentIndex(tree);
+
+    it('uses the parent the card carries inline', () => {
+      const result = resolveCategories({
+        categories: [
+          { id: 40, parent_id: null, slug: 'shop', name: 'Shop' },
+          { id: 5, parent_id: 40, slug: 'department-store', name: 'Department Stores' },
+        ],
+      });
+      expect(result).toMatchObject({
+        category: 'department-store',
+        categoryGroup: 'shop',
+        categoryGroupName: 'Shop',
+      });
+    });
+
+    // Many cards omit the parent; without the tree each leaf became its own
+    // browse tile ("Accommodation" beside "Travel & Exp" instead of inside it).
+    it('resolves a leaf-only card to its real group via the tree', () => {
+      const card = {
+        categories: [
+          { id: 16, parent_id: 43, slug: 'accommodation', name: 'Accommodation' },
+        ],
+      };
+      expect(resolveCategories(card).categoryGroup).toBe('accommodation');
+      expect(resolveCategories(card, index)).toMatchObject({
+        category: 'accommodation',
+        categoryGroup: 'travel-and-exp-',
+        categoryGroupName: 'Travel & Exp',
+      });
+    });
+
+    it('treats a genuinely top-level category as its own group', () => {
+      expect(
+        resolveCategories(
+          { categories: [{ id: 40, parent_id: null, slug: 'shop', name: 'Shop' }] },
+          index,
+        ),
+      ).toMatchObject({ category: 'shop', categoryGroup: 'shop' });
+    });
+
+    it('returns nulls for an uncategorised card', () => {
+      expect(resolveCategories({ categories: [] }, index)).toMatchObject({
+        category: null,
+        categoryGroup: null,
+      });
+    });
+  });
+
   describe('mapCatalogueCard', () => {
     const card = {
       id: 1,
@@ -301,6 +364,8 @@ describe('perks corp mapper', () => {
         purchasePrice: 320,
         deliveryFee: 3,
         total: 323,
+        savings: 30,
+        cashback: 0,
       });
       expect(mapped.lines).toHaveLength(1);
       expect(mapped.lines[0]).toMatchObject({
