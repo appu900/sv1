@@ -27,14 +27,14 @@ export const createWinstonLogger = () => {
     }),
   ];
 
-  // Only add OpenTelemetry transport if provider is available
-  try {
-    transports.push(
-      new OpenTelemetryTransportV3()
-    );
-    console.log('✓ OpenTelemetry transport added to Winston');
-  } catch (error) {
-    console.error('✗ Failed to add OpenTelemetry transport:', error);
+  // OTEL log shipping is opt-in — no collector/file sink unless we turn it on.
+  if (process.env.OTEL_LOGS_ENABLED === 'true') {
+    try {
+      transports.push(new OpenTelemetryTransportV3());
+      console.log('✓ OpenTelemetry transport added to Winston');
+    } catch (error) {
+      console.error('✗ Failed to add OpenTelemetry transport:', error);
+    }
   }
 
   return winston.createLogger({

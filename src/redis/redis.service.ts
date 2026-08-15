@@ -53,9 +53,10 @@ export class RedisService implements OnModuleDestroy {
       this.hadError = false;
       this.errorCount = 0;
     });
-    this.client.on('ready', () =>
-      this.logger.log('Redis connection established'),
-    );
+    this.client.on('ready', () => {
+      console.log('[RedisService] Redis connection established');
+      this.logger.log('Redis connection established');
+    });
     this.client.on('end', () => this.logger.log('Redis: closed'));
     this.client.on('error', (err) => {
       this.errorCount += 1;
