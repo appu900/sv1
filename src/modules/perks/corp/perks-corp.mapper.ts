@@ -255,44 +255,74 @@ export function mapGiftTemplates(detail: Record<string, unknown>) {
 }
 
 
+/**
+ * Corp uses free-text statuses across orders, items and payments. Anything
+ * unrecognised falls back to 'processing' rather than 'unknown': an order that
+ * exists has been placed, and showing a customer "unknown" is alarming and
+ * tells them nothing actionable.
+ */
 export function mapOrderStatus(value: unknown): string {
-  switch (str(value).toLowerCase()) {
+  const raw = str(value).toLowerCase().trim();
+  if (!raw) return 'processing';
+  switch (raw) {
     case 'completed':
     case 'complete':
     case 'sent':
+    case 'delivered':
+    case 'success':
+    case 'paid':
       return 'completed';
     case 'processing':
     case 'pending':
+    case 'in_progress':
+    case 'awaiting':
       return 'processing';
     case 'refunded':
     case 'cancelled':
     case 'canceled':
+    case 'reversed':
       return 'refunded';
     case 'failed':
+    case 'declined':
+    case 'error':
       return 'failed';
     default:
-      return 'unknown';
+      return 'processing';
   }
 }
 
 const toCents = (value: unknown): number =>
   Math.round((num(value) ?? 0) * 100);
 
-export function mapOrder(order: Record<string, unknown>) {
+export type OrderCardLookup = Map<
+  string,
+  { name: string; imageUrl: string | null }
+>;
+
+export function mapOrder(
+  order: Record<string, unknown>,
+  cards?: OrderCardLookup,
+) {
   const items = arr(order.order_item);
   const lines = items.map((item) => {
     const faceValueCents = toCents(item.amount);
     const deliveryFeeCents = toCents(item.delivery_fees);
     const totalCents = toCents(item.total_amount);
+    const ecardId = str(item.gift_card_id);
+    const catalogue = cards?.get(ecardId);
     return {
       lineId: str(item.id),
-      ecardId: str(item.gift_card_id),
-      ecardName: str(item.gift_card_name ?? item.name),
-      ecardImageUrl: resolveImageUrl(item.image),
+      ecardId,
+      ecardName:
+        nullableStr(item.gift_card_name ?? item.name) ??
+        catalogue?.name ??
+        'Gift card',
+      ecardImageUrl: resolveImageUrl(item.image) ?? catalogue?.imageUrl ?? null,
       quantity: 1,
       discountPercent: num(item.discount_percentage) ?? 0,
       faceValue: (num(item.amount) ?? 0),
       purchasePrice: Math.max(0, faceValueCents - toCents(item.discount)) / 100,
+      discount: num(item.discount) ?? 0,
       deliveryFee: deliveryFeeCents / 100,
       total: totalCents / 100,
       cashback: num(item.cashback) ?? 0,
@@ -300,6 +330,11 @@ export function mapOrder(order: Record<string, unknown>) {
       orderReference: str(order.order_reference),
       orderNumber: nullableStr(order.order_number),
       cardUrl: nullableStr(item.card_url ?? item.cardurl),
+      purchaseType: str(item.purchase_type) || 'self',
+      recipientName: nullableStr(item.recipient_name),
+      recipientEmail: nullableStr(item.recipient_email),
+      giftMessage: nullableStr(item.gift_message),
+      sendAt: nullableStr(item.send_at),
     };
   });
 
@@ -324,6 +359,23 @@ export function mapOrder(order: Record<string, unknown>) {
     lines,
     createdAt: nullableStr(order.created_at),
     completedAt: null as string | null,
+    /**
+     * WeMAD exposes no invoice/receipt endpoint (every candidate route 404s),
+     * so we surface their payment breakdown and render the receipt ourselves.
+     */
+    payment: {
+      status: nullableStr(order.payment_status),
+      method: nullableStr(order.payment_method),
+      surcharge: num(order.payment_surcharge) ?? 0,
+      paid: num(order.paid_amount) ?? 0,
+      due: num(order.due_amount) ?? 0,
+      totalPaid: num(order.total_paid) ?? 0,
+      walletAmount: num(order.wallet_amount) ?? 0,
+      couponAmount: num(order.coupon_amount) ?? 0,
+      discountType: nullableStr(order.discount_type),
+    },
+    source: nullableStr(order.order_source ?? order.platform),
+    notes: nullableStr(order.notes),
   };
 }
 

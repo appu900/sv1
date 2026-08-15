@@ -64,6 +64,7 @@ import {
   mapGiftTemplates,
   mapOrder,
   mapWalletCard,
+  OrderCardLookup,
   nullableStr,
   str,
 } from './corp/perks-corp.mapper';
@@ -692,7 +693,27 @@ export class PerksService {
 
     const raw = (payload?.orders as Record<string, unknown>)?.data ?? payload;
     const list = Array.isArray(raw) ? raw : [];
-    return list.map((order) => mapOrder(order as Record<string, unknown>));
+    if (!list.length) return [];
+
+    // Order items reference a gift card by id only, so join the catalogue to
+    // give each line a name and image. Degrades to a placeholder if the
+    // catalogue is unavailable — an order list is more useful than an error.
+    let cards: OrderCardLookup | undefined;
+    try {
+      const catalogue = await this.getCachedCatalogue();
+      cards = new Map(
+        catalogue.map((card) => [
+          card.id,
+          { name: card.name, imageUrl: card.imageUrl },
+        ]),
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Perks orders could not enrich lines: ${(error as Error).message}`,
+      );
+    }
+
+    return list.map((order) => mapOrder(order as Record<string, unknown>, cards));
   }
 
   // ------------------------------------------------------------------- wallet

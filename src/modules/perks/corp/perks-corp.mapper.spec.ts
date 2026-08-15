@@ -319,7 +319,12 @@ describe('perks corp mapper', () => {
       ['refunded', 'refunded'],
       ['cancelled', 'refunded'],
       ['failed', 'failed'],
-      ['something-else', 'unknown'],
+      ['delivered', 'completed'],
+      ['declined', 'failed'],
+      // An order that exists has been placed — "unknown" alarms customers and
+      // tells them nothing, so anything unrecognised reads as processing.
+      ['something-else', 'processing'],
+      ['', 'processing'],
     ])('maps %s → %s', (input, expected) => {
       expect(mapOrderStatus(input)).toBe(expected);
     });
