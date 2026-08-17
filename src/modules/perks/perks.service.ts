@@ -4,6 +4,7 @@ import {
   ConflictException,
   ForbiddenException,
   HttpException,
+  HttpStatus,
   Injectable,
   Logger,
   NotFoundException,
@@ -54,6 +55,7 @@ import {
   PerksCorpApiClient,
   PerksCorpApiError,
 } from './corp/perks-corp-api.client';
+import { PerksBillingService } from './billing/perks-billing.service';
 import { PerksCorpSessionService } from './corp/perks-corp-session.service';
 import {
   CatalogueCard,
@@ -152,6 +154,7 @@ export class PerksService {
     private readonly calculatorProfileModel: Model<PerksCalculatorProfileDocument>,
     private readonly api: PerksCorpApiClient,
     private readonly session: PerksCorpSessionService,
+    private readonly billing: PerksBillingService,
     private readonly redis: RedisService,
     private readonly config: ConfigService,
   ) {}
@@ -169,12 +172,13 @@ export class PerksService {
     if (!user) {
       throw new NotFoundException('Saveful user not found');
     }
-    const status =
-      membership && !this.isLegacyMembership(membership)
-        ? this.membershipResponse(membership)
-        : this.notRegisteredResponse();
+    const usable = membership && !this.isLegacyMembership(membership);
+    const status = usable
+      ? this.membershipResponse(membership)
+      : this.notRegisteredResponse();
     return {
       ...status,
+      billing: this.billing.describe(user, usable ? membership : null),
       missingFields: this.session.missingProfileFields(
         user,
         (healthProfile?.gender as Gender | undefined) ?? null,
@@ -188,6 +192,22 @@ export class PerksService {
     const existing = await this.membershipModel.findOne({ userId: objectId });
     const legacy = existing ? this.isLegacyMembership(existing) : false;
 
+    const { user, fallbackGender } = await this.loadUserProfile(objectId);
+
+    // Money before WeMAD: an unentitled user gets sent to checkout instead of
+    // being registered upstream for a membership they have not paid for. This
+    // is checked before the ACTIVE short-circuit below, so a lapsed member is
+    // asked to renew rather than being told they are still active.
+    if (this.billing.entitlementFor(user, existing).paymentRequired) {
+      throw new HttpException(
+        {
+          message: 'Perks membership requires payment to continue.',
+          code: 'PERKS_PAYMENT_REQUIRED',
+        },
+        HttpStatus.PAYMENT_REQUIRED,
+      );
+    }
+
     if (existing?.status === PerksMembershipStatus.ACTIVE && !legacy) {
       return this.membershipResponse(existing.toObject());
     }
@@ -198,8 +218,6 @@ export class PerksService {
         code: 'PERKS_MEMBERSHIP_CANCELLED',
       });
     }
-
-    const { user, fallbackGender } = await this.loadUserProfile(objectId);
 
     const membership =
       existing ??
@@ -222,6 +240,54 @@ export class PerksService {
           return concurrent;
         }));
 
+    return this.registerUpstream(userId, membership, user, fallbackGender);
+  }
+
+  /**
+   * Called by the Stripe webhook once payment lands, so a member returns to a
+   * usable membership instead of having to tap Join again. Failures here are
+   * recorded and swallowed by the caller — the payment already succeeded, and
+   * the app retries registration on its next `ensureMembership`.
+   */
+  async completeRegistrationAfterPayment(userId: string) {
+    const objectId = this.toObjectId(userId);
+    const membership = await this.membershipModel.findOne({ userId: objectId });
+    if (!membership) {
+      throw new NotFoundException('Perks membership not found');
+    }
+    if (membership.status === PerksMembershipStatus.ACTIVE) {
+      // Still inside the paid period with a pending cancellation: call off the
+      // cancellation at Stripe rather than treating this as a fresh join.
+      const resumed = await this.billing.resumeSubscription(userId);
+      if (resumed) {
+        await this.recordEvent(objectId, PerksMembershipEventType.RESUMED, null);
+        return this.membershipResponse(resumed.toObject());
+      }
+      return this.membershipResponse(membership.toObject());
+    }
+
+    const { user, fallbackGender } = await this.loadUserProfile(objectId);
+
+    // Resuming after the subscription is gone means paying again.
+    if (this.billing.entitlementFor(user, membership).paymentRequired) {
+      throw new HttpException(
+        {
+          message: 'Perks membership requires payment to continue.',
+          code: 'PERKS_PAYMENT_REQUIRED',
+        },
+        HttpStatus.PAYMENT_REQUIRED,
+      );
+    }
+    return this.registerUpstream(userId, membership, user, fallbackGender);
+  }
+
+  private async registerUpstream(
+    userId: string,
+    membership: PerksMembershipDocument,
+    user: User,
+    fallbackGender: Gender | null,
+  ) {
+    const objectId = this.toObjectId(userId);
     try {
       const session = await this.session.login(userId, user, {
         credentialVersion: membership.credentialVersion ?? 1,
@@ -268,9 +334,23 @@ export class PerksService {
       return this.membershipResponse(membership.toObject());
     }
 
+    const reason = dto?.reason?.trim() || null;
+
+    // A paying member keeps what they paid for: Stripe stops the renewal and
+    // access runs to the end of the period, rather than being cut off today.
+    const scheduled = await this.billing.scheduleCancellation(userId, reason);
+    if (scheduled) {
+      await this.recordEvent(objectId, PerksMembershipEventType.CANCELLED, {
+        reason,
+        accessEndsAt: scheduled.accessEndsAt,
+        immediate: false,
+      });
+      return this.membershipResponse(scheduled.toObject());
+    }
+
     membership.status = PerksMembershipStatus.CANCELLED;
     membership.cancelledAt = new Date();
-    membership.cancellationReason = dto?.reason?.trim() || null;
+    membership.cancellationReason = reason;
     await membership.save();
 
     await this.session.clearCachedToken(userId);
@@ -278,6 +358,7 @@ export class PerksService {
 
     await this.recordEvent(objectId, PerksMembershipEventType.CANCELLED, {
       reason: membership.cancellationReason,
+      immediate: true,
     });
     return this.membershipResponse(membership.toObject());
   }
@@ -980,6 +1061,14 @@ export class PerksService {
     }
 
     const { user } = await this.loadUserProfile(objectId);
+    if (!this.billing.entitlementFor(user, membership).entitled) {
+      throw new ForbiddenException({
+        message: 'Your Perks membership has ended. Renew it to continue.',
+        code: 'PERKS_PAYMENT_REQUIRED',
+        status: membership!.status,
+      });
+    }
+
     return { user, membership };
   }
 

@@ -15,6 +15,14 @@ async function bootstrap() {
  
   app.use(compression({ threshold: 1024, level: 6 }));
 
+  // Stripe signs the raw request body, so this must be parsed as a Buffer and
+  // must be mounted BEFORE the JSON parser below — otherwise the body is
+  // already consumed and every webhook signature check fails.
+  app.use(
+    '/api/perks/billing/webhook',
+    bodyParser.raw({ type: 'application/json' }),
+  );
+
   app.use(bodyParser.json({ limit: '50mb' }));
   app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
 

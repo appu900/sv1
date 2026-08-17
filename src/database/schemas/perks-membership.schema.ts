@@ -6,14 +6,21 @@ export enum PerksMembershipStatus {
   PENDING = 'pending',
   FAILED = 'failed',
   UNKNOWN = 'unknown',
-  /** User opted out. Blocks cart + checkout until resumed. */
   CANCELLED = 'cancelled',
 }
 
 export enum PerksMembershipPlan {
-  /** No billing attached yet. Stripe will introduce paid plans later. */
   FREE = 'free',
+  FREE_REGION = 'free_region',
   PAID = 'paid',
+}
+
+export enum PerksBillingStatus {
+  NONE = 'none',
+  INCOMPLETE = 'incomplete',
+  ACTIVE = 'active',
+  PAST_DUE = 'past_due',
+  CANCELED = 'canceled',
 }
 
 @Schema({ timestamps: true })
@@ -43,14 +50,10 @@ export class PerksMembership {
   @Prop({ type: String, default: null })
   lastErrorMessage: string | null;
 
-  /**
-   * Bumped to rotate the derived WeMAD password (see PerksCorpSessionService).
-   * The password itself is never stored.
-   */
+ 
   @Prop({ type: Number, default: 1 })
   credentialVersion: number;
 
-  /** Email actually registered upstream — may lag the Saveful email. */
   @Prop({ type: String, default: null, lowercase: true, trim: true })
   wmadEmail: string | null;
 
@@ -67,12 +70,30 @@ export class PerksMembership {
   @Prop({ type: String, default: null })
   cancellationReason: string | null;
 
-  /**
-   * When paid access lapses. Null while unbilled; Stripe will populate this so
-   * a cancelled member keeps access until the period ends.
-   */
   @Prop({ type: Date, default: null })
   accessEndsAt: Date | null;
+
+  @Prop({ type: String, default: null, index: true })
+  stripeCustomerId: string | null;
+
+  @Prop({ type: String, default: null, index: true })
+  stripeSubscriptionId: string | null;
+
+  @Prop({
+    type: String,
+    enum: PerksBillingStatus,
+    default: PerksBillingStatus.NONE,
+  })
+  billingStatus: PerksBillingStatus;
+
+  @Prop({ type: Boolean, default: false })
+  cancelAtPeriodEnd: boolean;
+
+  @Prop({ type: String, default: null })
+  lastStripeEventId: string | null;
+
+  @Prop({ type: Date, default: null })
+  lastStripeEventAt: Date | null;
 }
 
 export type PerksMembershipDocument = PerksMembership & Document;

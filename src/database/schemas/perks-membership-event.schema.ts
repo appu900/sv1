@@ -9,6 +9,12 @@ export enum PerksMembershipEventType {
   CHECKOUT_STARTED = 'checkout_started',
   /** Membership from the retired WeMAD product, cleared so the user re-joins. */
   LEGACY_RESET = 'legacy_reset',
+  /** Stripe billing lifecycle. */
+  BILLING_CHECKOUT_STARTED = 'billing_checkout_started',
+  BILLING_ACTIVATED = 'billing_activated',
+  BILLING_PAYMENT_FAILED = 'billing_payment_failed',
+  BILLING_CANCEL_SCHEDULED = 'billing_cancel_scheduled',
+  BILLING_LAPSED = 'billing_lapsed',
 }
 
 /**

@@ -172,6 +172,28 @@ function createService(overrides: Record<string, unknown> = {}) {
   Object.assign(session, overrides.session);
   Object.assign(membershipModel, overrides.membershipModel);
   Object.assign(cartModel, overrides.cartModel);
+  const billing = {
+    // Default: billing off, everyone entitled — the behaviour these tests were
+    // written against. Tests that care override it.
+    entitlementFor: jest.fn().mockReturnValue({
+      entitled: true,
+      reason: 'billing_disabled',
+      paymentRequired: false,
+    }),
+    describe: jest.fn().mockReturnValue({
+      required: false,
+      reason: 'billing_disabled',
+      priceLabel: null,
+      subscriptionStatus: 'none',
+      cancelAtPeriodEnd: false,
+      accessEndsAt: null,
+      manageable: false,
+    }),
+    scheduleCancellation: jest.fn().mockResolvedValue(null),
+    resumeSubscription: jest.fn().mockResolvedValue(null),
+  };
+  Object.assign(billing, overrides.billing);
+
   Object.assign(walletMetadataModel, overrides.walletMetadataModel);
   Object.assign(redis, overrides.redis);
   Object.assign(config, overrides.config);
@@ -188,11 +210,13 @@ function createService(overrides: Record<string, unknown> = {}) {
       calculatorProfileModel as never,
       api as never,
       session as never,
+      billing as never,
       redis as never,
       config as never,
     ),
     api,
     session,
+    billing,
     membership,
     membershipModel,
     membershipEventModel,
@@ -308,6 +332,113 @@ describe('PerksService (corp)', () => {
       expect(membershipEventModel.create).toHaveBeenCalledWith(
         expect.objectContaining({ type: 'registered' }),
       );
+    });
+
+    it('sends an unpaid member to checkout instead of registering them upstream', async () => {
+      const pending = membershipDoc({ status: PerksMembershipStatus.PENDING });
+      const { service, session } = createService({
+        membershipModel: { findOne: jest.fn().mockResolvedValue(pending) },
+        billing: {
+          entitlementFor: jest.fn().mockReturnValue({
+            entitled: false,
+            reason: 'none',
+            paymentRequired: true,
+          }),
+        },
+      });
+
+      await expect(service.ensureMembership(userId)).rejects.toMatchObject({
+        status: 402,
+      });
+      // Nothing was created upstream for a membership nobody paid for.
+      expect(session.login).not.toHaveBeenCalled();
+    });
+
+    it('asks a lapsed member to renew even while their record still says active', async () => {
+      const { service, session } = createService({
+        billing: {
+          entitlementFor: jest.fn().mockReturnValue({
+            entitled: false,
+            reason: 'none',
+            paymentRequired: true,
+          }),
+        },
+      });
+
+      await expect(service.ensureMembership(userId)).rejects.toMatchObject({
+        status: 402,
+      });
+      expect(session.login).not.toHaveBeenCalled();
+    });
+
+    it('blocks shopping once paid access has lapsed', async () => {
+      const { service } = createService({
+        billing: {
+          entitlementFor: jest.fn().mockReturnValue({
+            entitled: false,
+            reason: 'none',
+            paymentRequired: true,
+          }),
+        },
+      });
+
+      await expect(
+        service.addCartItem(userId, {
+          ecardId: '1',
+          ecardValue: 50,
+          quantity: 1,
+        } as never),
+      ).rejects.toMatchObject({ status: 403 });
+    });
+
+    it('cancels a paid member at period end rather than cutting them off', async () => {
+      const scheduled = membershipDoc({
+        status: PerksMembershipStatus.ACTIVE,
+        cancelAtPeriodEnd: true,
+        accessEndsAt: new Date('2026-09-25T00:00:00Z'),
+      });
+      const { service, membershipEventModel, cartModel } = createService({
+        billing: {
+          scheduleCancellation: jest.fn().mockResolvedValue(scheduled),
+        },
+      });
+
+      const result = await service.cancelMembership(userId, {} as never);
+
+      // Still active, still holding their cart — they paid for this period.
+      expect(result.status).toBe(PerksMembershipStatus.ACTIVE);
+      expect(cartModel.updateOne).not.toHaveBeenCalled();
+      expect(membershipEventModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'cancelled',
+          metadata: expect.objectContaining({ immediate: false }),
+        }),
+      );
+    });
+
+    it('cancels a free member immediately', async () => {
+      const { service, membership, cartModel } = createService();
+
+      const result = await service.cancelMembership(userId, {} as never);
+
+      expect(result.status).toBe(PerksMembershipStatus.CANCELLED);
+      expect(membership.cancelledAt).toBeInstanceOf(Date);
+      expect(cartModel.updateOne).toHaveBeenCalled();
+    });
+
+    it('calls off a scheduled cancellation instead of re-registering', async () => {
+      const resumed = membershipDoc({
+        status: PerksMembershipStatus.ACTIVE,
+        cancelAtPeriodEnd: false,
+      });
+      const { service, session } = createService({
+        billing: { resumeSubscription: jest.fn().mockResolvedValue(resumed) },
+      });
+
+      const result = await service.resumeMembership(userId);
+
+      expect(result.status).toBe(PerksMembershipStatus.ACTIVE);
+      expect(session.login).not.toHaveBeenCalled();
     });
 
     it('refuses to silently re-subscribe a cancelled member', async () => {

@@ -29,6 +29,9 @@ import {
   HealthProfileSchema,
 } from '../../database/schemas/nutrition/health-profile.schema';
 import { User, UserSchema } from '../../database/schemas/user.auth.schema';
+import { PerksBillingController } from './billing/perks-billing.controller';
+import { PerksBillingService } from './billing/perks-billing.service';
+import { PerksStripeClient } from './billing/perks-stripe.client';
 import { PerksCorpApiClient } from './corp/perks-corp-api.client';
 import { PerksCorpSessionService } from './corp/perks-corp-session.service';
 import { PerksController } from './perks.controller';
@@ -50,8 +53,14 @@ import { PerksService } from './perks.service';
       },
     ]),
   ],
-  controllers: [PerksController],
-  providers: [PerksCorpApiClient, PerksCorpSessionService, PerksService],
+  controllers: [PerksController, PerksBillingController],
+  providers: [
+    PerksCorpApiClient,
+    PerksCorpSessionService,
+    PerksStripeClient,
+    PerksBillingService,
+    PerksService,
+  ],
   exports: [PerksService],
 })
 export class PerksModule {}
