@@ -19,6 +19,13 @@ function createService(overrides: Record<string, unknown> = {}) {
       webToken: 'web-1',
       wmadUserId: '119',
     }),
+    createSsoUrl: jest
+      .fn()
+      .mockResolvedValue('https://sandbox.wemad.com.au/frontend/sso/login?token=sso-1'),
+    buildCheckoutUrl: jest.fn(
+      (token: string) =>
+        `https://sandbox.wemad.com.au/frontend/sso/login?token=${token}`,
+    ),
     ...(overrides.api as object),
   };
   const cache = new Map<string, unknown>();
@@ -186,6 +193,62 @@ describe('PerksCorpSessionService', () => {
       await expect(service.login(USER_ID, validUser)).rejects.toBeInstanceOf(
         UnprocessableEntityException,
       );
+    });
+  });
+
+  describe('createCheckoutUrl', () => {
+    const session = {
+      accessToken: 'access-1',
+      webToken: 'web-1',
+      wmadUserId: '119',
+    };
+
+    it('asks WeMAD for a checkout URL rather than reusing the web token', async () => {
+      const { service, api } = createService();
+
+      await expect(service.createCheckoutUrl(session, validUser)).resolves.toBe(
+        'https://sandbox.wemad.com.au/frontend/sso/login?token=sso-1',
+      );
+      expect(api.createSsoUrl).toHaveBeenCalledWith('access-1', {
+        first_name: 'Saveful',
+        last_name: 'Tester',
+        email: 'tester@saveful.com',
+        phone: '61400000000',
+        redirect_url: '/checkout',
+      });
+      expect(api.buildCheckoutUrl).not.toHaveBeenCalled();
+    });
+
+    it('falls back to the web token when /sso/login fails', async () => {
+      const { service } = createService({
+        api: {
+          createSsoUrl: jest
+            .fn()
+            .mockRejectedValue(
+              new PerksCorpApiError('down', 502, 'UPSTREAM', true, false),
+            ),
+        },
+      });
+
+      await expect(service.createCheckoutUrl(session, validUser)).resolves.toContain(
+        'token=web-1',
+      );
+    });
+
+    it('rethrows when there is no web token to fall back to', async () => {
+      const { service } = createService({
+        api: {
+          createSsoUrl: jest
+            .fn()
+            .mockRejectedValue(
+              new PerksCorpApiError('down', 502, 'UPSTREAM', true, false),
+            ),
+        },
+      });
+
+      await expect(
+        service.createCheckoutUrl({ ...session, webToken: '' }, validUser),
+      ).rejects.toBeInstanceOf(PerksCorpApiError);
     });
   });
 

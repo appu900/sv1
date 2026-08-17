@@ -104,6 +104,37 @@ export class PerksCorpSessionService {
     }
   }
 
+  /**
+   * WeMAD asked us to send people to checkout through `POST /sso/login` with
+   * `redirect_url` rather than the autologin `web_token`, which lands on their
+   * dashboard/cart. Both tokens are single-use and short-lived, so this must be
+   * called with a session minted for this checkout tap.
+   *
+   * Falls back to the `web_token` URL if `/sso/login` fails — a cart that is
+   * already synced upstream is still completable from their cart page, and
+   * losing checkout entirely would be worse than landing a page early.
+   */
+  async createCheckoutUrl(session: CorpSession, user: User): Promise<string> {
+    const nameParts = (user.name ?? '').trim().split(/\s+/).filter(Boolean);
+    try {
+      return await this.api.createSsoUrl(session.accessToken, {
+        first_name: nameParts[0] ?? '',
+        last_name: nameParts.slice(1).join(' '),
+        email: user.email.toLowerCase(),
+        phone: this.normalisePhone(user.phoneNumber) as string,
+        redirect_url: '/checkout',
+      });
+    } catch (error) {
+      if (!session.webToken) throw error;
+      this.logger.warn(
+        `WeMAD /sso/login failed, falling back to the autologin web_token: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return this.api.buildCheckoutUrl(session.webToken);
+    }
+  }
+
   async getAccessToken(
     userId: string,
     user: User,

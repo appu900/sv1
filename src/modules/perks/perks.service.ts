@@ -57,7 +57,6 @@ import {
 import { PerksCorpSessionService } from './corp/perks-corp-session.service';
 import {
   CatalogueCard,
-  DEFAULT_DISCOUNT_TIER,
   buildCategoryParentIndex,
   mapCatalogueCard,
   mapCategoryTree,
@@ -83,7 +82,7 @@ import {
 
 export type { CatalogueCard } from './corp/perks-corp.mapper';
 
-const CATALOGUE_CACHE_VERSION = 'v4';
+const CATALOGUE_CACHE_VERSION = 'v5';
 
 export const PERKS_CATEGORIES = [
   { key: 'groceries', name: 'Groceries', discountBps: 450 },
@@ -389,7 +388,7 @@ export class PerksService {
     if (!giftCard || !giftCard.id) {
       throw new NotFoundException('Perks card not found');
     }
-    const card = mapCatalogueCard(giftCard, this.discountTier());
+    const card = mapCatalogueCard(giftCard);
 
     await cacheAttempt(() => this.redis.set(cacheKey, card, this.catalogueTtl()));
     return card;
@@ -586,9 +585,13 @@ export class PerksService {
       },
     );
 
+    // Minted after the cart sync so the 5-minute token is spent on a cart that
+    // is already correct upstream.
+    const checkoutUrl = await this.session.createCheckoutUrl(session, user);
+
     return {
       status: 'redirect' as const,
-      checkoutUrl: this.api.buildCheckoutUrl(session.webToken),
+      checkoutUrl,
       quote,
     };
   }
@@ -1004,10 +1007,6 @@ export class PerksService {
     );
   }
 
-  private discountTier() {
-    return this.config.get<string>('PERKS_DISCOUNT_TIER', DEFAULT_DISCOUNT_TIER);
-  }
-
   private catalogueTtl() {
     return this.positiveConfigNumber('PERKS_CATALOGUE_CACHE_TTL_SECONDS', 300);
   }
@@ -1090,9 +1089,8 @@ export class PerksService {
       );
     }
 
-    const tier = this.discountTier();
     const cards = raw
-      .map((card) => mapCatalogueCard(card, tier, parentIndex))
+      .map((card) => mapCatalogueCard(card, parentIndex))
       .filter((card) => Boolean(card.id && card.name));
 
     await cacheAttempt(() => this.redis.set(cacheKey, cards, this.catalogueTtl()));
@@ -1223,6 +1221,15 @@ export class PerksService {
     if (!Number.isFinite(value) || value <= 0) {
       throw new UnprocessableEntityException(
         `Enter a valid amount for ${card.name}`,
+      );
+    }
+
+    // Only a card whose provider pricing we have actually seen is sellable; both
+    // "not configured" (false) and "payload could not say" (null) mean we have no
+    // valid amount to check against, so refuse rather than guess.
+    if (card.purchasable !== true) {
+      throw new UnprocessableEntityException(
+        `${card.name} is not available to buy yet`,
       );
     }
 

@@ -19,32 +19,42 @@ import {
 describe('perks corp mapper', () => {
   describe('resolveDiscountPercent', () => {
     it('prefers the per-site override over the base card rate', () => {
-      const card = {
-        per_standard: '0.00',
-        per_gold: '3.00',
-        site_gift_cards: [{ per_standard: '2.50', per_gold: '6.00' }],
-      };
-      expect(resolveDiscountPercent(card, 'per_standard')).toBe(2.5);
-      expect(resolveDiscountPercent(card, 'per_gold')).toBe(6);
+      expect(
+        resolveDiscountPercent({
+          discount: '3.00',
+          site_gift_cards: [{ discount: '2.50' }],
+        }),
+      ).toBe(2.5);
     });
 
     it('falls back to the base card when no site override exists', () => {
       expect(
-        resolveDiscountPercent(
-          { per_standard: '4.50', site_gift_cards: [] },
-          'per_standard',
-        ),
+        resolveDiscountPercent({ discount: '4.50', site_gift_cards: [] }),
       ).toBe(4.5);
     });
 
-    it('returns 0 rather than NaN when the tier is absent', () => {
-      expect(resolveDiscountPercent({}, 'per_standard')).toBe(0);
+    it('returns 0 rather than NaN when no discount is present', () => {
+      expect(resolveDiscountPercent({})).toBe(0);
     });
 
-    it('defaults to per_gold — per_standard is 0.00 on every real card', () => {
+    it('ignores per_* tiers entirely — WeMAD asked us to stop reading them', () => {
       expect(
-        resolveDiscountPercent({ per_standard: '0.00', per_gold: '3.00' }),
-      ).toBe(3);
+        resolveDiscountPercent({
+          discount: '2.00',
+          per_gold: '9.00',
+          per_platinum: '11.00',
+        }),
+      ).toBe(2);
+    });
+
+    it('falls back to display_discount while discount is 0.00 upstream', () => {
+      expect(
+        resolveDiscountPercent({ discount: '0.00', display_discount: '5.00' }),
+      ).toBe(5);
+      // A real `discount` always wins over the display value.
+      expect(
+        resolveDiscountPercent({ discount: '4.00', display_discount: '5.00' }),
+      ).toBe(4);
     });
   });
 
@@ -139,10 +149,20 @@ describe('perks corp mapper', () => {
       expect(Math.min(...pricing.availableValues)).toBeGreaterThanOrEqual(10);
     });
 
-    it('still offers usable amounts when the card has no provider product', () => {
+    it('reports unknown, not unsellable, when the payload omits the product', () => {
+      // Every card in WeMAD's listing response looks like this; only their detail
+      // response carries pricing, so `false` here would blank the catalogue.
       const pricing = resolvePricing({ id: 5, name: 'BigW' });
-      expect(pricing.availableValues.length).toBeGreaterThan(0);
-      expect(pricing.variablePrice).toBe(true);
+      expect(pricing.purchasable).toBeNull();
+      expect(pricing.availableValues).toEqual([]);
+    });
+
+    it('marks fixed cards with no denominations unpurchasable', () => {
+      const pricing = resolvePricing({
+        provider_product: { price_type: 'fixed', available_denominations: [] },
+      });
+      expect(pricing.purchasable).toBe(false);
+      expect(pricing.availableValues).toEqual([]);
     });
 
     it('always includes the exact bounds so extremes stay reachable', () => {
@@ -151,6 +171,7 @@ describe('perks corp mapper', () => {
       });
       expect(pricing.availableValues).toContain(15);
       expect(pricing.availableValues).toContain(85);
+      expect(pricing.purchasable).toBe(true);
     });
   });
 
@@ -237,8 +258,7 @@ describe('perks corp mapper', () => {
       description: '<p>desc</p>',
       term: '<p>terms</p>',
       delivery_fee: '1.00',
-      per_standard: '0.00',
-      per_gold: '2.00',
+      discount: '2.00',
       is_popular: 0,
       categories: [{ id: 14, parent_id: 10, slug: 'groceries', name: 'Groceries' }],
       provider_product: {
@@ -261,7 +281,7 @@ describe('perks corp mapper', () => {
     });
 
     it('marks cards featured on a strong discount even when is_popular is 0', () => {
-      expect(mapCatalogueCard({ ...card, per_gold: '7.00' }).featured).toBe(
+      expect(mapCatalogueCard({ ...card, discount: '7.00' }).featured).toBe(
         true,
       );
       expect(mapCatalogueCard(card).featured).toBe(false);

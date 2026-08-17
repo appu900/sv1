@@ -18,8 +18,7 @@ const CARD = {
   name: 'Coles Gift Card',
   image: 'giftcards/3.jpg',
   delivery_fee: '1.00',
-  per_standard: '0.00',
-  per_gold: '10.00',
+  discount: '10.00',
   is_popular: 0,
   categories: [{ id: 14, parent_id: 10, slug: 'groceries', name: 'Groceries' }],
   provider_product: {
@@ -161,6 +160,12 @@ function createService(overrides: Record<string, unknown> = {}) {
     ),
     clearCachedToken: jest.fn(),
     missingProfileFields: jest.fn().mockReturnValue([]),
+    // Mirrors the real service: the URL is tied to the session minted for this
+    // checkout, so reusing a session shows up as a reused URL.
+    createCheckoutUrl: jest.fn(
+      async (s: { accessToken: string; webToken: string }) =>
+        `https://frontend.test/sso/login?token=${s.webToken}`,
+    ),
   };
 
   Object.assign(api, overrides.api);
@@ -473,6 +478,24 @@ describe('PerksService (corp)', () => {
           quantity: 1,
         } as never),
       ).rejects.toThrow(/not available/i);
+    });
+
+    it('refuses a card WeMAD has not priced instead of guessing an amount', async () => {
+      const { service } = createService({
+        api: {
+          getGiftCard: jest.fn().mockResolvedValue({
+            gift_card: { ...CARD, provider_product: undefined },
+          }),
+        },
+      });
+
+      await expect(
+        service.addCartItem(userId, {
+          ecardId: '1',
+          ecardValue: 50,
+          quantity: 1,
+        } as never),
+      ).rejects.toThrow(/not available to buy yet/i);
     });
 
     // WeMAD's cart accepts any amount, so these bounds exist only here.

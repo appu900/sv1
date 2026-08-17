@@ -28,6 +28,15 @@ export interface CorpAutologinPayload {
   password: string;
 }
 
+export interface CorpSsoPayload {
+  first_name: string;
+  last_name: string;
+  email: string;
+  phone: string;
+  /** Frontend path to land on, e.g. `/checkout`. */
+  redirect_url?: string;
+}
+
 export interface CorpCartLine {
   gift_card_id: number | string;
   amount: number;
@@ -94,6 +103,58 @@ export class PerksCorpApiClient {
 
   buildCheckoutUrl(webToken: string): string {
     return `${this.frontendUrl}/sso/login?token=${encodeURIComponent(webToken)}`;
+  }
+
+  async createSsoUrl(
+    accessToken: string,
+    payload: CorpSsoPayload,
+  ): Promise<string> {
+    const data = await this.request<{ login_url?: string }>(
+      '/sso/login',
+      { method: 'POST', body: JSON.stringify(payload) },
+      accessToken,
+    );
+
+    const loginUrl = String(data?.login_url ?? '').trim();
+    if (!loginUrl) {
+      throw new PerksCorpApiError(
+        'WeMAD did not return a checkout URL',
+        502,
+        'INVALID_SSO_RESPONSE',
+        true,
+        false,
+      );
+    }
+
+    return this.normaliseFrontendUrl(loginUrl);
+  }
+
+  /**
+   * WeMAD has previously returned `login_url` pointing at a private LAN address
+   * from their own environment, which no phone can reach. Keep their path and
+   * query but pin the host to the frontend we are configured for.
+   */
+  private normaliseFrontendUrl(loginUrl: string): string {
+    try {
+      const url = new URL(loginUrl);
+      const configured = new URL(this.frontendUrl);
+      if (url.host === configured.host) return url.toString();
+
+      const isPrivateHost =
+        url.hostname === 'localhost' ||
+        /^127\./.test(url.hostname) ||
+        /^10\./.test(url.hostname) ||
+        /^192\.168\./.test(url.hostname) ||
+        /^172\.(1[6-9]|2\d|3[01])\./.test(url.hostname);
+      if (!isPrivateHost) return url.toString();
+
+      url.protocol = configured.protocol;
+      url.host = configured.host;
+      url.port = configured.port;
+      return url.toString();
+    } catch {
+      return loginUrl;
+    }
   }
 
   async autologin(payload: CorpAutologinPayload): Promise<CorpSession> {

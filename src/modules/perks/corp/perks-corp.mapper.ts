@@ -22,6 +22,11 @@ export interface CatalogueCard {
   terms: string | null;
   deliveryFee: number;
   featured: boolean;
+  /**
+   * False when WeMAD has not configured provider pricing for this card, null
+   * when the payload cannot say (their listing endpoint never includes it).
+   */
+  purchasable: boolean | null;
 }
 
 export const str = (value: unknown): string =>
@@ -46,8 +51,6 @@ const arr = (value: unknown): Record<string, unknown>[] =>
     : [];
 
 
-export const DEFAULT_DISCOUNT_TIER = 'per_gold';
-
 function siteAware(
   card: Record<string, unknown>,
   field: string,
@@ -57,11 +60,21 @@ function siteAware(
   return fromSite !== null ? fromSite : num(card[field]);
 }
 
-export function resolveDiscountPercent(
-  card: Record<string, unknown>,
-  tier = DEFAULT_DISCOUNT_TIER,
-): number {
-  return siteAware(card, tier) ?? 0;
+/**
+ * WeMAD owns membership/discount eligibility, so we read their single resolved
+ * value rather than picking a `per_*` tier ourselves (they asked us to stop
+ * using those, 2026-08).
+ *
+ * `discount` is the field they nominated, but it currently returns 0.00 on
+ * every card — including authenticated requests — while `display_discount`
+ * carries the real rates. So we prefer `discount` and fall back to
+ * `display_discount`, which keeps pricing correct today and needs no change
+ * once they start populating `discount`. Raised with them for confirmation.
+ */
+export function resolveDiscountPercent(card: Record<string, unknown>): number {
+  const resolved = siteAware(card, 'discount');
+  if (resolved !== null && resolved > 0) return resolved;
+  return siteAware(card, 'display_discount') ?? resolved ?? 0;
 }
 
 export function resolveDeliveryFee(card: Record<string, unknown>): number {
@@ -89,45 +102,86 @@ export function resolveAvailableValues(
     .sort((left, right) => left - right);
 }
 
+/** Suggested amounts offered inside a variable card's min/max range. */
 const LADDER = [10, 20, 25, 50, 75, 100, 150, 200, 250, 300, 500, 1000];
-const DEFAULT_MIN = 10;
-const DEFAULT_MAX = 500;
 
+/**
+ * Pricing comes solely from provider_product, per WeMAD (2026-08):
+ *   price_type = fixed    -> available_denominations
+ *   price_type = variable -> any amount between min_amount and max_amount
+ *
+ * Never invent a range when one is missing — guessing would let someone order an
+ * amount the provider never offered.
+ *
+ * `purchasable` is deliberately tri-state. WeMAD's *listing* payload omits
+ * provider_product on every card (verified live: 200/200), so absence there means
+ * "not known yet", not "not for sale" — treating it as false would blank the whole
+ * catalogue. Only the detail response carries pricing, so that is the one place a
+ * definite true/false comes from.
+ */
 export function resolvePricing(card: Record<string, unknown>): {
   priceType: string;
   availableValues: number[];
   variablePrice: boolean;
   minAmount: number | null;
   maxAmount: number | null;
+  purchasable: boolean | null;
 } {
-  const providerProduct =
-    (card.provider_product as Record<string, unknown> | undefined) ?? {};
-  const fixed = resolveAvailableValues(card);
-  const priceType = str(providerProduct.price_type);
+  const providerProduct = card.provider_product as
+    | Record<string, unknown>
+    | undefined;
 
-  if (fixed.length > 0) {
+  if (!providerProduct) {
     return {
-      priceType: priceType || 'fixed',
-      availableValues: fixed,
+      priceType: '',
+      availableValues: [],
       variablePrice: false,
-      minAmount: fixed[0],
-      maxAmount: fixed[fixed.length - 1],
+      minAmount: null,
+      maxAmount: null,
+      purchasable: null,
     };
   }
 
-  const min = num(providerProduct.min_amount) ?? DEFAULT_MIN;
-  const max = num(providerProduct.max_amount) ?? DEFAULT_MAX;
-  const bounded = LADDER.filter((value) => value >= min && value <= max);
-  const values = Array.from(new Set([min, ...bounded, max]))
-    .filter((value) => value > 0)
-    .sort((left, right) => left - right);
+  const priceType = str(providerProduct.price_type).toLowerCase();
+  const fixed = resolveAvailableValues(card);
+
+  if (priceType === 'fixed' || fixed.length > 0) {
+    return {
+      priceType: 'fixed',
+      availableValues: fixed,
+      variablePrice: false,
+      minAmount: fixed[0] ?? null,
+      maxAmount: fixed[fixed.length - 1] ?? null,
+      // Fixed pricing with no denominations configured is unsellable.
+      purchasable: fixed.length > 0,
+    };
+  }
+
+  const min = num(providerProduct.min_amount);
+  const max = num(providerProduct.max_amount);
+  if (min === null || max === null || max <= 0) {
+    return {
+      priceType: priceType || 'variable',
+      availableValues: [],
+      variablePrice: true,
+      minAmount: min,
+      maxAmount: max,
+      purchasable: false,
+    };
+  }
+
+  // Handy presets for the slider; any amount in range is still valid.
+  const presets = Array.from(
+    new Set([min, ...LADDER.filter((v) => v > min && v < max), max]),
+  ).sort((left, right) => left - right);
 
   return {
-    priceType: priceType || 'variable',
-    availableValues: values,
+    priceType: 'variable',
+    availableValues: presets,
     variablePrice: true,
     minAmount: min,
     maxAmount: max,
+    purchasable: true,
   };
 }
 
@@ -214,10 +268,9 @@ export function mapCategoryTree(categories: Record<string, unknown>[]) {
 
 export function mapCatalogueCard(
   card: Record<string, unknown>,
-  tier?: string,
   parentIndex?: CategoryParentIndex,
 ): CatalogueCard {
-  const discountPercent = resolveDiscountPercent(card, tier);
+  const discountPercent = resolveDiscountPercent(card);
   const isPopular = num(card.is_popular) ?? 0;
   const pricing = resolvePricing(card);
   return {
@@ -232,6 +285,7 @@ export function mapCatalogueCard(
     variablePrice: pricing.variablePrice,
     minAmount: pricing.minAmount,
     maxAmount: pricing.maxAmount,
+    purchasable: pricing.purchasable,
     balanceLink: nullableStr(card.balance_link),
     description: nullableStr(card.description),
     terms: nullableStr(card.term),
