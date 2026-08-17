@@ -391,6 +391,40 @@ describe('PerksService (corp)', () => {
       ).rejects.toMatchObject({ status: 403 });
     });
 
+    it('names the cart line that blocks the total instead of failing anonymously', async () => {
+      // A card added before WeMAD stopped pricing it: one bad row blocks the
+      // whole cart, so the customer has to be told which one to remove.
+      const cart = cartDoc([
+        {
+          itemId: 'a',
+          ecardId: '1',
+          quantity: 1,
+          faceValueCents: 5000,
+          sendAsGift: false,
+          gift: null,
+        },
+      ]);
+      const { service } = createService({
+        cartModel: {
+          findOne: jest.fn().mockResolvedValue(cart),
+          updateOne: jest.fn(),
+        },
+        api: {
+          getGiftCard: jest.fn().mockResolvedValue({
+            gift_card: { ...CARD, provider_product: undefined },
+          }),
+        },
+      });
+
+      await expect(service.quoteCart(userId)).rejects.toMatchObject({
+        response: {
+          code: 'PERKS_CART_LINE_UNAVAILABLE',
+          ecardName: 'Coles Gift Card',
+          itemId: expect.any(String),
+        },
+      });
+    });
+
     it('cancels a paid member at period end rather than cutting them off', async () => {
       const scheduled = membershipDoc({
         status: PerksMembershipStatus.ACTIVE,

@@ -1258,7 +1258,14 @@ export class PerksService {
     const items = await Promise.all(
       cart.items.map(async (item) => {
         const card = await this.getCatalogueCard(item.ecardId);
-        this.assertCardValue(card, this.currency(item.faceValueCents));
+        try {
+          this.assertCardValue(card, this.currency(item.faceValueCents));
+        } catch (error) {
+          // One bad line blocks the whole cart, so say which line and why —
+          // otherwise the customer sees a total that will not calculate and has
+          // no idea which card to remove.
+          throw this.describeCartLineFailure(error, item, card);
+        }
         return this.quoteLine(item, card);
       }),
     );
@@ -1279,6 +1286,26 @@ export class PerksService {
         totalCents: items.reduce((sum, item) => sum + item.totalCents, 0),
       },
     };
+  }
+
+  /** Re-raises a line-level pricing failure with the row and card attached. */
+  private describeCartLineFailure(
+    error: unknown,
+    item: CartLikeItem,
+    card: CatalogueCard,
+  ) {
+    if (!(error instanceof HttpException)) return error;
+    const response = error.getResponse();
+    const detail =
+      typeof response === 'string' ? { message: response } : { ...(response as object) };
+
+    return new UnprocessableEntityException({
+      ...detail,
+      code: 'PERKS_CART_LINE_UNAVAILABLE',
+      itemId: item.itemId,
+      ecardId: item.ecardId,
+      ecardName: card.name,
+    });
   }
 
   private quoteLine(
