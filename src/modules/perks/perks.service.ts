@@ -648,7 +648,9 @@ export class PerksService {
     const { user, membership } = await this.requireActiveMembership(userId);
     const cart = await this.getOrCreateActiveCart(userId);
     if (!cart.items.length) {
-      throw new BadRequestException('An active cart with items is required');
+      throw new BadRequestException(
+        'Your cart is empty. Add a gift card before checking out.',
+      );
     }
 
     const quote = await this.buildCartQuote(cart.toObject());
@@ -765,8 +767,7 @@ export class PerksService {
       ),
     );
 
-    const raw = (payload?.orders as Record<string, unknown>)?.data ?? payload;
-    const list = Array.isArray(raw) ? raw : [];
+    const list = Array.isArray(payload) ? payload : [];
     if (!list.length) return [];
     let cards: OrderCardLookup | undefined;
     try {
@@ -1227,7 +1228,9 @@ export class PerksService {
         status: PerksCartStatus.ACTIVE,
       });
       if (!concurrent) {
-        throw new ConflictException('Could not create an active cart');
+        throw new ConflictException(
+        "We couldn't open your cart just now. Please try again.",
+      );
       }
       return concurrent;
     }
@@ -1338,7 +1341,7 @@ export class PerksService {
   private assertCardValue(card: CatalogueCard, value: number) {
     if (!Number.isFinite(value) || value <= 0) {
       throw new UnprocessableEntityException(
-        `Enter a valid amount for ${card.name}`,
+        `Enter a valid amount for ${card.name}.`,
       );
     }
 
@@ -1347,7 +1350,7 @@ export class PerksService {
     // valid amount to check against, so refuse rather than guess.
     if (card.purchasable !== true) {
       throw new UnprocessableEntityException(
-        `${card.name} is not available to buy yet`,
+        `${card.name} is not available to buy yet. Our partner hasn't set up its pricing.`,
       );
     }
 
@@ -1356,7 +1359,7 @@ export class PerksService {
       const max = card.maxAmount ?? Number.POSITIVE_INFINITY;
       if (value < min || value > max) {
         throw new UnprocessableEntityException(
-          `${card.name} accepts between $${min} and $${max}`,
+          `Choose an amount between $${min} and $${max} for ${card.name}.`,
         );
       }
       return;
@@ -1369,7 +1372,7 @@ export class PerksService {
       )
     ) {
       throw new UnprocessableEntityException(
-        `Value is not available for ${card.name}`,
+        `$${value} is not available for ${card.name}. Choose one of the listed amounts.`,
       );
     }
   }

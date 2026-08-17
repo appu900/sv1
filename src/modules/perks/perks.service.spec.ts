@@ -142,7 +142,7 @@ function createService(overrides: Record<string, unknown> = {}) {
     removeFromCart: jest.fn(async (_t: string, id: number | string) => {
       upstreamCart = upstreamCart.filter((row) => row.id !== id);
     }),
-    listOrders: jest.fn().mockResolvedValue({ orders: { data: [] } }),
+    listOrders: jest.fn().mockResolvedValue([]),
     listMyGiftCards: jest.fn().mockResolvedValue([]),
     buildCheckoutUrl: jest.fn(
       (token: string) => `https://frontend.test/sso/login?token=${token}`,
@@ -663,6 +663,53 @@ describe('PerksService (corp)', () => {
       ).rejects.toThrow(/not available to buy yet/i);
     });
 
+    /**
+     * Verified live against the sandbox: WeMAD's own cart accepts $37.50 on a
+     * fixed-denomination card, $5000 on a card capped at $100, and an unpriced
+     * card — all HTTP 200. Our validation is the only thing standing between a
+     * customer and an order their provider cannot fulfil, so it is tested as
+     * the security boundary it is.
+     */
+    it.each([
+      ['a denomination the fixed card does not offer', 37.5],
+      ['zero', 0],
+      ['a negative amount', -50],
+    ])('rejects %s', async (_label, value) => {
+      const { service } = createService();
+      await expect(
+        service.addCartItem(userId, {
+          ecardId: '1',
+          ecardValue: value,
+          quantity: 1,
+        } as never),
+      ).rejects.toMatchObject({ status: 422 });
+    });
+
+    it('rejects an amount above a variable card maximum', async () => {
+      const variableCard = {
+        ...CARD,
+        provider_product: {
+          price_type: 'variable',
+          min_amount: '10.00',
+          max_amount: '100.00',
+          available_denominations: [],
+        },
+      };
+      const { service } = createService({
+        api: {
+          getGiftCard: jest.fn().mockResolvedValue({ gift_card: variableCard }),
+        },
+      });
+
+      await expect(
+        service.addCartItem(userId, {
+          ecardId: '3',
+          ecardValue: 5000,
+          quantity: 1,
+        } as never),
+      ).rejects.toMatchObject({ status: 422 });
+    });
+
     // WeMAD's cart accepts any amount, so these bounds exist only here.
     it('enforces min/max on variable-price cards', async () => {
       const variableCard = {
@@ -914,7 +961,7 @@ describe('PerksService (corp)', () => {
     it('refuses to check out an empty cart', async () => {
       const { service } = createService();
       await expect(service.checkoutCart(userId)).rejects.toThrow(
-        /cart with items/i,
+        /cart is empty/i,
       );
     });
   });
@@ -923,21 +970,17 @@ describe('PerksService (corp)', () => {
     it('maps and paginates the upstream order list', async () => {
       const { service } = createService({
         api: {
-          listOrders: jest.fn().mockResolvedValue({
-            orders: {
-              data: [
-                {
-                  id: 1,
-                  order_number: '0001',
-                  order_reference: 'REF-1',
-                  status: 'processing',
-                  subtotal: '50.00',
-                  grand_total: '46.00',
-                  order_item: [],
-                },
-              ],
+          listOrders: jest.fn().mockResolvedValue([
+            {
+              id: 1,
+              order_number: '0001',
+              order_reference: 'REF-1',
+              status: 'processing',
+              subtotal: '50.00',
+              grand_total: '46.00',
+              order_item: [],
             },
-          }),
+          ]),
         },
       });
 
@@ -948,18 +991,14 @@ describe('PerksService (corp)', () => {
 
     it('finds a single order by number or reference', async () => {
       const orders = {
-        listOrders: jest.fn().mockResolvedValue({
-          orders: {
-            data: [
-              {
-                id: 1,
-                order_number: '0001',
-                order_reference: 'REF-1',
-                order_item: [],
-              },
-            ],
+        listOrders: jest.fn().mockResolvedValue([
+          {
+            id: 1,
+            order_number: '0001',
+            order_reference: 'REF-1',
+            order_item: [],
           },
-        }),
+        ]),
       };
       const { service } = createService({ api: orders });
 

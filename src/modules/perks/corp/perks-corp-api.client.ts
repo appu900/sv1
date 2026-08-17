@@ -49,6 +49,11 @@ export interface CorpCartLine {
   gift_template_design_id?: number | string;
 }
 
+const num = (value: unknown): number | null => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
 export class PerksCorpApiError extends Error {
   constructor(
     message: string,
@@ -255,12 +260,20 @@ export class PerksCorpApiClient {
     );
   }
 
-  async listOrders(accessToken: string): Promise<Record<string, unknown>> {
-    return this.request<Record<string, unknown>>(
-      '/orders',
-      { method: 'GET' },
-      accessToken,
-    );
+  /**
+   * WeMAD paginates orders at a fixed 10 per page — `per_page`/`limit`/`paginate`
+   * are all ignored (verified live) — so the pages have to be walked. Reading
+   * only the first page silently truncated order history and, worse, made the
+   * dashboard's lifetime savings a total of the last 10 orders.
+   */
+  async listOrders(accessToken: string): Promise<Record<string, unknown>[]> {
+    return this.collectPages(accessToken, '/orders', (payload) => {
+      const orders = payload?.orders as Record<string, unknown> | undefined;
+      return {
+        rows: Array.isArray(orders?.data) ? orders.data : [],
+        lastPage: num(orders?.last_page),
+      };
+    });
   }
 
   async getOrder(
@@ -274,12 +287,51 @@ export class PerksCorpApiClient {
     );
   }
 
+  /** Paginated the same way as orders — a member's wallet must not stop at 10. */
   async listMyGiftCards(accessToken: string): Promise<Record<string, unknown>[]> {
-    const data = await this.request<
-      { items?: Record<string, unknown>[] } | Record<string, unknown>[]
-    >('/my-gift-cards', { method: 'GET' }, accessToken);
-    if (Array.isArray(data)) return data;
-    return Array.isArray(data?.items) ? data.items : [];
+    return this.collectPages(accessToken, '/my-gift-cards', (payload) => {
+      if (Array.isArray(payload)) return { rows: payload, lastPage: 1 };
+      const items = (payload as { items?: unknown })?.items;
+      const pagination = (payload as { pagination?: Record<string, unknown> })
+        ?.pagination;
+      return {
+        rows: Array.isArray(items) ? items : [],
+        lastPage: num(pagination?.last_page),
+      };
+    });
+  }
+
+  /**
+   * Walks `?page=` until the reported last page. Capped so a bad `last_page`
+   * from upstream cannot spin us through unbounded requests.
+   */
+  private async collectPages(
+    accessToken: string,
+    path: string,
+    read: (payload: any) => { rows: Record<string, unknown>[]; lastPage: number | null },
+    maxPages = 20,
+  ): Promise<Record<string, unknown>[]> {
+    const all: Record<string, unknown>[] = [];
+    let page = 1;
+    let lastPage = 1;
+
+    while (page <= Math.min(lastPage, maxPages)) {
+      const payload = await this.request<unknown>(
+        `${path}?page=${page}`,
+        { method: 'GET' },
+        accessToken,
+      );
+      const { rows, lastPage: reported } = read(payload);
+      all.push(...rows);
+
+      if (page === 1 && reported && reported > 1) lastPage = reported;
+      // Defensive: a page that returns nothing ends the walk regardless of what
+      // last_page claims, so a wrong count cannot loop us to the cap.
+      if (!rows.length) break;
+      page += 1;
+    }
+
+    return all;
   }
 
   private signedHeaders(accessToken?: string): Record<string, string> {

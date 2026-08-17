@@ -26,6 +26,79 @@ describe('PerksCorpApiClient', () => {
     global.fetch = realFetch;
   });
 
+  describe('pagination', () => {
+    // WeMAD fixes per_page at 10 and ignores per_page/limit/paginate (verified
+    // live), so anything past the first page is only reachable by walking.
+    const ordersPage = (rows: number[], lastPage: number) => ({
+      success: true,
+      data: {
+        orders: { data: rows.map((id) => ({ id })), last_page: lastPage },
+      },
+    });
+
+    it('walks every page of orders rather than stopping at the first 10', async () => {
+      const pages = [
+        ordersPage([1, 2, 3], 3),
+        ordersPage([4, 5, 6], 3),
+        ordersPage([7], 3),
+      ];
+      let call = 0;
+      const fetchMock = jest.fn().mockImplementation(async () => ({
+        status: 200,
+        text: async () => JSON.stringify(pages[call++]),
+      }));
+      global.fetch = fetchMock as never;
+
+      const orders = await createClient().listOrders('access-1');
+
+      expect(orders).toHaveLength(7);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(String(fetchMock.mock.calls[1][0])).toContain('page=2');
+    });
+
+    it('stops on an empty page even when last_page over-reports', async () => {
+      const pages = [ordersPage([1], 99), ordersPage([], 99)];
+      let call = 0;
+      global.fetch = jest.fn().mockImplementation(async () => ({
+        status: 200,
+        text: async () => JSON.stringify(pages[Math.min(call++, 1)]),
+      })) as never;
+
+      await expect(createClient().listOrders('access-1')).resolves.toHaveLength(1);
+    });
+
+    it('reads the wallet from the paginated items shape', async () => {
+      const page = (items: number[], lastPage: number) => ({
+        success: true,
+        data: {
+          items: items.map((id) => ({ id })),
+          pagination: { current_page: 1, last_page: lastPage, total: 3 },
+        },
+      });
+      const pages = [page([1, 2], 2), page([3], 2)];
+      let call = 0;
+      global.fetch = jest.fn().mockImplementation(async () => ({
+        status: 200,
+        text: async () => JSON.stringify(pages[Math.min(call++, 1)]),
+      })) as never;
+
+      await expect(
+        createClient().listMyGiftCards('access-1'),
+      ).resolves.toHaveLength(3);
+    });
+
+    it('still handles a plain array wallet response', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        status: 200,
+        text: async () => JSON.stringify({ success: true, data: [{ id: 1 }] }),
+      }) as never;
+
+      await expect(
+        createClient().listMyGiftCards('access-1'),
+      ).resolves.toHaveLength(1);
+    });
+  });
+
   describe('createSsoUrl', () => {
     const payload = {
       first_name: 'Saveful',
