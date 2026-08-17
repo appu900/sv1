@@ -84,7 +84,7 @@ import {
 
 export type { CatalogueCard } from './corp/perks-corp.mapper';
 
-const CATALOGUE_CACHE_VERSION = 'v5';
+const CATALOGUE_CACHE_VERSION = 'v6';
 
 export const PERKS_CATEGORIES = [
   { key: 'groceries', name: 'Groceries', discountBps: 450 },
@@ -469,7 +469,9 @@ export class PerksService {
     if (!giftCard || !giftCard.id) {
       throw new NotFoundException('Perks card not found');
     }
-    const card = mapCatalogueCard(giftCard);
+    // Detail payload: a missing provider_product here is definitive, so the app
+    // can say "not available to buy yet" instead of failing on a quote.
+    const card = mapCatalogueCard(giftCard, undefined, { detailed: true });
 
     await cacheAttempt(() => this.redis.set(cacheKey, card, this.catalogueTtl()));
     return card;

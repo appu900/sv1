@@ -116,10 +116,14 @@ const LADDER = [10, 20, 25, 50, 75, 100, 150, 200, 250, 300, 500, 1000];
  * `purchasable` is deliberately tri-state. WeMAD's *listing* payload omits
  * provider_product on every card (verified live: 200/200), so absence there means
  * "not known yet", not "not for sale" — treating it as false would blank the whole
- * catalogue. Only the detail response carries pricing, so that is the one place a
- * definite true/false comes from.
+ * catalogue. Pass `detailed: true` when mapping a card-detail response: there,
+ * a missing provider_product really does mean the card cannot be bought, and the
+ * app needs that `false` to say so instead of failing a quote.
  */
-export function resolvePricing(card: Record<string, unknown>): {
+export function resolvePricing(
+  card: Record<string, unknown>,
+  options: { detailed?: boolean } = {},
+): {
   priceType: string;
   availableValues: number[];
   variablePrice: boolean;
@@ -138,7 +142,9 @@ export function resolvePricing(card: Record<string, unknown>): {
       variablePrice: false,
       minAmount: null,
       maxAmount: null,
-      purchasable: null,
+      // Only the detail payload is allowed to be definite. A listing omits
+      // provider_product on every card, so absence there means "not known".
+      purchasable: options.detailed ? false : null,
     };
   }
 
@@ -269,10 +275,11 @@ export function mapCategoryTree(categories: Record<string, unknown>[]) {
 export function mapCatalogueCard(
   card: Record<string, unknown>,
   parentIndex?: CategoryParentIndex,
+  options: { detailed?: boolean } = {},
 ): CatalogueCard {
   const discountPercent = resolveDiscountPercent(card);
   const isPopular = num(card.is_popular) ?? 0;
-  const pricing = resolvePricing(card);
+  const pricing = resolvePricing(card, options);
   return {
     id: str(card.id),
     name: str(card.name).trim(),

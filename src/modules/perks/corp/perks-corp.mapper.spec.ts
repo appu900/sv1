@@ -149,11 +149,20 @@ describe('perks corp mapper', () => {
       expect(Math.min(...pricing.availableValues)).toBeGreaterThanOrEqual(10);
     });
 
-    it('reports unknown, not unsellable, when the payload omits the product', () => {
+    it('reports unknown, not unsellable, when a listing omits the product', () => {
       // Every card in WeMAD's listing response looks like this; only their detail
       // response carries pricing, so `false` here would blank the catalogue.
       const pricing = resolvePricing({ id: 5, name: 'BigW' });
       expect(pricing.purchasable).toBeNull();
+      expect(pricing.availableValues).toEqual([]);
+    });
+
+    it('is definite when a card detail omits the product', () => {
+      // Live: 198 of 200 cards look like this on detail (e.g. Doordash). The app
+      // needs a hard `false` to say "not available yet" instead of quoting and
+      // then failing.
+      const pricing = resolvePricing({ id: 309, name: 'Doordash' }, { detailed: true });
+      expect(pricing.purchasable).toBe(false);
       expect(pricing.availableValues).toEqual([]);
     });
 
@@ -285,6 +294,16 @@ describe('perks corp mapper', () => {
         true,
       );
       expect(mapCatalogueCard(card).featured).toBe(false);
+    });
+
+    it('marks an unpriced card unbuyable when mapping a detail response', () => {
+      const unpriced = { id: 309, name: 'Doordash', discount: '9.00' };
+      expect(mapCatalogueCard(unpriced, undefined, { detailed: true })).toMatchObject({
+        purchasable: false,
+        availableValues: [],
+      });
+      // The same card from a listing stays unknown, so browse is unaffected.
+      expect(mapCatalogueCard(unpriced).purchasable).toBeNull();
     });
 
     it('honours an explicit is_popular flag', () => {
