@@ -36,16 +36,21 @@ export class PerksStripeClient {
     this.webhookSecret = this.config
       .get<string>('STRIPE_WEBHOOK_SECRET', '')
       .trim();
+    // Stripe redirects straight back into the app rather than to a web page.
+    // The auth session watches for this scheme at the navigation layer, so the
+    // browser closes itself the moment payment finishes — a web page in between
+    // had to ask the OS to open the app from JavaScript, which is unreliable on
+    // both platforms and left people staring at a "return to app" screen.
     this.successUrl = this.config
       .get<string>(
         'PERKS_CHECKOUT_SUCCESS_URL',
-        'https://admin.saveful.app/perks/success',
+        'saveful://perks/register?checkout=success',
       )
       .trim();
     this.cancelUrl = this.config
       .get<string>(
         'PERKS_CHECKOUT_CANCEL_URL',
-        'https://admin.saveful.app/perks/cancelled',
+        'saveful://perks/register?checkout=cancelled',
       )
       .trim();
 

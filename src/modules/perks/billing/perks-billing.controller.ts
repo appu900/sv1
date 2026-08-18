@@ -44,9 +44,11 @@ export class PerksBillingController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async openPortal(@GetUser() user: { userId: string }) {
+    // Same reasoning as checkout: deep-link straight back so the browser closes
+    // itself when they tap "Return to Saveful" in the portal.
     const returnUrl = this.config.get<string>(
       'PERKS_BILLING_PORTAL_RETURN_URL',
-      'https://admin.saveful.app/perks/success',
+      'saveful://perks?checkout=portal',
     );
     return this.success(await this.billing.openPortal(user.userId, returnUrl));
   }
