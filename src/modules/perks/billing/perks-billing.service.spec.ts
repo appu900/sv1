@@ -122,7 +122,7 @@ const subscription = (overrides: Record<string, unknown> = {}) => ({
   customer: 'cus_123',
   status: 'active',
   cancel_at_period_end: false,
-  metadata: { savefulUserId: USER_ID },
+  metadata: { savefulUserId: USER_ID, savefulProduct: 'perks_membership' },
   items: { data: [{ current_period_end: 1790000000 }] },
   ...overrides,
 });
@@ -181,6 +181,7 @@ describe('PerksBillingService', () => {
           customer: 'cus_123',
           subscription: 'sub_123',
           payment_status: 'paid',
+          metadata: { savefulProduct: 'perks_membership' },
         }),
       );
 
@@ -199,6 +200,7 @@ describe('PerksBillingService', () => {
           customer: 'cus_123',
           subscription: 'sub_123',
           payment_status: 'unpaid',
+          metadata: { savefulProduct: 'perks_membership' },
         }),
       );
 
@@ -215,6 +217,7 @@ describe('PerksBillingService', () => {
         event('checkout.session.completed', {
           client_reference_id: USER_ID,
           payment_status: 'paid',
+          metadata: { savefulProduct: 'perks_membership' },
         }),
       );
 
@@ -329,6 +332,69 @@ describe('PerksBillingService', () => {
       expect(membershipEventModel.create).toHaveBeenCalledWith(
         expect.objectContaining({ type: 'billing_lapsed' }),
       );
+    });
+
+    /**
+     * The Stripe account is shared with another Saveful backend, and Stripe
+     * sends every event to every endpoint. Both know the same user ids, so
+     * without a product check their purchase would hand out free Perks.
+     */
+    it('ignores another product on the shared Stripe account', async () => {
+      const { service, membership } = createService();
+
+      const outcome = await service.applyWebhookEvent(
+        event('checkout.session.completed', {
+          client_reference_id: USER_ID,
+          customer: 'cus_other',
+          subscription: 'sub_other',
+          payment_status: 'paid',
+          metadata: { savefulProduct: 'saveful_hero' },
+        }),
+      );
+
+      expect(outcome).toEqual({ handled: false, activatedUserId: null });
+      expect(membership.plan).toBe(PerksMembershipPlan.FREE);
+      expect(membership.save).not.toHaveBeenCalled();
+    });
+
+    it('ignores an untagged subscription for a different price', async () => {
+      const { service, membership } = createService();
+
+      const outcome = await service.applyWebhookEvent(
+        event(
+          'customer.subscription.updated',
+          subscription({
+            id: 'sub_other',
+            metadata: { savefulUserId: USER_ID },
+            items: { data: [{ price: { id: 'price_other_product' } }] },
+          }),
+        ),
+      );
+
+      expect(outcome.handled).toBe(false);
+      expect(membership.save).not.toHaveBeenCalled();
+    });
+
+    it('accepts an untagged subscription that carries our price', async () => {
+      const { service } = createService({
+        stripe: { perksPriceId: 'price_perks_1' },
+      });
+
+      const outcome = await service.applyWebhookEvent(
+        event(
+          'customer.subscription.updated',
+          subscription({
+            metadata: { savefulUserId: USER_ID },
+            items: {
+              data: [
+                { price: { id: 'price_perks_1' }, current_period_end: 1790000000 },
+              ],
+            },
+          }),
+        ),
+      );
+
+      expect(outcome.handled).toBe(true);
     });
 
     it('ignores event types it does not handle', async () => {

@@ -2,6 +2,14 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Stripe = require('stripe');
 
+/**
+ * Marks Stripe objects as belonging to Perks. The Stripe account is shared with
+ * another Saveful backend, and Stripe delivers every event to every endpoint —
+ * without this, a checkout there for the same user id is indistinguishable from
+ * a Perks payment.
+ */
+export const PERKS_PRODUCT_TAG = 'perks_membership';
+
 export class PerksBillingError extends Error {
   constructor(
     message: string,
@@ -58,6 +66,11 @@ export class PerksStripeClient {
     return Boolean(this.client && this.priceId);
   }
 
+  /** The Perks price, used to tell our events apart from other products'. */
+  get perksPriceId(): string {
+    return this.priceId;
+  }
+
   /**
    * Reuses the stored customer when we have one so a returning member keeps a
    * single Stripe customer (and one billing history) instead of accumulating
@@ -109,8 +122,16 @@ export class PerksStripeClient {
       // metadata rides along to the subscription, so every webhook we handle
       // can identify the Saveful user without matching on email.
       client_reference_id: request.userId,
-      metadata: { savefulUserId: request.userId },
-      subscription_data: { metadata: { savefulUserId: request.userId } },
+      metadata: {
+        savefulUserId: request.userId,
+        savefulProduct: PERKS_PRODUCT_TAG,
+      },
+      subscription_data: {
+        metadata: {
+          savefulUserId: request.userId,
+          savefulProduct: PERKS_PRODUCT_TAG,
+        },
+      },
       automatic_tax: { enabled: true },
       customer_update: { address: 'auto' },
       success_url: this.successUrl,

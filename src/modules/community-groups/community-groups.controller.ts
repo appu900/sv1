@@ -114,7 +114,6 @@ export class CommunityGroupsController {
     return this.communityGroupsService.remove(id, userId);
   }
 
-  // Challenge endpoints
   @Post('challenges')
   @Roles(UserRole.USER)
   @UseGuards(JwtAuthGuard, RolesGuard)

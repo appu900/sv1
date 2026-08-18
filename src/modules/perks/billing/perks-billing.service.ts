@@ -34,7 +34,7 @@ import {
   isFreeRegion,
   resolveEntitlement,
 } from './perks-entitlement';
-import { PerksStripeClient } from './perks-stripe.client';
+import { PERKS_PRODUCT_TAG, PerksStripeClient } from './perks-stripe.client';
 
 /** What a webhook changed, so the caller can finish the job outside billing. */
 export interface WebhookOutcome {
@@ -239,18 +239,18 @@ export class PerksBillingService {
     const unhandled: WebhookOutcome = { handled: false, activatedUserId: null };
 
     switch (event.type) {
-      case 'checkout.session.completed':
-        return this.onCheckoutCompleted(
-          event,
-          event.data.object as Stripe.Checkout.Session,
-        );
+      case 'checkout.session.completed': {
+        const session = event.data.object as Stripe.Checkout.Session;
+        if (!this.isPerksObject(session)) return unhandled;
+        return this.onCheckoutCompleted(event, session);
+      }
       case 'customer.subscription.created':
       case 'customer.subscription.updated':
-      case 'customer.subscription.deleted':
-        return this.onSubscriptionChanged(
-          event,
-          event.data.object as Stripe.Subscription,
-        );
+      case 'customer.subscription.deleted': {
+        const subscription = event.data.object as Stripe.Subscription;
+        if (!this.isPerksObject(subscription)) return unhandled;
+        return this.onSubscriptionChanged(event, subscription);
+      }
       case 'invoice.payment_failed':
         return this.onPaymentFailed(event, event.data.object as Stripe.Invoice);
       default:
@@ -362,6 +362,33 @@ export class PerksBillingService {
       { invoiceId: invoice.id },
     );
     return { handled: true, activatedUserId: null };
+  }
+
+  /**
+   * Is this Stripe object one of ours?
+   *
+   * The Stripe account is shared with another Saveful backend, and Stripe fans
+   * every event out to every endpoint. Both backends know the same Saveful user
+   * ids, so `client_reference_id` alone would let their checkout activate a
+   * Perks membership for free. An object counts as ours only if it carries our
+   * product tag or our price.
+   *
+   * Invoices are exempt: those match purely on a subscription id we already
+   * stored, which cannot belong to another product.
+   */
+  private isPerksObject(
+    object: Stripe.Checkout.Session | Stripe.Subscription,
+  ): boolean {
+    if (object.metadata?.savefulProduct === PERKS_PRODUCT_TAG) return true;
+
+    const priceId = this.stripe.perksPriceId;
+    const items = (object as Stripe.Subscription).items?.data ?? [];
+    if (priceId && items.some((item) => item.price?.id === priceId)) return true;
+
+    this.logger.debug(
+      `Ignoring Stripe object ${object.id} — not a Perks product (shared account)`,
+    );
+    return false;
   }
 
   private async claimEvent(

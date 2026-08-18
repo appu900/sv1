@@ -55,7 +55,13 @@ const CHECKOUT_EVENT = {
   id: 'evt_1',
   type: 'checkout.session.completed',
   created: 1790000000,
-  data: { object: { client_reference_id: 'user_1', payment_status: 'paid' } },
+  data: {
+    object: {
+      client_reference_id: 'user_1',
+      payment_status: 'paid',
+      metadata: { savefulProduct: 'perks_membership' },
+    },
+  },
 };
 
 describe('PerksBillingController webhook', () => {
