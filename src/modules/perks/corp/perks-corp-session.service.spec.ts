@@ -252,6 +252,68 @@ describe('PerksCorpSessionService', () => {
     });
   });
 
+  describe('duplicate phone (WeMAD fixed this to a 400 in 2026-08)', () => {
+    it('tells the user the phone is taken, using their live wording', async () => {
+      const { service } = createService({
+        api: {
+          autologin: jest.fn().mockRejectedValue(
+            new PerksCorpApiError(
+              // Verbatim from the sandbox after their fix.
+              'This phone number is already registered in different account.',
+              400,
+              'WMAD_CORP_400',
+              false,
+              false,
+            ),
+          ),
+        },
+      });
+
+      await expect(service.login(USER_ID, validUser)).rejects.toMatchObject({
+        response: {
+          code: 'PERKS_PHONE_ALREADY_REGISTERED',
+          missingFields: ['phone'],
+        },
+      });
+    });
+
+    it('still handles the old 5xx form, in case production lags the fix', async () => {
+      const { service } = createService({
+        api: {
+          autologin: jest
+            .fn()
+            .mockRejectedValue(
+              new PerksCorpApiError('Server Error', 500, 'WMAD_CORP_500', true, false),
+            ),
+        },
+      });
+
+      await expect(service.login(USER_ID, validUser)).rejects.toMatchObject({
+        response: { missingFields: ['phone'] },
+      });
+    });
+
+    it('does not mistake an ordinary validation failure for a taken phone', async () => {
+      const { service } = createService({
+        api: {
+          autologin: jest.fn().mockRejectedValue(
+            new PerksCorpApiError(
+              'The first name field is required.',
+              422,
+              'WMAD_CORP_422',
+              false,
+              false,
+            ),
+          ),
+        },
+      });
+
+      await expect(service.login(USER_ID, validUser)).rejects.toMatchObject({
+        response: { code: 'WMAD_CORP_422' },
+      });
+    });
+  });
+
   describe('token caching', () => {
     it('reuses a cached token instead of logging in again', async () => {
       const { service, api } = createService();
@@ -265,7 +327,7 @@ describe('PerksCorpSessionService', () => {
     it('never caches the single-use web token', async () => {
       const { service, cache } = createService();
       await service.login(USER_ID, validUser);
-      const cached = JSON.stringify([...cache.values()]);
+      const cached = JSON.stringify(Array.from(cache.values()));
       expect(cached).toContain('access-1');
       expect(cached).not.toContain('web-1');
     });

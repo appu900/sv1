@@ -27,7 +27,6 @@ const CARD = {
   },
 };
 
-/** Mongoose doc stand-in: supports both `.lean()` and document mutation. */
 function membershipDoc(overrides: Record<string, unknown> = {}) {
   const doc: Record<string, unknown> = {
     userId: new Types.ObjectId(userId),
@@ -129,8 +128,6 @@ function createService(overrides: Record<string, unknown> = {}) {
   const config = {
     get: jest.fn((_key: string, fallback: unknown) => fallback),
   };
-  // Stateful upstream cart: checkout verifies the rows actually landed, so a
-  // mock that always returns [] would fail that check just like a real outage.
   let upstreamCart: Record<string, unknown>[] = [];
   const api = {
     listGiftCards: jest.fn().mockResolvedValue([CARD]),
@@ -160,8 +157,6 @@ function createService(overrides: Record<string, unknown> = {}) {
     ),
     clearCachedToken: jest.fn(),
     missingProfileFields: jest.fn().mockReturnValue([]),
-    // Mirrors the real service: the URL is tied to the session minted for this
-    // checkout, so reusing a session shows up as a reused URL.
     createCheckoutUrl: jest.fn(
       async (s: { accessToken: string; webToken: string }) =>
         `https://frontend.test/sso/login?token=${s.webToken}`,
@@ -173,8 +168,6 @@ function createService(overrides: Record<string, unknown> = {}) {
   Object.assign(membershipModel, overrides.membershipModel);
   Object.assign(cartModel, overrides.cartModel);
   const billing = {
-    // Default: billing off, everyone entitled — the behaviour these tests were
-    // written against. Tests that care override it.
     entitlementFor: jest.fn().mockReturnValue({
       entitled: true,
       reason: 'billing_disabled',
@@ -350,7 +343,6 @@ describe('PerksService (corp)', () => {
       await expect(service.ensureMembership(userId)).rejects.toMatchObject({
         status: 402,
       });
-      // Nothing was created upstream for a membership nobody paid for.
       expect(session.login).not.toHaveBeenCalled();
     });
 
@@ -392,8 +384,6 @@ describe('PerksService (corp)', () => {
     });
 
     it('names the cart line that blocks the total instead of failing anonymously', async () => {
-      // A card added before WeMAD stopped pricing it: one bad row blocks the
-      // whole cart, so the customer has to be told which one to remove.
       const cart = cartDoc([
         {
           itemId: 'a',
@@ -439,7 +429,6 @@ describe('PerksService (corp)', () => {
 
       const result = await service.cancelMembership(userId, {} as never);
 
-      // Still active, still holding their cart — they paid for this period.
       expect(result.status).toBe(PerksMembershipStatus.ACTIVE);
       expect(cartModel.updateOne).not.toHaveBeenCalled();
       expect(membershipEventModel.create).toHaveBeenCalledWith(
@@ -663,13 +652,6 @@ describe('PerksService (corp)', () => {
       ).rejects.toThrow(/not available to buy yet/i);
     });
 
-    /**
-     * Verified live against the sandbox: WeMAD's own cart accepts $37.50 on a
-     * fixed-denomination card, $5000 on a card capped at $100, and an unpriced
-     * card — all HTTP 200. Our validation is the only thing standing between a
-     * customer and an order their provider cannot fulfil, so it is tested as
-     * the security boundary it is.
-     */
     it.each([
       ['a denomination the fixed card does not offer', 37.5],
       ['zero', 0],
@@ -791,8 +773,6 @@ describe('PerksService (corp)', () => {
         ecardValue: 50,
         quantity: 2,
       } as never);
-
-      // 10% off $50 = $45/unit, ×2 = $90, plus $1 delivery per unit.
       expect(quote.totals).toMatchObject({
         faceValueCents: 10000,
         purchasePriceCents: 9000,
@@ -839,8 +819,6 @@ describe('PerksService (corp)', () => {
 
     it('clears stale upstream rows before syncing', async () => {
       const cart = cartWithItems();
-      // Seeded with rows left behind by an abandoned checkout; the mock stays
-      // stateful so the post-sync verification sees the real end state.
       let upstream: Record<string, unknown>[] = [{ id: 40 }, { id: 41 }];
       const { service, api } = createService({
         cartModel: { findOne: jest.fn(() => cart), updateOne: jest.fn() },
@@ -858,7 +836,6 @@ describe('PerksService (corp)', () => {
       await service.checkoutCart(userId);
       expect(api.removeFromCart).toHaveBeenCalledWith('access-1', 40);
       expect(api.removeFromCart).toHaveBeenCalledWith('access-1', 41);
-      // The stale rows are gone and only the 3 freshly-synced units remain.
       expect(upstream).toHaveLength(3);
     });
 
@@ -920,14 +897,11 @@ describe('PerksService (corp)', () => {
       );
     });
 
-    // WeMAD routes to /checkout only when its cart has rows; a silently-failed
-    // sync would otherwise drop the customer on the wrong page unexplained.
     it('fails loudly when the upstream cart did not receive the items', async () => {
-      const cart = cartWithItems(); // quantity 3
+      const cart = cartWithItems(); 
       const { service } = createService({
         cartModel: { findOne: jest.fn(() => cart), updateOne: jest.fn() },
         api: {
-          // Sync appears to succeed but the cart comes back empty.
           getCart: jest.fn().mockResolvedValue([]),
           addToCart: jest.fn().mockResolvedValue(undefined),
         },
@@ -939,7 +913,7 @@ describe('PerksService (corp)', () => {
     });
 
     it('proceeds when every unit reached the upstream cart', async () => {
-      const cart = cartWithItems(); // quantity 3
+      const cart = cartWithItems(); 
       let added = 0;
       const { service } = createService({
         cartModel: { findOne: jest.fn(() => cart), updateOne: jest.fn() },
@@ -1014,11 +988,6 @@ describe('PerksService (corp)', () => {
     });
   });
 
-  // Production bug: callUpstream (which converts PerksCorpApiError into
-  // HttpException) was nested INSIDE withAccessToken, whose retry tests for
-  // PerksCorpApiError. The 401 refresh therefore never fired and a stale
-  // cached token failed for its full 6h TTL — the app showed WeMAD's
-  // "Unauthenticated" on Orders and Wallet.
   describe('expired upstream token', () => {
     const expiredThenOk = (method: 'listOrders' | 'listMyGiftCards', ok: unknown) => {
       let calls = 0;
@@ -1031,7 +1000,6 @@ describe('PerksService (corp)', () => {
       });
     };
 
-    /** Mirrors the real service: refresh the token once, then replay. */
     const retryingSession = () => ({
       withAccessToken: jest.fn(
         async (_u: string, _user: unknown, run: (t: string) => Promise<unknown>) => {
@@ -1154,11 +1122,37 @@ describe('PerksService (corp)', () => {
       expect(archived.some((c) => c.cardName === 'Kmart')).toBe(false);
     });
 
-    it('returns a null receipt rather than failing — no corp equivalent', async () => {
-      const { service } = createService();
+    it('returns a null receipt while WeMAD has no invoice link yet', async () => {
+      const { service } = createService({
+        api: {
+          listOrders: jest
+            .fn()
+            .mockResolvedValue([
+              { id: 1, order_number: '0001', order_item: [] },
+            ]),
+        },
+      });
       await expect(service.getTaxReceipt(userId, '0001')).resolves.toEqual({
         orderNumber: '0001',
         receiptUrl: null,
+      });
+    });
+
+    it('returns the invoice link as soon as the order carries one', async () => {
+      const { service } = createService({
+        api: {
+          listOrders: jest.fn().mockResolvedValue([
+            {
+              id: 1,
+              order_number: '0001',
+              invoice_url: 'https://sandbox.wemad.com.au/invoice/1.pdf',
+              order_item: [],
+            },
+          ]),
+        },
+      });
+      await expect(service.getTaxReceipt(userId, '0001')).resolves.toMatchObject({
+        receiptUrl: 'https://sandbox.wemad.com.au/invoice/1.pdf',
       });
     });
   });

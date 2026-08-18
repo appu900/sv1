@@ -194,10 +194,6 @@ export class PerksService {
 
     const { user, fallbackGender } = await this.loadUserProfile(objectId);
 
-    // Money before WeMAD: an unentitled user gets sent to checkout instead of
-    // being registered upstream for a membership they have not paid for. This
-    // is checked before the ACTIVE short-circuit below, so a lapsed member is
-    // asked to renew rather than being told they are still active.
     if (this.billing.entitlementFor(user, existing).paymentRequired) {
       throw new HttpException(
         {
@@ -243,12 +239,7 @@ export class PerksService {
     return this.registerUpstream(userId, membership, user, fallbackGender);
   }
 
-  /**
-   * Called by the Stripe webhook once payment lands, so a member returns to a
-   * usable membership instead of having to tap Join again. Failures here are
-   * recorded and swallowed by the caller — the payment already succeeded, and
-   * the app retries registration on its next `ensureMembership`.
-   */
+ 
   async completeRegistrationAfterPayment(userId: string) {
     const objectId = this.toObjectId(userId);
     const membership = await this.membershipModel.findOne({ userId: objectId });
@@ -256,8 +247,6 @@ export class PerksService {
       throw new NotFoundException('Perks membership not found');
     }
     if (membership.status === PerksMembershipStatus.ACTIVE) {
-      // Still inside the paid period with a pending cancellation: call off the
-      // cancellation at Stripe rather than treating this as a fresh join.
       const resumed = await this.billing.resumeSubscription(userId);
       if (resumed) {
         await this.recordEvent(objectId, PerksMembershipEventType.RESUMED, null);
@@ -268,7 +257,6 @@ export class PerksService {
 
     const { user, fallbackGender } = await this.loadUserProfile(objectId);
 
-    // Resuming after the subscription is gone means paying again.
     if (this.billing.entitlementFor(user, membership).paymentRequired) {
       throw new HttpException(
         {
@@ -336,8 +324,6 @@ export class PerksService {
 
     const reason = dto?.reason?.trim() || null;
 
-    // A paying member keeps what they paid for: Stripe stops the renewal and
-    // access runs to the end of the period, rather than being cut off today.
     const scheduled = await this.billing.scheduleCancellation(userId, reason);
     if (scheduled) {
       await this.recordEvent(objectId, PerksMembershipEventType.CANCELLED, {
@@ -469,8 +455,6 @@ export class PerksService {
     if (!giftCard || !giftCard.id) {
       throw new NotFoundException('Perks card not found');
     }
-    // Detail payload: a missing provider_product here is definitive, so the app
-    // can say "not available to buy yet" instead of failing on a quote.
     const card = mapCatalogueCard(giftCard, undefined, { detailed: true });
 
     await cacheAttempt(() => this.redis.set(cacheKey, card, this.catalogueTtl()));
@@ -489,9 +473,6 @@ export class PerksService {
     if (!requested) {
       return { templates: [], consultants: [], categories: [], subcategories: [] };
     }
-
-    // Copied to a const: the narrowing from the guard above does not survive
-    // into the closure below while this is a reassignable `let`.
     const targetId = requested;
     const detail = await this.callUpstream(() => this.api.getGiftCard(targetId));
     return {
@@ -670,8 +651,6 @@ export class PerksService {
       },
     );
 
-    // Minted after the cart sync so the 5-minute token is spent on a cart that
-    // is already correct upstream.
     const checkoutUrl = await this.session.createCheckoutUrl(session, user);
 
     return {
@@ -751,9 +730,18 @@ export class PerksService {
   }
 
 
+  /**
+   * WeMAD have no invoice endpoint yet; they are adding a link to the order
+   * detail. Read it from the order so this starts returning a real receipt the
+   * moment they ship, with no code change — until then it stays null and the
+   * app shows its "receipt unavailable" message.
+   */
   async getTaxReceipt(userId: string, orderNumber: string) {
-    await this.requireActiveMembership(userId);
-    return { orderNumber, receiptUrl: null as string | null };
+    const order = await this.getOrder(userId, orderNumber);
+    return {
+      orderNumber: order.orderNumber ?? orderNumber,
+      receiptUrl: order.receiptUrl ?? null,
+    };
   }
 
   private async fetchOrders(userId: string) {
@@ -1264,9 +1252,6 @@ export class PerksService {
         try {
           this.assertCardValue(card, this.currency(item.faceValueCents));
         } catch (error) {
-          // One bad line blocks the whole cart, so say which line and why —
-          // otherwise the customer sees a total that will not calculate and has
-          // no idea which card to remove.
           throw this.describeCartLineFailure(error, item, card);
         }
         return this.quoteLine(item, card);
@@ -1291,7 +1276,6 @@ export class PerksService {
     };
   }
 
-  /** Re-raises a line-level pricing failure with the row and card attached. */
   private describeCartLineFailure(
     error: unknown,
     item: CartLikeItem,
@@ -1345,9 +1329,6 @@ export class PerksService {
       );
     }
 
-    // Only a card whose provider pricing we have actually seen is sellable; both
-    // "not configured" (false) and "payload could not say" (null) mean we have no
-    // valid amount to check against, so refuse rather than guess.
     if (card.purchasable !== true) {
       throw new UnprocessableEntityException(
         `${card.name} is not available to buy yet. Our partner hasn't set up its pricing.`,

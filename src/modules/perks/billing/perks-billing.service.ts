@@ -100,10 +100,6 @@ export class PerksBillingService {
     };
   }
 
-  /**
-   * Profile is validated here, before any money moves — otherwise a member pays
-   * and only then discovers WeMAD rejects them for a missing postcode.
-   */
   async startCheckout(userId: string): Promise<{ checkoutUrl: string }> {
     const objectId = new Types.ObjectId(userId);
     const user = await this.userModel.findById(objectId).lean();
@@ -208,8 +204,6 @@ export class PerksBillingService {
     );
     return membership;
   }
-
-  /** Undo a scheduled cancellation while the subscription is still alive. */
   async resumeSubscription(userId: string) {
     const objectId = new Types.ObjectId(userId);
     const membership = await this.membershipModel.findOne({ userId: objectId });
@@ -220,7 +214,7 @@ export class PerksBillingService {
     const subscription = await this.stripe.getSubscription(
       membership.stripeSubscriptionId,
     );
-    // Already gone at Stripe's end: the member has to buy a new subscription.
+
     if (subscription.status === 'canceled') return null;
 
     await this.stripe.setCancelAtPeriodEnd(membership.stripeSubscriptionId, false);
@@ -231,10 +225,6 @@ export class PerksBillingService {
     return membership;
   }
 
-  /**
-   * Applies one Stripe event. Never throws for unknown users or event types —
-   * a 500 here makes Stripe retry a payment that already succeeded.
-   */
   async applyWebhookEvent(event: Stripe.Event): Promise<WebhookOutcome> {
     const unhandled: WebhookOutcome = { handled: false, activatedUserId: null };
 
@@ -311,8 +301,6 @@ export class PerksBillingService {
 
     if (subscription.status === 'canceled') {
       membership.plan = PerksMembershipPlan.PAID;
-      // Access runs to the end of the paid period; entitlement reads the date,
-      // so there is nothing to expire here beyond recording it.
       const lapsed = !this.entitlementFor(null, membership).entitled;
       if (lapsed) {
         membership.status = PerksMembershipStatus.CANCELLED;
@@ -363,19 +351,7 @@ export class PerksBillingService {
     );
     return { handled: true, activatedUserId: null };
   }
-
-  /**
-   * Is this Stripe object one of ours?
-   *
-   * The Stripe account is shared with another Saveful backend, and Stripe fans
-   * every event out to every endpoint. Both backends know the same Saveful user
-   * ids, so `client_reference_id` alone would let their checkout activate a
-   * Perks membership for free. An object counts as ours only if it carries our
-   * product tag or our price.
-   *
-   * Invoices are exempt: those match purely on a subscription id we already
-   * stored, which cannot belong to another product.
-   */
+  
   private isPerksObject(
     object: Stripe.Checkout.Session | Stripe.Subscription,
   ): boolean {

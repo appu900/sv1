@@ -210,6 +210,21 @@ export class PerksCorpSessionService {
   ) {
     if (!(error instanceof PerksCorpApiError)) return error;
 
+    // WeMAD fixed this in 2026-08: a phone already registered to another account
+    // now returns a clean 400 instead of a 500. Match the message rather than
+    // the status so the person is told the one thing they can act on.
+    if (this.isDuplicatePhone(error)) {
+      return new UnprocessableEntityException({
+        message:
+          'This phone number is already registered with another Saveful account. Use a different number to join My Perks.',
+        missingFields: ['phone'] satisfies PerksMissingField[],
+        code: 'PERKS_PHONE_ALREADY_REGISTERED',
+        upstreamMessage: error.message,
+      });
+    }
+
+    // Kept for the pre-fix behaviour and any other upstream fault: a 5xx during
+    // signup was, in practice, almost always the duplicate phone.
     if (error.statusCode >= 500) {
       return new UnprocessableEntityException({
         message:
@@ -234,5 +249,13 @@ export class PerksCorpSessionService {
     }
 
     return error;
+  }
+
+  private isDuplicatePhone(error: PerksCorpApiError): boolean {
+    const message = error.message.toLowerCase();
+    return (
+      message.includes('phone') &&
+      /already (registered|exists|taken|in use)/.test(message)
+    );
   }
 }

@@ -48,7 +48,6 @@ function createService(overrides: Record<string, any> = {}) {
     deleteFile: jest.fn(),
     ...overrides.imageUpload,
   };
-  // `null` stands for a deployment where the optional dependency is absent.
   const dataVersion =
     overrides.dataVersion === null
       ? undefined
@@ -323,7 +322,6 @@ describe('RecipeService summary caching', () => {
       query: createQuery([rawRecipe]),
     });
 
-    // Current generation is 2 while write was started at 1 → skip set
     redis.get.mockResolvedValueOnce(2);
 
     await (service as any).setRecipeCacheIfCurrent(

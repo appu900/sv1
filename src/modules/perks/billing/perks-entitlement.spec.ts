@@ -29,7 +29,6 @@ const paid = (overrides: Partial<EntitlementInput> = {}): EntitlementInput => ({
 });
 
 describe('isFreeRegion', () => {
-  // `country` is stored unnormalised: some rows hold 'IN', others 'India'.
   it.each(['IN', 'in', 'India', 'india', ' India '])(
     'treats %p as India',
     (value) => {
@@ -85,7 +84,6 @@ describe('resolveEntitlement', () => {
   });
 
   it('never grandfathers a paid member back into free access after they lapse', () => {
-    // Joined long ago, later started paying, now cancelled and out of period.
     const membership = paid({
       registeredAt: new Date('2026-01-01T00:00:00Z'),
       billingStatus: PerksBillingStatus.CANCELED,

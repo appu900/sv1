@@ -12,7 +12,6 @@ function createController(overrides: Record<string, unknown> = {}) {
       return fallback;
     }),
   };
-  // The real client, so signature verification is genuinely exercised.
   const stripeClient = new PerksStripeClient(config as never);
 
   const billing = {
@@ -96,8 +95,6 @@ describe('PerksBillingController webhook', () => {
   });
 
   it('still returns 200 when WeMAD registration fails after payment', async () => {
-    // Stripe retries non-2xx responses; retrying here would re-deliver an event
-    // for money that already moved.
     const { controller } = createController({
       billing: {
         applyWebhookEvent: jest
@@ -148,10 +145,6 @@ describe('PerksBillingController webhook', () => {
     ).rejects.toMatchObject({ status: 400 });
   });
 
-  /**
-   * Guards the `main.ts` mount order: if the global JSON parser runs first, the
-   * body arrives here already parsed and no signature can ever be verified.
-   */
   it('fails loudly when the raw body parser is not mounted', async () => {
     const { controller, billing } = createController();
     const { signature } = signedPayload(CHECKOUT_EVENT);
@@ -160,7 +153,7 @@ describe('PerksBillingController webhook', () => {
       controller.handleWebhook(
         {} as never,
         signature,
-        CHECKOUT_EVENT as never, // parsed object, not a Buffer
+        CHECKOUT_EVENT as never,
       ),
     ).rejects.toMatchObject({ status: 400 });
     expect(billing.applyWebhookEvent).not.toHaveBeenCalled();

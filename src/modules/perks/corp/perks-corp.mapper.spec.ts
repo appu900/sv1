@@ -51,7 +51,6 @@ describe('perks corp mapper', () => {
       expect(
         resolveDiscountPercent({ discount: '0.00', display_discount: '5.00' }),
       ).toBe(5);
-      // A real `discount` always wins over the display value.
       expect(
         resolveDiscountPercent({ discount: '4.00', display_discount: '5.00' }),
       ).toBe(4);
@@ -150,17 +149,12 @@ describe('perks corp mapper', () => {
     });
 
     it('reports unknown, not unsellable, when a listing omits the product', () => {
-      // Every card in WeMAD's listing response looks like this; only their detail
-      // response carries pricing, so `false` here would blank the catalogue.
       const pricing = resolvePricing({ id: 5, name: 'BigW' });
       expect(pricing.purchasable).toBeNull();
       expect(pricing.availableValues).toEqual([]);
     });
 
     it('is definite when a card detail omits the product', () => {
-      // Live: 198 of 200 cards look like this on detail (e.g. Doordash). The app
-      // needs a hard `false` to say "not available yet" instead of quoting and
-      // then failing.
       const pricing = resolvePricing({ id: 309, name: 'Doordash' }, { detailed: true });
       expect(pricing.purchasable).toBe(false);
       expect(pricing.availableValues).toEqual([]);
@@ -302,7 +296,6 @@ describe('perks corp mapper', () => {
         purchasable: false,
         availableValues: [],
       });
-      // The same card from a listing stays unknown, so browse is unaffected.
       expect(mapCatalogueCard(unpriced).purchasable).toBeNull();
     });
 
@@ -360,8 +353,6 @@ describe('perks corp mapper', () => {
       ['failed', 'failed'],
       ['delivered', 'completed'],
       ['declined', 'failed'],
-      // An order that exists has been placed — "unknown" alarms customers and
-      // tells them nothing, so anything unrecognised reads as processing.
       ['something-else', 'processing'],
       ['', 'processing'],
     ])('maps %s → %s', (input, expected) => {
@@ -420,6 +411,32 @@ describe('perks corp mapper', () => {
 
     it('falls back to the internal id when order_number is absent', () => {
       expect(mapOrder({ id: 42, order_item: [] }).orderNumber).toBe('42');
+    });
+  });
+
+  describe('order receipt / invoice link', () => {
+    const base = { order_reference: 'REF-1', order_number: '0001', order_item: [] };
+
+    it('picks up an invoice link under any of the names they might ship', () => {
+      // WeMAD are adding this to the order detail; accept the likely spellings
+      // so it works on their release day without a change here.
+      expect(mapOrder({ ...base, receipt_url: 'https://r/1' }).receiptUrl).toBe(
+        'https://r/1',
+      );
+      expect(mapOrder({ ...base, invoice_url: 'https://i/1' }).receiptUrl).toBe(
+        'https://i/1',
+      );
+      expect(mapOrder({ ...base, invoice_link: 'https://l/1' }).receiptUrl).toBe(
+        'https://l/1',
+      );
+      expect(mapOrder({ ...base, invoice: 'https://v/1' }).receiptUrl).toBe(
+        'https://v/1',
+      );
+    });
+
+    it('ignores a non-string invoice field rather than rendering [object Object]', () => {
+      expect(mapOrder({ ...base, invoice: { id: 7 } }).receiptUrl).toBeNull();
+      expect(mapOrder(base).receiptUrl).toBeNull();
     });
   });
 

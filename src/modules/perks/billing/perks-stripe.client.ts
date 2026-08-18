@@ -2,12 +2,6 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Stripe = require('stripe');
 
-/**
- * Marks Stripe objects as belonging to Perks. The Stripe account is shared with
- * another Saveful backend, and Stripe delivers every event to every endpoint —
- * without this, a checkout there for the same user id is indistinguishable from
- * a Perks payment.
- */
 export const PERKS_PRODUCT_TAG = 'perks_membership';
 
 export class PerksBillingError extends Error {
@@ -55,7 +49,6 @@ export class PerksStripeClient {
       )
       .trim();
 
-    // Absent key is a valid state: billing stays off until Stripe is set up.
     this.client = secretKey ? new Stripe(secretKey) : null;
     if (!secretKey) {
       this.logger.warn('STRIPE_SECRET_KEY is not set — Perks billing is inert');
@@ -66,16 +59,10 @@ export class PerksStripeClient {
     return Boolean(this.client && this.priceId);
   }
 
-  /** The Perks price, used to tell our events apart from other products'. */
   get perksPriceId(): string {
     return this.priceId;
   }
 
-  /**
-   * Reuses the stored customer when we have one so a returning member keeps a
-   * single Stripe customer (and one billing history) instead of accumulating
-   * duplicates on every join attempt.
-   */
   async ensureCustomer(userId: string, email: string, existingId: string | null) {
     const stripe = this.require();
     if (existingId) {
@@ -118,9 +105,6 @@ export class PerksStripeClient {
       mode: 'subscription',
       customer: customerId,
       line_items: [{ price: this.priceId, quantity: 1 }],
-      // Both are set: `client_reference_id` survives on the session, and the
-      // metadata rides along to the subscription, so every webhook we handle
-      // can identify the Saveful user without matching on email.
       client_reference_id: request.userId,
       metadata: {
         savefulUserId: request.userId,
@@ -168,10 +152,6 @@ export class PerksStripeClient {
     });
   }
 
-  /**
-   * Verifies Stripe's signature over the *raw* request body. The body must not
-   * have been JSON-parsed first, or the signature will never match.
-   */
   constructWebhookEvent(payload: Buffer | string, signature: string) {
     const stripe = this.require();
     if (!this.webhookSecret) {

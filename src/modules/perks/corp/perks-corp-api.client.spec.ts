@@ -27,8 +27,6 @@ describe('PerksCorpApiClient', () => {
   });
 
   describe('pagination', () => {
-    // WeMAD fixes per_page at 10 and ignores per_page/limit/paginate (verified
-    // live), so anything past the first page is only reachable by walking.
     const ordersPage = (rows: number[], lastPage: number) => ({
       success: true,
       data: {

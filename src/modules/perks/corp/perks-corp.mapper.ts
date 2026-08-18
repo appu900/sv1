@@ -22,10 +22,6 @@ export interface CatalogueCard {
   terms: string | null;
   deliveryFee: number;
   featured: boolean;
-  /**
-   * False when WeMAD has not configured provider pricing for this card, null
-   * when the payload cannot say (their listing endpoint never includes it).
-   */
   purchasable: boolean | null;
 }
 
@@ -60,17 +56,6 @@ function siteAware(
   return fromSite !== null ? fromSite : num(card[field]);
 }
 
-/**
- * WeMAD owns membership/discount eligibility, so we read their single resolved
- * value rather than picking a `per_*` tier ourselves (they asked us to stop
- * using those, 2026-08).
- *
- * `discount` is the field they nominated, but it currently returns 0.00 on
- * every card — including authenticated requests — while `display_discount`
- * carries the real rates. So we prefer `discount` and fall back to
- * `display_discount`, which keeps pricing correct today and needs no change
- * once they start populating `discount`. Raised with them for confirmation.
- */
 export function resolveDiscountPercent(card: Record<string, unknown>): number {
   const resolved = siteAware(card, 'discount');
   if (resolved !== null && resolved > 0) return resolved;
@@ -102,24 +87,8 @@ export function resolveAvailableValues(
     .sort((left, right) => left - right);
 }
 
-/** Suggested amounts offered inside a variable card's min/max range. */
 const LADDER = [10, 20, 25, 50, 75, 100, 150, 200, 250, 300, 500, 1000];
 
-/**
- * Pricing comes solely from provider_product, per WeMAD (2026-08):
- *   price_type = fixed    -> available_denominations
- *   price_type = variable -> any amount between min_amount and max_amount
- *
- * Never invent a range when one is missing — guessing would let someone order an
- * amount the provider never offered.
- *
- * `purchasable` is deliberately tri-state. WeMAD's *listing* payload omits
- * provider_product on every card (verified live: 200/200), so absence there means
- * "not known yet", not "not for sale" — treating it as false would blank the whole
- * catalogue. Pass `detailed: true` when mapping a card-detail response: there,
- * a missing provider_product really does mean the card cannot be bought, and the
- * app needs that `false` to say so instead of failing a quote.
- */
 export function resolvePricing(
   card: Record<string, unknown>,
   options: { detailed?: boolean } = {},
@@ -142,8 +111,6 @@ export function resolvePricing(
       variablePrice: false,
       minAmount: null,
       maxAmount: null,
-      // Only the detail payload is allowed to be definite. A listing omits
-      // provider_product on every card, so absence there means "not known".
       purchasable: options.detailed ? false : null,
     };
   }
@@ -158,7 +125,6 @@ export function resolvePricing(
       variablePrice: false,
       minAmount: fixed[0] ?? null,
       maxAmount: fixed[fixed.length - 1] ?? null,
-      // Fixed pricing with no denominations configured is unsellable.
       purchasable: fixed.length > 0,
     };
   }
@@ -176,7 +142,6 @@ export function resolvePricing(
     };
   }
 
-  // Handy presets for the slider; any amount in range is still valid.
   const presets = Array.from(
     new Set([min, ...LADDER.filter((v) => v > min && v < max), max]),
   ).sort((left, right) => left - right);
@@ -316,12 +281,6 @@ export function mapGiftTemplates(detail: Record<string, unknown>) {
 }
 
 
-/**
- * Corp uses free-text statuses across orders, items and payments. Anything
- * unrecognised falls back to 'processing' rather than 'unknown': an order that
- * exists has been placed, and showing a customer "unknown" is alarming and
- * tells them nothing actionable.
- */
 export function mapOrderStatus(value: unknown): string {
   const raw = str(value).toLowerCase().trim();
   if (!raw) return 'processing';
@@ -354,6 +313,16 @@ export function mapOrderStatus(value: unknown): string {
 
 const toCents = (value: unknown): number =>
   Math.round((num(value) ?? 0) * 100);
+
+/** First candidate that is genuinely a non-empty string. */
+const firstString = (...values: unknown[]): string | null => {
+  for (const value of values) {
+    if (typeof value !== 'string') continue;
+    const trimmed = value.trim();
+    if (trimmed && trimmed.toLowerCase() !== 'null') return trimmed;
+  }
+  return null;
+};
 
 export type OrderCardLookup = Map<
   string,
@@ -404,7 +373,15 @@ export function mapOrder(
     orderNumber: nullableStr(order.order_number) ?? str(order.id),
     status: mapOrderStatus(order.status),
     cardUrl: null as string | null,
-    receiptUrl: nullableStr(order.receipt_url),
+    // WeMAD are adding an invoice link to the order detail (2026-08). Accept the
+    // likely field names now so it appears the day they ship it, and only take
+    // string values — one of these could arrive as an object.
+    receiptUrl: firstString(
+      order.receipt_url,
+      order.invoice_url,
+      order.invoice_link,
+      order.invoice,
+    ),
     currency: str(order.currency_code) || 'AUD',
     totals: {
       faceValue: num(order.subtotal) ?? 0,
@@ -420,10 +397,6 @@ export function mapOrder(
     lines,
     createdAt: nullableStr(order.created_at),
     completedAt: null as string | null,
-    /**
-     * WeMAD exposes no invoice/receipt endpoint (every candidate route 404s),
-     * so we surface their payment breakdown and render the receipt ourselves.
-     */
     payment: {
       status: nullableStr(order.payment_status),
       method: nullableStr(order.payment_method),

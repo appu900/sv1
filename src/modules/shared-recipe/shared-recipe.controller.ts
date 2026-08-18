@@ -33,7 +33,6 @@ export class SharedRecipeController {
     return String(id);
   }
 
-  /** Share a recipe to a community or publicly */
   @Post()
   @Roles(UserRole.ADMIN, UserRole.USER)
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -42,7 +41,6 @@ export class SharedRecipeController {
     return this.sharedRecipeService.shareRecipe(userId, dto);
   }
 
-  /** Remove a share */
   @Delete(':id')
   @Roles(UserRole.ADMIN, UserRole.USER)
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -51,7 +49,6 @@ export class SharedRecipeController {
     return this.sharedRecipeService.unshareRecipe(userId, id);
   }
 
-  /** Get recipes shared to a community */
   @Get('community/:communityId')
   @Roles(UserRole.ADMIN, UserRole.USER)
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -70,7 +67,6 @@ export class SharedRecipeController {
     );
   }
 
-  /** Get all publicly shared recipes */
   @Get('public')
   @Roles(UserRole.ADMIN, UserRole.USER)
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -87,7 +83,6 @@ export class SharedRecipeController {
     );
   }
 
-  /** Toggle like on a shared recipe */
   @Post('like')
   @Roles(UserRole.ADMIN, UserRole.USER)
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -96,7 +91,6 @@ export class SharedRecipeController {
     return this.sharedRecipeService.toggleLike(userId, dto.sharedRecipeId);
   }
 
-  /** Save a shared recipe to own cookbook */
   @Post('save')
   @Roles(UserRole.ADMIN, UserRole.USER)
   @UseGuards(JwtAuthGuard, RolesGuard)

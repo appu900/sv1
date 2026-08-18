@@ -334,11 +334,6 @@ describe('PerksBillingService', () => {
       );
     });
 
-    /**
-     * The Stripe account is shared with another Saveful backend, and Stripe
-     * sends every event to every endpoint. Both know the same user ids, so
-     * without a product check their purchase would hand out free Perks.
-     */
     it('ignores another product on the shared Stripe account', async () => {
       const { service, membership } = createService();
 

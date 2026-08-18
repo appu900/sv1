@@ -53,10 +53,8 @@ export class RecipeController {
     this.logger.log('Received recipe creation request');
     this.logger.debug('Raw body keys:', Object.keys(body));
 
-    // Parse JSON strings from FormData
     const parsedBody = { ...body };
 
-    // Parse arrays that come as JSON strings
     const jsonFields = [
       'components',
       'frameworkCategories',
@@ -83,7 +81,6 @@ export class RecipeController {
       }
     }
 
-    // Convert numeric strings
     if (typeof parsedBody.prepCookTime === 'string') {
       parsedBody.prepCookTime = parseInt(parsedBody.prepCookTime, 10);
     }
@@ -91,7 +88,6 @@ export class RecipeController {
       parsedBody.order = parseInt(parsedBody.order, 10);
     }
 
-    // Convert boolean strings
     if (typeof parsedBody.isActive === 'string') {
       parsedBody.isActive = parsedBody.isActive === 'true';
     }
@@ -122,7 +118,6 @@ export class RecipeController {
       }
     }
 
-    // Transform to DTO with proper class instantiation
     const createRecipeDto = plainToClass(CreateRecipeDto, parsedBody, {
       enableImplicitConversion: true,
       exposeDefaultValues: true,
@@ -145,7 +140,6 @@ export class RecipeController {
       );
     }
 
-    // Validate
     const errors = await validate(createRecipeDto, {
       whitelist: true,
       forbidNonWhitelisted: false,

@@ -11,7 +11,6 @@ export class QantasFFNResponseDto {
   totalPointsAwarded: number;
   greenTierUnlocked: boolean;
   expirationDate: string | null;
-  /** Backward-compatible shape for SettingsAccountsScreen */
   link_response: {
     qffReference: {
       memberId: string;

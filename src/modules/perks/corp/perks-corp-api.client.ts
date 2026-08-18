@@ -33,7 +33,6 @@ export interface CorpSsoPayload {
   last_name: string;
   email: string;
   phone: string;
-  /** Frontend path to land on, e.g. `/checkout`. */
   redirect_url?: string;
 }
 
@@ -134,11 +133,6 @@ export class PerksCorpApiClient {
     return this.normaliseFrontendUrl(loginUrl);
   }
 
-  /**
-   * WeMAD has previously returned `login_url` pointing at a private LAN address
-   * from their own environment, which no phone can reach. Keep their path and
-   * query but pin the host to the frontend we are configured for.
-   */
   private normaliseFrontendUrl(loginUrl: string): string {
     try {
       const url = new URL(loginUrl);
@@ -260,17 +254,11 @@ export class PerksCorpApiClient {
     );
   }
 
-  /**
-   * WeMAD paginates orders at a fixed 10 per page — `per_page`/`limit`/`paginate`
-   * are all ignored (verified live) — so the pages have to be walked. Reading
-   * only the first page silently truncated order history and, worse, made the
-   * dashboard's lifetime savings a total of the last 10 orders.
-   */
   async listOrders(accessToken: string): Promise<Record<string, unknown>[]> {
     return this.collectPages(accessToken, '/orders', (payload) => {
       const orders = payload?.orders as Record<string, unknown> | undefined;
       return {
-        rows: Array.isArray(orders?.data) ? orders.data : [],
+        rows: orders && Array.isArray(orders.data) ? orders.data : [],
         lastPage: num(orders?.last_page),
       };
     });
@@ -287,7 +275,6 @@ export class PerksCorpApiClient {
     );
   }
 
-  /** Paginated the same way as orders — a member's wallet must not stop at 10. */
   async listMyGiftCards(accessToken: string): Promise<Record<string, unknown>[]> {
     return this.collectPages(accessToken, '/my-gift-cards', (payload) => {
       if (Array.isArray(payload)) return { rows: payload, lastPage: 1 };
@@ -301,10 +288,6 @@ export class PerksCorpApiClient {
     });
   }
 
-  /**
-   * Walks `?page=` until the reported last page. Capped so a bad `last_page`
-   * from upstream cannot spin us through unbounded requests.
-   */
   private async collectPages(
     accessToken: string,
     path: string,
@@ -325,8 +308,6 @@ export class PerksCorpApiClient {
       all.push(...rows);
 
       if (page === 1 && reported && reported > 1) lastPage = reported;
-      // Defensive: a page that returns nothing ends the walk regardless of what
-      // last_page claims, so a wrong count cannot loop us to the cap.
       if (!rows.length) break;
       page += 1;
     }

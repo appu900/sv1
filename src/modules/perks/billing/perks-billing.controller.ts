@@ -51,12 +51,6 @@ export class PerksBillingController {
     return this.success(await this.billing.openPortal(user.userId, returnUrl));
   }
 
-  /**
-   * Unauthenticated by design — Stripe authenticates itself with a signature
-   * over the raw body. `main.ts` mounts a raw body parser for this exact path;
-   * without it the global JSON parser consumes the body and every signature
-   * check fails.
-   */
   @Post('webhook')
   @HttpCode(HttpStatus.OK)
   async handleWebhook(
@@ -83,8 +77,6 @@ export class PerksBillingController {
     try {
       const outcome = await this.billing.applyWebhookEvent(event);
 
-      // Payment succeeded, so register with WeMAD now — the member should come
-      // back to a usable membership rather than have to tap Join again.
       if (outcome.activatedUserId) {
         await this.perksService.completeRegistrationAfterPayment(
           outcome.activatedUserId,
@@ -92,9 +84,6 @@ export class PerksBillingController {
       }
     } catch (error) {
       if (error instanceof PerksBillingError) throw error;
-      // Never fail the webhook for downstream problems: Stripe would retry a
-      // payment that already succeeded. The membership records the failure and
-      // the app retries registration on its next call.
       this.logger.error(
         `Perks webhook ${event.id} (${event.type}) failed after the payment: ${
           error instanceof Error ? error.message : String(error)

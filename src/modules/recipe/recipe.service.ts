@@ -56,7 +56,6 @@ export class RecipeService implements OnModuleInit {
   private readonly CACHE_KEY_SINGLE = 'recipes:single';
   private readonly CACHE_KEY_CATEGORY = 'recipes:category';
   private readonly CACHE_KEY_SUMMARIES = 'recipes:summaries:v2';
-  /** Outside `recipes:*` so nuclear deletes do not reset the fence. */
   private readonly CACHE_GENERATION_KEY = 'cache:gen:recipes';
   private readonly summaryRefreshes = new Map<
     string,
@@ -101,7 +100,6 @@ export class RecipeService implements OnModuleInit {
     }
 
     return components.map((wrapper, wrapperIndex) => {
-      // Support both `component` and `components` keys from the client
       const componentArray = Array.isArray(wrapper.component)
         ? wrapper.component
         : Array.isArray((wrapper as any).components)
@@ -210,7 +208,6 @@ export class RecipeService implements OnModuleInit {
           heroImageFile,
           'recipes',
         );
-        // `heroImageUrl` stays populated for clients that predate `heroImage`.
         heroImageUrl = heroImage.base;
       }
 
@@ -268,7 +265,6 @@ export class RecipeService implements OnModuleInit {
       const recipe = new this.recipeModel(recipeData);
       const savedRecipe = await recipe.save();
 
-      // Debug: confirm what was persisted
       try {
         const firstWrapper: any = (savedRecipe.components || [])[0];
         const firstComp: any = Array.isArray(firstWrapper?.component)
@@ -316,7 +312,6 @@ export class RecipeService implements OnModuleInit {
         return cached;
       }
     } catch {
-      // Redis is an optimization. Keep the Make page available without it.
     }
 
     const activeRefresh = this.summaryRefreshes.get(cacheKey);
@@ -385,7 +380,6 @@ export class RecipeService implements OnModuleInit {
         try {
           await this.redisService.releaseLock(lockKey, lockToken);
         } catch {
-          // The lock expires automatically if Redis cannot release it.
         }
       }
     }
@@ -485,7 +479,6 @@ export class RecipeService implements OnModuleInit {
     };
   }
 
-  /** Strips the Mongoose subdocument wrapper down to plain JSON. */
   private summaryHeroImage(heroImage: any): SummaryHeroImage {
     return {
       base: String(heroImage.base),
@@ -503,8 +496,6 @@ export class RecipeService implements OnModuleInit {
   private summaryId(value: unknown): string {
     if (!value) return '';
     if (typeof value === 'string') return value;
-    // An ObjectId returns itself from `._id`, so it must be matched before the
-    // `._id` unwrapping below or the recursion never terminates.
     if (value instanceof Types.ObjectId) return value.toHexString();
     if (Buffer.isBuffer(value)) return value.toString('hex');
     if (typeof value === 'object') {
@@ -639,9 +630,6 @@ export class RecipeService implements OnModuleInit {
         error?.message,
       );
     }
-
-    // Tells clients to refetch. `bump` absorbs its own failures, so a Redis or
-    // Mongo outage degrades freshness rather than failing the mutation.
     await this.dataVersion?.bump('recipes');
   }
 
@@ -808,10 +796,6 @@ export class RecipeService implements OnModuleInit {
 
     const generationAtStart = await this.getRecipeCacheGeneration();
 
-    // Build a regex that matches titles whose slugified form equals the slug.
-    // Convert slug back to a title-like pattern: "chicken-tikka" → "chicken tikka" (case-insensitive)
-    // Each hyphen-separated token is escaped so regex-special characters in
-    // recipe titles (parentheses, brackets, +, etc.) are treated as literals.
     const titlePattern = slug
       .split('-')
       .map(token => token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
