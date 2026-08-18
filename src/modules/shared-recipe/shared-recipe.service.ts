@@ -60,15 +60,11 @@ export class SharedRecipeService {
     return { $or: orConditions };
   }
 
-  /**
-   * Share a recipe to a community or publicly.
-   */
   async shareRecipe(userId: string, dto: ShareRecipeDto) {
     if (!Types.ObjectId.isValid(userId)) {
       throw new BadRequestException('Invalid user ID');
     }
 
-    // Verify the recipe exists and belongs to the user
     const recipe = await this.userRecipeModel.findOne({
       _id: new Types.ObjectId(dto.recipeId),
       ...this.buildUserMatch(userId),
@@ -81,7 +77,6 @@ export class SharedRecipeService {
       );
     }
 
-    // For community shares, verify user is a member
     if (dto.shareType === 'community') {
       if (!dto.communityId) {
         throw new BadRequestException(
@@ -109,7 +104,6 @@ export class SharedRecipeService {
       }
     }
 
-    // Check for duplicate share
     const existingFilter: any = {
       sharedBy: new Types.ObjectId(userId),
       recipeId: new Types.ObjectId(dto.recipeId),
@@ -138,7 +132,6 @@ export class SharedRecipeService {
       message: dto.message || '',
     });
 
-    // Send notifications to community members (excluding sharer)
     if (dto.shareType === 'community' && dto.communityId) {
       this.notifyCommunityMembers(
         userId,
@@ -162,9 +155,6 @@ export class SharedRecipeService {
     };
   }
 
-  /**
-   * Remove a share.
-   */
   async unshareRecipe(userId: string, sharedRecipeId: string) {
     const sharedRecipe = await this.sharedRecipeModel.findOne({
       _id: new Types.ObjectId(sharedRecipeId),
@@ -182,9 +172,6 @@ export class SharedRecipeService {
     return { success: true, message: 'Recipe unshared successfully' };
   }
 
-  /**
-   * Get recipes shared to a specific community.
-   */
   async getCommunityRecipes(
     userId: string,
     communityId: string,
@@ -195,7 +182,6 @@ export class SharedRecipeService {
       throw new BadRequestException('Invalid community ID');
     }
 
-    // Verify membership
     const membership = await this.communityMemberModel.findOne({
       groupId: new Types.ObjectId(communityId),
       userId: new Types.ObjectId(userId),
@@ -231,7 +217,6 @@ export class SharedRecipeService {
       }),
     ]);
 
-    // Check which ones current user has liked
     const sharedIds = recipes.map((r: any) => r._id);
     const userLikes = await this.sharedRecipeLikeModel
       .find({
@@ -262,9 +247,6 @@ export class SharedRecipeService {
     };
   }
 
-  /**
-   * Get all publicly shared recipes.
-   */
   async getPublicRecipes(userId: string, page = 1, limit = 20) {
     const skip = (page - 1) * limit;
 
@@ -314,9 +296,7 @@ export class SharedRecipeService {
     };
   }
 
-  /**
-   * Toggle like on a shared recipe.
-   */
+
   async toggleLike(userId: string, sharedRecipeId: string) {
     if (!Types.ObjectId.isValid(sharedRecipeId)) {
       throw new BadRequestException('Invalid shared recipe ID');
@@ -336,7 +316,6 @@ export class SharedRecipeService {
     });
 
     if (existing) {
-      // Unlike
       await this.sharedRecipeLikeModel.deleteOne({ _id: existing._id });
       await this.sharedRecipeModel.updateOne(
         { _id: new Types.ObjectId(sharedRecipeId) },
@@ -345,7 +324,6 @@ export class SharedRecipeService {
       return { success: true, liked: false, message: 'Unliked' };
     }
 
-    // Like
     await this.sharedRecipeLikeModel.create({
       sharedRecipeId: new Types.ObjectId(sharedRecipeId),
       userId: new Types.ObjectId(userId),
@@ -358,9 +336,6 @@ export class SharedRecipeService {
     return { success: true, liked: true, message: 'Liked!' };
   }
 
-  /**
-   * Save a shared recipe to the user's own cookbook (duplicate it).
-   */
   async saveToMyCookbook(userId: string, sharedRecipeId: string) {
     const sharedRecipe = await this.sharedRecipeModel
       .findOne({
@@ -388,7 +363,6 @@ export class SharedRecipeService {
       throw new ConflictException('You already have this recipe in your cookbook');
     }
 
-    // Clone recipe for the new user
     const cloneData = {
       title: sourceRecipe.title,
       userid: userId,
@@ -428,9 +402,6 @@ export class SharedRecipeService {
     };
   }
 
-  /**
-   * Get shares made by the current user (to show share status on recipe detail).
-   */
   async getMyShares(userId: string, recipeId: string) {
     const shares = await this.sharedRecipeModel
       .find({
@@ -445,9 +416,6 @@ export class SharedRecipeService {
     return { success: true, data: shares };
   }
 
-  /**
-   * Notify community members about a new shared recipe.
-   */
   private async notifyCommunityMembers(
     sharerId: string,
     communityId: string,
