@@ -98,6 +98,11 @@ export class ChefsController {
     return this.chefService.getCuisines();
   }
 
+  @Get('cuisines/:id')
+  getCuisineDetail(@Param('id') id: string) {
+    return this.chefService.getCuisineDetail(id);
+  }
+
   @Get(':slugOrId')
   @UseGuards(OptionalJwtAuthGuard)
   getProfile(

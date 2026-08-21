@@ -839,9 +839,33 @@ export class ChefService {
       cuisines: cuisines.map((c) => ({
         id: String(c._id),
         title: c.title,
+        description: c.description ?? null,
         imageUrl: c.imageUrl ?? null,
         chefCount: countById.get(String(c._id)) || 0,
       })),
+    };
+  }
+
+  async getCuisineDetail(cuisineId: string) {
+    const cid = toObjectId(cuisineId);
+    if (!cid) throw new NotFoundException('Cuisine not found');
+
+    const cuisine = await this.cuisineModel.findById(cid).lean().exec();
+    if (!cuisine || cuisine.isActive === false) {
+      throw new NotFoundException('Cuisine not found');
+    }
+
+    const chefCount = await this.chefProfileModel.countDocuments({
+      ...PUBLIC_CHEF_FILTER,
+      cuisineIds: cid,
+    });
+
+    return {
+      id: String(cuisine._id),
+      title: cuisine.title,
+      description: cuisine.description ?? null,
+      imageUrl: cuisine.imageUrl ?? null,
+      chefCount,
     };
   }
 
@@ -877,6 +901,7 @@ export class ChefService {
         return {
           id: String(c._id),
           title: c.title,
+          description: c.description ?? null,
           imageUrl: c.imageUrl ?? null,
           chefCount: r.chefCount,
         };
