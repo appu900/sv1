@@ -27,6 +27,7 @@ import {
   RecipeDocument,
 } from '../../database/schemas/recipe.schema';
 import { RedisService } from '../../redis/redis.service';
+import { normalizeCountry } from '../../utils/countries.util';
 import { DataVersionService } from '../data-version/data-version.service';
 import { ChefFavouriteService } from './chef-favourite.service';
 import {
@@ -703,7 +704,10 @@ export class ChefService {
     },
   ) {
     const take = Math.min(Math.max(opts.limit || 24, 1), 48);
-    const country = (opts.country || '').trim();
+    // Recipes store canonical country names, and every /recipe endpoint
+    // normalizes before matching — do the same here so a stored "AU" or
+    // "australia" does not silently return an empty list.
+    const country = normalizeCountry(opts.country) || '';
     const chefsHash = createHash('sha1')
       .update(userIds.map(String).sort().join(','))
       .digest('hex')
