@@ -554,7 +554,10 @@ export class PerksService {
           ? {
               recipientName: dto.giftRecipientName!,
               recipientEmail: dto.giftRecipientEmail!,
+              recipientPhone: dto.giftRecipientPhone!,
               templateId: dto.giftTemplateId!,
+              templateDesignId: dto.giftTemplateDesignId!,
+              ...(dto.giftMessage ? { message: dto.giftMessage } : {}),
             }
           : null,
       });
@@ -616,7 +619,10 @@ export class PerksService {
             ? {
                 recipientName: dto.giftRecipientName!,
                 recipientEmail: dto.giftRecipientEmail!,
+                recipientPhone: dto.giftRecipientPhone!,
                 templateId: dto.giftTemplateId!,
+                templateDesignId: dto.giftTemplateDesignId!,
+                ...(dto.giftMessage ? { message: dto.giftMessage } : {}),
               }
             : null,
         },
@@ -677,11 +683,16 @@ export class PerksService {
         gift_card_id: item.ecardId,
         amount: this.currency(item.faceValueCents),
         purchase_type: item.sendAsGift ? ('gift' as const) : ('self' as const),
+        // All five are mandatory upstream for a gift line; omitting the phone
+        // or the design id fails the whole checkout with a 422.
         ...(item.sendAsGift && item.gift
           ? {
               recipient_name: item.gift.recipientName,
               recipient_email: item.gift.recipientEmail,
+              recipient_phone: item.gift.recipientPhone,
               gift_template_id: item.gift.templateId,
+              gift_template_design_id: item.gift.templateDesignId,
+              ...(item.gift.message ? { message: item.gift.message } : {}),
             }
           : {}),
       };
@@ -757,24 +768,39 @@ export class PerksService {
 
     const list = Array.isArray(payload) ? payload : [];
     if (!list.length) return [];
-    let cards: OrderCardLookup | undefined;
-    try {
-      const catalogue = await this.getCachedCatalogue();
-      cards = new Map(
-        catalogue.map((card) => [
-          card.id,
-          { name: card.name, imageUrl: card.imageUrl },
-        ]),
-      );
-    } catch (error) {
-      this.logger.warn(
-        `Perks orders could not enrich lines: ${(error as Error).message}`,
-      );
-    }
+    const cards = await this.catalogueLookup('orders');
 
     return list.map((order) => mapOrder(order as Record<string, unknown>, cards));
   }
 
+
+  /**
+   * Card id → name, artwork and balance link. Returns undefined rather than
+   * throwing: a catalogue outage should degrade the labels, not take down
+   * someone's order history or wallet.
+   */
+  private async catalogueLookup(
+    context: string,
+  ): Promise<OrderCardLookup | undefined> {
+    try {
+      const catalogue = await this.getCachedCatalogue();
+      return new Map(
+        catalogue.map((card) => [
+          card.id,
+          {
+            name: card.name,
+            imageUrl: card.imageUrl,
+            balanceLink: card.balanceLink,
+          },
+        ]),
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Perks ${context} could not enrich lines: ${(error as Error).message}`,
+      );
+      return undefined;
+    }
+  }
 
   private async fetchWalletCards(userId: string) {
     const { user, membership } = await this.requireActiveMembership(userId);
@@ -789,7 +815,11 @@ export class PerksService {
       ),
     );
 
-    const mapped = entries.map((entry) => mapWalletCard(entry));
+    // WeMAD's wallet rows carry a gift_card_id but usually no brand name or
+    // artwork, so join the catalogue exactly as orders do. Without it every
+    // card renders as "eGift card" with a placeholder image.
+    const cards = await this.catalogueLookup('wallet');
+    const mapped = entries.map((entry) => mapWalletCard(entry, cards));
     const metadata = await this.walletMetadataModel
       .find({
         userId: objectId,
@@ -1158,7 +1188,7 @@ export class PerksService {
   ): Promise<CatalogueCard[]> {
     const paginate = this.positiveConfigNumber('PERKS_CATALOGUE_PAGE_SIZE', 100);
     const raw = await this.callUpstream(() =>
-      this.api.listGiftCards({ paginate }),
+      this.api.listAllGiftCards({ pageSize: paginate }),
     );
     let parentIndex: ReturnType<typeof buildCategoryParentIndex> | undefined;
     try {

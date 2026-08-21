@@ -131,6 +131,8 @@ function createService(overrides: Record<string, unknown> = {}) {
   let upstreamCart: Record<string, unknown>[] = [];
   const api = {
     listGiftCards: jest.fn().mockResolvedValue([CARD]),
+    // The catalogue now walks every page rather than reading page 1 only.
+    listAllGiftCards: jest.fn().mockResolvedValue([CARD]),
     getGiftCard: jest.fn().mockResolvedValue({ gift_card: CARD }),
     getCart: jest.fn(async () => [...upstreamCart]),
     addToCart: jest.fn(async () => {
@@ -232,7 +234,7 @@ describe('PerksService (corp)', () => {
       });
 
       await service.getCatalogue({});
-      expect(api.listGiftCards).toHaveBeenCalledTimes(1);
+      expect(api.listAllGiftCards).toHaveBeenCalledTimes(1);
     });
 
     it('filters by category and search without re-fetching', async () => {
@@ -273,7 +275,7 @@ describe('PerksService (corp)', () => {
       const { service, api } = createService(hangingRedis());
       const cards = await service.getCatalogue({});
       expect(cards).toHaveLength(1);
-      expect(api.listGiftCards).toHaveBeenCalled();
+      expect(api.listAllGiftCards).toHaveBeenCalled();
     }, 15000);
 
     it('still serves card detail', async () => {
@@ -705,7 +707,7 @@ describe('PerksService (corp)', () => {
       };
       const { service } = createService({
         api: {
-          listGiftCards: jest.fn().mockResolvedValue([variableCard]),
+          listAllGiftCards: jest.fn().mockResolvedValue([variableCard]),
           getGiftCard: jest.fn().mockResolvedValue({ gift_card: variableCard }),
         },
       });
@@ -750,7 +752,7 @@ describe('PerksService (corp)', () => {
       };
       const { service, api } = createService({
         api: {
-          listGiftCards: jest.fn().mockResolvedValue([listingCard]),
+          listAllGiftCards: jest.fn().mockResolvedValue([listingCard]),
           getGiftCard: jest.fn().mockResolvedValue({ gift_card: detailCard }),
         },
       });
@@ -861,6 +863,50 @@ describe('PerksService (corp)', () => {
 
       expect(session.login).toHaveBeenCalledTimes(2);
       expect(second.checkoutUrl).toContain('web-second');
+    });
+
+    it('sends every field WeMAD requires on a gift line', async () => {
+      // Verified live: a gift line missing recipient_phone or
+      // gift_template_design_id is rejected 422, which previously surfaced as a
+      // failed checkout after the customer had filled the whole form in.
+      const cart = cartDoc([
+        {
+          itemId: 'g',
+          ecardId: '3',
+          quantity: 1,
+          faceValueCents: 5000,
+          sendAsGift: true,
+          gift: {
+            recipientName: 'John Doe',
+            recipientEmail: 'john@example.com',
+            recipientPhone: '0400000000',
+            templateId: '2',
+            templateDesignId: '4',
+            message: 'Happy Birthday!',
+          },
+        },
+      ]);
+      const { service, api } = createService({
+        cartModel: {
+          findOne: jest.fn().mockResolvedValue(cart),
+          updateOne: jest.fn(),
+        },
+      });
+
+      await service.checkoutCart(userId);
+
+      expect(api.addToCart).toHaveBeenCalledWith(
+        'access-1',
+        expect.objectContaining({
+          purchase_type: 'gift',
+          recipient_name: 'John Doe',
+          recipient_email: 'john@example.com',
+          recipient_phone: '0400000000',
+          gift_template_id: '2',
+          gift_template_design_id: '4',
+          message: 'Happy Birthday!',
+        }),
+      );
     });
 
     it('sends gift metadata for gifted lines', async () => {

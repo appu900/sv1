@@ -326,7 +326,7 @@ const firstString = (...values: unknown[]): string | null => {
 
 export type OrderCardLookup = Map<
   string,
-  { name: string; imageUrl: string | null }
+  { name: string; imageUrl: string | null; balanceLink?: string | null }
 >;
 
 export function mapOrder(
@@ -432,23 +432,58 @@ export function walletCardKey(
     .digest('hex');
 }
 
-export function mapWalletCard(entry: Record<string, unknown>) {
+/**
+ * WeMAD's wallet entries are shaped like order lines: they carry `gift_card_id`
+ * and an amount, but the brand name and artwork live on the gift card itself.
+ * Some payloads embed a `gift_card` object (their cart response does), others
+ * do not — so read the embedded card when present and fall back to the
+ * catalogue by id. Without this the wallet showed every card as "eGift card"
+ * with a placeholder image.
+ */
+export function mapWalletCard(
+  entry: Record<string, unknown>,
+  cards?: OrderCardLookup,
+) {
   const gifted = str(entry.purchase_type).toLowerCase() === 'gift';
+  const embedded = (entry.gift_card ?? {}) as Record<string, unknown>;
+  const ecardId = str(entry.gift_card_id ?? embedded.id);
+  const catalogue = cards?.get(ecardId);
+
+  const cardName =
+    nullableStr(embedded.name) ??
+    nullableStr(entry.gift_card_name) ??
+    nullableStr(entry.name) ??
+    catalogue?.name ??
+    'Gift card';
+
+  const imageUrl =
+    resolveImageUrl(embedded.image) ??
+    resolveImageUrl(entry.image) ??
+    catalogue?.imageUrl ??
+    null;
+
   return {
     cardKey: walletCardKey(entry, gifted),
     gifted,
-    cardName: str(entry.gift_card_name ?? entry.name),
-    value: num(entry.amount),
+    ecardId,
+    cardName,
+    imageUrl,
+    // `amount` is the face value on their order lines; the others are defensive
+    // in case the wallet payload names it differently.
+    value: num(entry.amount) ?? num(entry.face_value) ?? num(entry.value),
     issuedAt: nullableStr(entry.created_at ?? entry.issued_at),
-    expiresIn: nullableStr(entry.expiry ?? entry.expires_at),
+    expiresIn: nullableStr(entry.expiry ?? entry.expires_at ?? entry.expiry_date),
     orderReference: nullableStr(entry.order_reference),
     orderNumber: nullableStr(entry.order_number ?? entry.order_id),
     orderStatus: mapOrderStatus(entry.status),
     cardUrl: nullableStr(entry.card_url ?? entry.cardurl ?? entry.redeem_url),
-    cardNumber: nullableStr(entry.card_number ?? entry.voucher_code),
+    cardNumber: nullableStr(
+      entry.card_number ?? entry.voucher_code ?? entry.voucher_id,
+    ),
     pin: nullableStr(entry.card_pin ?? entry.pin),
-    barcode: nullableStr(entry.barcode),
-    balance: num(entry.balance),
+    barcode: nullableStr(entry.barcode ?? embedded.barcode_type),
+    balance: num(entry.balance) ?? num(entry.remaining_balance),
+    balanceLink: nullableStr(embedded.balance_link) ?? catalogue?.balanceLink ?? null,
     ...(gifted
       ? {
           recipientName: nullableStr(entry.recipient_name),

@@ -453,6 +453,69 @@ describe('perks corp mapper', () => {
       created_at: '2026-06-23T05:05:30.000000Z',
     };
 
+    /**
+     * Their wallet rows are shaped like order lines: a gift_card_id and an
+     * amount, with the brand name and artwork living on the gift card. These
+     * cover the three shapes we can receive, because a wallet showing
+     * "eGift card" and a grey placeholder for every purchase is the failure
+     * this mapping exists to prevent.
+     */
+    it('takes the name and artwork from an embedded gift_card', () => {
+      expect(
+        mapWalletCard({
+          ...entry,
+          gift_card_name: undefined,
+          gift_card: {
+            id: 1,
+            name: 'Coles Gift Card',
+            image: 'giftcards/3.jpg',
+            balance_link: 'https://coles/balance',
+          },
+        }),
+      ).toMatchObject({
+        ecardId: '1',
+        cardName: 'Coles Gift Card',
+        imageUrl: 'https://sandbox.wemad.com.au/storage/giftcards/3.jpg',
+        balanceLink: 'https://coles/balance',
+      });
+    });
+
+    it('falls back to the catalogue when the row carries only an id', () => {
+      const catalogue = new Map([
+        [
+          '1',
+          {
+            name: 'Coles Gift Card',
+            imageUrl: 'https://cdn/coles.png',
+            balanceLink: 'https://coles/balance',
+          },
+        ],
+      ]);
+
+      expect(
+        mapWalletCard(
+          { ...entry, gift_card_name: undefined, name: undefined },
+          catalogue,
+        ),
+      ).toMatchObject({
+        cardName: 'Coles Gift Card',
+        imageUrl: 'https://cdn/coles.png',
+      });
+    });
+
+    it('never renders a nameless card, even with nothing to join on', () => {
+      const mapped = mapWalletCard({ amount: '50.00', status: 'sent' });
+      expect(mapped.cardName).toBe('Gift card');
+      expect(mapped.imageUrl).toBeNull();
+      expect(mapped.value).toBe(50);
+    });
+
+    it('reads the value and balance however they are named', () => {
+      expect(mapWalletCard({ face_value: '25.00', balance: '10.00' })).toMatchObject(
+        { value: 25, balance: 10 },
+      );
+    });
+
     it('produces a stable key for the same card across responses', () => {
       expect(walletCardKey(entry, false)).toBe(walletCardKey({ ...entry }, false));
     });

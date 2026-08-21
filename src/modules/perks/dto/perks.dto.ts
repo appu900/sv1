@@ -134,10 +134,30 @@ export class PerksCartItemDto {
   @IsEmail()
   giftRecipientEmail?: string;
 
+  /**
+   * WeMAD reject a gift line without a phone, a template AND a design id
+   * (verified live). Requiring them here means the customer is told while they
+   * are filling the form, not when checkout fails minutes later.
+   */
+  @ValidateIf((value) => value.sendAsGift === true)
+  @IsString()
+  @Matches(/^[\d+\s()-]{8,20}$/)
+  giftRecipientPhone?: string;
+
   @ValidateIf((value) => value.sendAsGift === true)
   @IsString()
   @Matches(/^\d+$/)
   giftTemplateId?: string;
+
+  @ValidateIf((value) => value.sendAsGift === true)
+  @IsString()
+  @Matches(/^\d+$/)
+  giftTemplateDesignId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  giftMessage?: string;
 }
 
 export class QuotePerksDto extends PerksCartItemDto {}

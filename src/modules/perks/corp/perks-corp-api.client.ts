@@ -225,6 +225,58 @@ export class PerksCorpApiClient {
     return Array.isArray(data) ? data : [];
   }
 
+  /**
+   * The whole catalogue, not just the first page.
+   *
+   * The listing is paginated and carries no total, so the pages have to be
+   * walked. Asking for everything in one request works but took 10-13s live —
+   * past our own timeout — so pages are fetched in parallel batches instead,
+   * each request staying small and quick. Reading only page 1 previously hid
+   * 534 of 634 cards from the app.
+   */
+  async listAllGiftCards({
+    pageSize = 100,
+    maxPages = 20,
+    batchSize = 8,
+  }: { pageSize?: number; maxPages?: number; batchSize?: number } = {}): Promise<
+    Record<string, unknown>[]
+  > {
+    const byId = new Map<string, Record<string, unknown>>();
+    let nextPage = 1;
+    let exhausted = false;
+
+    while (!exhausted && nextPage <= maxPages) {
+      const pages: number[] = [];
+      for (let i = 0; i < batchSize && nextPage + i <= maxPages; i += 1) {
+        pages.push(nextPage + i);
+      }
+
+      const results = await Promise.all(
+        pages.map((page) => this.listGiftCards({ paginate: pageSize, page })),
+      );
+
+      for (const rows of results) {
+        for (const row of rows) {
+          const id = String((row as { id?: unknown }).id ?? '');
+          if (id) byId.set(id, row);
+        }
+      }
+
+      // A page shorter than requested is the last one; an empty batch means we
+      // have run past the end.
+      exhausted = results.some((rows) => rows.length < pageSize);
+      nextPage += pages.length;
+    }
+
+    if (!exhausted) {
+      this.logger.warn(
+        `Perks catalogue hit the ${maxPages}-page cap; some cards may be missing`,
+      );
+    }
+
+    return [...byId.values()];
+  }
+
   async getGiftCard(idOrSlug: string): Promise<Record<string, unknown>> {
     return this.request<Record<string, unknown>>(
       `/gift-cards/${encodeURIComponent(idOrSlug)}`,

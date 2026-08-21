@@ -65,6 +65,49 @@ describe('PerksCorpApiClient', () => {
       await expect(createClient().listOrders('access-1')).resolves.toHaveLength(1);
     });
 
+    it('walks the whole catalogue, not just the first page', async () => {
+      // Live: 634 cards over 7 pages. Reading page 1 only hid 534 of them.
+      const card = (id: number) => ({ id });
+      const pages = [
+        { success: true, data: Array.from({ length: 100 }, (_, i) => card(i)) },
+        { success: true, data: Array.from({ length: 100 }, (_, i) => card(100 + i)) },
+        { success: true, data: Array.from({ length: 34 }, (_, i) => card(200 + i)) },
+        { success: true, data: [] },
+      ];
+      let call = 0;
+      global.fetch = jest.fn().mockImplementation(async () => ({
+        status: 200,
+        text: async () => JSON.stringify(pages[Math.min(call++, pages.length - 1)]),
+      })) as never;
+
+      const cards = await createClient().listAllGiftCards({
+        pageSize: 100,
+        batchSize: 4,
+      });
+
+      // A short page ends the walk; ids are de-duplicated across pages.
+      expect(cards).toHaveLength(234);
+    });
+
+    it('stops at the page cap rather than looping forever', async () => {
+      global.fetch = jest.fn().mockImplementation(async () => ({
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            success: true,
+            // Always a full page: without a cap this would never end.
+            data: Array.from({ length: 10 }, (_, i) => ({ id: Math.random() + i })),
+          }),
+      })) as never;
+
+      const cards = await createClient().listAllGiftCards({
+        pageSize: 10,
+        maxPages: 6,
+        batchSize: 3,
+      });
+      expect(cards.length).toBeLessThanOrEqual(60);
+    });
+
     it('reads the wallet from the paginated items shape', async () => {
       const page = (items: number[], lastPage: number) => ({
         success: true,
