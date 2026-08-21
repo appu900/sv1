@@ -386,6 +386,12 @@ export class ChefService {
         ];
       }
 
+      // Snapshot the filter before cursor conditions so `total` counts the whole
+      // result set, not just the page that is left. The cursor block below
+      // reassigns filter.$and rather than mutating it, so this stays intact.
+      const totalFilter: any = { ...filter, $and: [...(filter.$and || [])] };
+      if (!totalFilter.$and.length) delete totalFilter.$and;
+
       const decoded = decodeCursor(params.cursor);
       if (decoded && Types.ObjectId.isValid(decoded.id)) {
         const cid = new Types.ObjectId(decoded.id);
@@ -434,12 +440,15 @@ export class ChefService {
       if (sort === 'popular') sortSpec = { 'lifetime.mealsCooked': -1, _id: 1 };
       if (sort === 'alphabetical') sortSpec = { displayNameLower: 1, _id: 1 };
 
-      const docs = await this.chefProfileModel
-        .find(filter)
-        .sort(sortSpec)
-        .limit(limit + 1)
-        .lean()
-        .exec();
+      const [docs, total] = await Promise.all([
+        this.chefProfileModel
+          .find(filter)
+          .sort(sortSpec)
+          .limit(limit + 1)
+          .lean()
+          .exec(),
+        this.chefProfileModel.countDocuments(totalFilter),
+      ]);
 
       const hasMore = docs.length > limit;
       const slice = hasMore ? docs.slice(0, limit) : docs;
@@ -456,7 +465,7 @@ export class ChefService {
         nextCursor = encodeCursor(sortValue, String(last._id));
       }
 
-      page = { items, nextCursor, hasMore };
+      page = { items, nextCursor, hasMore, total };
       await this.redisService.set(cacheKey, page, CHEF_CACHE_TTL);
     }
 
@@ -602,17 +611,34 @@ export class ChefService {
       const doc = await this.chefProfileModel.findOne(filter).lean().exec();
       if (!doc) throw new NotFoundException('Chef not found');
 
-      const cuisineSourceIds =
-        doc.featuredCuisineIds?.length > 0
-          ? doc.featuredCuisineIds
-          : doc.cuisineIds;
-      const cuisines = cuisineSourceIds?.length
+      // "My Cuisine Inspiration" is the chef's own pick when they made one,
+      // otherwise what their recipes cover. Anything their recipes cover beyond
+      // that pick is shown separately as "also cooks" so the profile accounts
+      // for every cuisine they actually make.
+      const featuredIds = doc.featuredCuisineIds ?? [];
+      const derivedIds = doc.cuisineIds ?? [];
+      const cuisineSourceIds = featuredIds.length > 0 ? featuredIds : derivedIds;
+      const featuredKeys = new Set(cuisineSourceIds.map(String));
+      const alsoCookedIds = derivedIds.filter(
+        (id) => !featuredKeys.has(String(id)),
+      );
+
+      const allIds = [...cuisineSourceIds, ...alsoCookedIds];
+      const cuisineDocs = allIds.length
         ? await this.cuisineModel
-            .find({ _id: { $in: cuisineSourceIds }, isActive: true })
-            .select({ title: 1, imageUrl: 1 })
+            .find({ _id: { $in: allIds }, isActive: true })
+            .select({ title: 1, imageUrl: 1, order: 1 })
+            .sort({ order: 1, title: 1 })
             .lean()
             .exec()
         : [];
+
+      const cuisines = cuisineDocs.filter((c) =>
+        featuredKeys.has(String(c._id)),
+      );
+      const alsoCooked = cuisineDocs.filter(
+        (c) => !featuredKeys.has(String(c._id)),
+      );
 
       profile = {
         id: String(doc._id),
@@ -626,6 +652,11 @@ export class ChefService {
         bio: doc.bio ?? null,
         socialLinks: doc.socialLinks ?? {},
         cuisines: cuisines.map((c) => ({
+          id: String(c._id),
+          title: c.title,
+          imageUrl: c.imageUrl ?? null,
+        })),
+        alsoCooks: alsoCooked.map((c) => ({
           id: String(c._id),
           title: c.title,
           imageUrl: c.imageUrl ?? null,

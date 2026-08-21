@@ -8,9 +8,9 @@ export const PUBLIC_CHEF_FILTER = { isPublished: true } as const;
 
 export const CHEF_CACHE_KEYS = {
   home: (country?: string) =>
-    `chefs:home:v1:${(country || 'all').toLowerCase()}`,
-  list: (hash: string) => `chefs:list:v1:${hash}`,
-  profile: (idOrSlug: string) => `chefs:profile:v1:${idOrSlug}`,
+    `chefs:home:v2:${(country || 'all').toLowerCase()}`,
+  list: (hash: string) => `chefs:list:v2:${hash}`,
+  profile: (idOrSlug: string) => `chefs:profile:v2:${idOrSlug}`,
   recipes: (chefId: string, country: string, cursor: string) =>
     `chefs:recipes:v1:${chefId}:${country}:${cursor || 'start'}`,
   recipeChefs: (recipeId: string) => `chef:recipe-chefs:${recipeId}`,
