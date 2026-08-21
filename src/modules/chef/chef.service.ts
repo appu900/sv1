@@ -50,6 +50,38 @@ function toObjectId(
   return new Types.ObjectId(String(value));
 }
 
+/**
+ * Where a chef is discoverable when browsing by cuisine: the inspiration they
+ * chose themselves when they picked any, otherwise the cuisines their published
+ * recipes cover. Keeps cuisine listings and counts consistent with the
+ * "My Cuisine Inspiration" block on their profile.
+ */
+const NO_FEATURED_CUISINES = {
+  $or: [{ featuredCuisineIds: null }, { featuredCuisineIds: { $size: 0 } }],
+};
+
+function effectiveCuisineFilter(match: Types.ObjectId | Record<string, any>) {
+  return {
+    $or: [
+      { featuredCuisineIds: match },
+      { $and: [NO_FEATURED_CUISINES, { cuisineIds: match }] },
+    ],
+  };
+}
+
+/** The same rule as an aggregation stage, exposed as `effectiveCuisineIds`. */
+const EFFECTIVE_CUISINE_STAGE = {
+  $addFields: {
+    effectiveCuisineIds: {
+      $cond: [
+        { $gt: [{ $size: { $ifNull: ['$featuredCuisineIds', []] } }, 0] },
+        '$featuredCuisineIds',
+        { $ifNull: ['$cuisineIds', []] },
+      ],
+    },
+  },
+};
+
 function encodeCursor(sortValue: string | number, id: string): string {
   return Buffer.from(`${sortValue}|${id}`, 'utf8').toString('base64url');
 }
@@ -325,7 +357,12 @@ export class ChefService {
 
     if (!page) {
       const filter: any = { ...PUBLIC_CHEF_FILTER };
-      if (cuisineId) filter.cuisineIds = cuisineId;
+      if (cuisineId) {
+        filter.$and = [
+          ...(filter.$and || []),
+          effectiveCuisineFilter(cuisineId),
+        ];
+      }
 
       if (q) {
         const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -343,7 +380,7 @@ export class ChefService {
         filter.$or = [
           { displayNameLower: { $regex: nameRegex } },
           ...(cuisineMatchIds.length
-            ? [{ cuisineIds: { $in: cuisineMatchIds } }]
+            ? [effectiveCuisineFilter({ $in: cuisineMatchIds })]
             : []),
         ];
       }
@@ -815,16 +852,13 @@ export class ChefService {
         .lean()
         .exec(),
       this.chefProfileModel.aggregate([
-        {
-          $match: {
-            ...PUBLIC_CHEF_FILTER,
-            cuisineIds: { $exists: true, $ne: [] },
-          },
-        },
-        { $unwind: '$cuisineIds' },
+        { $match: { ...PUBLIC_CHEF_FILTER } },
+        EFFECTIVE_CUISINE_STAGE,
+        { $match: { effectiveCuisineIds: { $ne: [] } } },
+        { $unwind: '$effectiveCuisineIds' },
         {
           $group: {
-            _id: '$cuisineIds',
+            _id: '$effectiveCuisineIds',
             chefCount: { $sum: 1 },
           },
         },
@@ -857,7 +891,7 @@ export class ChefService {
 
     const chefCount = await this.chefProfileModel.countDocuments({
       ...PUBLIC_CHEF_FILTER,
-      cuisineIds: cid,
+      ...effectiveCuisineFilter(cid),
     });
 
     return {
@@ -871,11 +905,13 @@ export class ChefService {
 
   async buildCuisineRail(limit = 10) {
     const rows = await this.chefProfileModel.aggregate([
-      { $match: { ...PUBLIC_CHEF_FILTER, cuisineIds: { $exists: true, $ne: [] } } },
-      { $unwind: '$cuisineIds' },
+      { $match: { ...PUBLIC_CHEF_FILTER } },
+      EFFECTIVE_CUISINE_STAGE,
+      { $match: { effectiveCuisineIds: { $ne: [] } } },
+      { $unwind: '$effectiveCuisineIds' },
       {
         $group: {
-          _id: '$cuisineIds',
+          _id: '$effectiveCuisineIds',
           chefCount: { $sum: 1 },
         },
       },
