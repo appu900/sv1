@@ -1009,6 +1009,50 @@ describe('PerksService (corp)', () => {
       expect(result.items[0]).toMatchObject({ orderNumber: '0001' });
     });
 
+    it('labels order lines with the card name and artwork', async () => {
+      // What a customer sees after paying. Previously this depended on the
+      // whole 634-card catalogue loading; when that failed every purchased card
+      // rendered as "Gift card" with no image.
+      const { service } = createService({
+        api: {
+          listOrders: jest.fn().mockResolvedValue([
+            {
+              id: 1,
+              order_number: '0001',
+              status: 'processing',
+              order_item: [
+                { id: 9, gift_card_id: '1', amount: '50.00', status: 'processing' },
+              ],
+            },
+          ]),
+        },
+      });
+
+      const result = await service.listOrders(userId, { limit: 20, offset: 0 });
+      expect(result.items[0].lines[0]).toMatchObject({
+        ecardName: 'Coles Gift Card',
+        ecardImageUrl: 'https://sandbox.wemad.com.au/storage/giftcards/3.jpg',
+      });
+    });
+
+    it('still lists the order when a card cannot be resolved', async () => {
+      const { service } = createService({
+        api: {
+          listOrders: jest.fn().mockResolvedValue([
+            {
+              id: 1,
+              order_number: '0001',
+              order_item: [{ id: 9, gift_card_id: '999', amount: '50.00' }],
+            },
+          ]),
+          getGiftCard: jest.fn().mockRejectedValue(new Error('not found')),
+        },
+      });
+
+      const result = await service.listOrders(userId, { limit: 20, offset: 0 });
+      expect(result.items[0].lines[0].ecardName).toBe('Gift card');
+    });
+
     it('finds a single order by number or reference', async () => {
       const orders = {
         listOrders: jest.fn().mockResolvedValue([

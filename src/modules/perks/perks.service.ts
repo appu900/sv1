@@ -768,38 +768,59 @@ export class PerksService {
 
     const list = Array.isArray(payload) ? payload : [];
     if (!list.length) return [];
-    const cards = await this.catalogueLookup('orders');
+    // Only the cards these orders actually reference.
+    const cards = await this.cardLookup(
+      list.flatMap((order) =>
+        (Array.isArray((order as { order_item?: unknown[] }).order_item)
+          ? ((order as { order_item: Record<string, unknown>[] }).order_item)
+          : []
+        ).map((item) => str(item.gift_card_id)),
+      ),
+      'orders',
+    );
 
     return list.map((order) => mapOrder(order as Record<string, unknown>, cards));
   }
 
 
   /**
-   * Card id → name, artwork and balance link. Returns undefined rather than
-   * throwing: a catalogue outage should degrade the labels, not take down
-   * someone's order history or wallet.
+   * Card id → name, artwork and balance link, for the handful of cards actually
+   * referenced by an order or wallet.
+   *
+   * Resolves each card individually (each is cached on its own) rather than
+   * depending on the full 634-card catalogue being loadable. That fetch is slow
+   * and can fail; when it did, every purchased card silently rendered as
+   * "Gift card" with no image — which is what a customer sees after paying.
+   * Failures are per card, so one bad id cannot blank the rest.
    */
-  private async catalogueLookup(
+  private async cardLookup(
+    ids: Array<string | null | undefined>,
     context: string,
-  ): Promise<OrderCardLookup | undefined> {
-    try {
-      const catalogue = await this.getCachedCatalogue();
-      return new Map(
-        catalogue.map((card) => [
-          card.id,
-          {
+  ): Promise<OrderCardLookup> {
+    const unique = [...new Set(ids.map((id) => str(id)).filter(Boolean))];
+    const lookup: OrderCardLookup = new Map();
+    if (!unique.length) return lookup;
+
+    await Promise.all(
+      unique.map(async (id) => {
+        try {
+          const card = await this.getCatalogueCard(id);
+          lookup.set(id, {
             name: card.name,
             imageUrl: card.imageUrl,
             balanceLink: card.balanceLink,
-          },
-        ]),
-      );
-    } catch (error) {
-      this.logger.warn(
-        `Perks ${context} could not enrich lines: ${(error as Error).message}`,
-      );
-      return undefined;
-    }
+          });
+        } catch (error) {
+          this.logger.warn(
+            `Perks ${context} could not resolve card ${id}: ${
+              (error as Error).message
+            }`,
+          );
+        }
+      }),
+    );
+
+    return lookup;
   }
 
   private async fetchWalletCards(userId: string) {
@@ -818,7 +839,15 @@ export class PerksService {
     // WeMAD's wallet rows carry a gift_card_id but usually no brand name or
     // artwork, so join the catalogue exactly as orders do. Without it every
     // card renders as "eGift card" with a placeholder image.
-    const cards = await this.catalogueLookup('wallet');
+    const cards = await this.cardLookup(
+      entries.map((entry) =>
+        str(
+          entry.gift_card_id ??
+            (entry.gift_card as Record<string, unknown> | undefined)?.id,
+        ),
+      ),
+      'wallet',
+    );
     const mapped = entries.map((entry) => mapWalletCard(entry, cards));
     const metadata = await this.walletMetadataModel
       .find({
