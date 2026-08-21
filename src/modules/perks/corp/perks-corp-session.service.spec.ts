@@ -150,6 +150,43 @@ describe('PerksCorpSessionService', () => {
       expect(session.webToken).toBe('web-1');
     });
 
+    it('sends the device fields WeMAD now requires, one identity per user', async () => {
+      // Mandatory since 2026-08; missing any one returns 422. Their sample used
+      // a single hard-coded device_id, which would make every Saveful member
+      // look like one handset to the tracking this was added for.
+      const { service, api } = createService();
+      await service.login(USER_ID, validUser);
+
+      const payload = api.autologin.mock.calls[0][0];
+      for (const field of [
+        'device_id',
+        'platform',
+        'device_type',
+        'device_name',
+        'device_model',
+        'os_version',
+        'app_version',
+        'push_token',
+      ]) {
+        expect(String(payload[field] ?? '')).not.toHaveLength(0);
+      }
+
+      const other = createService();
+      await other.service.login('507f1f77bcf86cd799439012', validUser);
+      expect(other.api.autologin.mock.calls[0][0].device_id).not.toBe(
+        payload.device_id,
+      );
+    });
+
+    it('keeps a user on the same device_id across logins', async () => {
+      const { service, api } = createService();
+      await service.login(USER_ID, validUser);
+      await service.login(USER_ID, validUser);
+      expect(api.autologin.mock.calls[0][0].device_id).toBe(
+        api.autologin.mock.calls[1][0].device_id,
+      );
+    });
+
     it('refuses to call WeMAD when the profile is incomplete', async () => {
       const { service, api } = createService();
       await expect(
@@ -158,7 +195,7 @@ describe('PerksCorpSessionService', () => {
       expect(api.autologin).not.toHaveBeenCalled();
     });
 
-    it('turns the duplicate-phone 500 into actionable guidance', async () => {
+    it('surfaces an upstream 500 as a temporary outage', async () => {
       const { service } = createService({
         api: {
           autologin: jest
@@ -169,12 +206,16 @@ describe('PerksCorpSessionService', () => {
         },
       });
 
-      await expect(service.login(USER_ID, validUser)).rejects.toMatchObject({
-        response: { missingFields: ['phone'] },
+      const error = await service.login(USER_ID, validUser).catch((e) => e);
+      expect(error.getStatus()).toBe(503);
+      expect(error.getResponse()).toMatchObject({
+        code: 'PERKS_UPSTREAM_UNAVAILABLE',
       });
     });
 
-    it('surfaces a rejected password as a profile problem, not a crash', async () => {
+    it('tells the user to contact support when the upstream account rejects our password', async () => {
+      // Editing a Saveful profile cannot fix a password mismatch on WeMAD's
+      // side, so this must not be dressed up as a profile gap.
       const { service } = createService({
         api: {
           autologin: jest
@@ -190,9 +231,13 @@ describe('PerksCorpSessionService', () => {
             ),
         },
       });
-      await expect(service.login(USER_ID, validUser)).rejects.toBeInstanceOf(
-        UnprocessableEntityException,
-      );
+
+      const error = await service.login(USER_ID, validUser).catch((e) => e);
+      expect(error).toBeInstanceOf(UnprocessableEntityException);
+      expect(error.getResponse()).toMatchObject({
+        code: 'PERKS_ACCOUNT_LINK_FAILED',
+      });
+      expect(error.getResponse().missingFields).toBeUndefined();
     });
   });
 
@@ -277,20 +322,31 @@ describe('PerksCorpSessionService', () => {
       });
     });
 
-    it('still handles the old 5xx form, in case production lags the fix', async () => {
+    it('reports an upstream outage as an outage, not a phone problem', async () => {
+      // Live on 2026-08-18: every autologin returned a PHP TypeError from
+      // UserDeviceService. Telling those users their phone was taken sent them
+      // to edit a profile that was fine.
       const { service } = createService({
         api: {
-          autologin: jest
-            .fn()
-            .mockRejectedValue(
-              new PerksCorpApiError('Server Error', 500, 'WMAD_CORP_500', true, false),
+          autologin: jest.fn().mockRejectedValue(
+            new PerksCorpApiError(
+              'App\\Services\\UserDeviceService::save(): Argument #1 must be of type UserResource',
+              500,
+              'WMAD_CORP_500',
+              true,
+              false,
             ),
+          ),
         },
       });
 
-      await expect(service.login(USER_ID, validUser)).rejects.toMatchObject({
-        response: { missingFields: ['phone'] },
+      const error = await service.login(USER_ID, validUser).catch((e) => e);
+      expect(error.getStatus()).toBe(503);
+      expect(error.getResponse()).toMatchObject({
+        code: 'PERKS_UPSTREAM_UNAVAILABLE',
       });
+      // No missingFields: nothing about their profile needs changing.
+      expect(error.getResponse().missingFields).toBeUndefined();
     });
 
     it('does not mistake an ordinary validation failure for a taken phone', async () => {

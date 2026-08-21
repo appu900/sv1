@@ -2,10 +2,11 @@ import {
   HttpException,
   Injectable,
   Logger,
+  ServiceUnavailableException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { createHmac } from 'crypto';
+import { createHash, createHmac } from 'crypto';
 import { Gender } from '../../../database/schemas/nutrition/health-profile.schema';
 import { User } from '../../../database/schemas/user.auth.schema';
 import { RedisService } from '../../../redis/redis.service';
@@ -93,6 +94,7 @@ export class PerksCorpSessionService {
       firstname: nameParts[0],
       lastname: nameParts.slice(1).join(' '),
       password: this.derivePassword(userId, credentialVersion),
+      ...this.deviceFields(userId),
     };
 
     try {
@@ -198,6 +200,36 @@ export class PerksCorpSessionService {
     return false;
   }
 
+  /**
+   * Device identity for WeMAD's tracking, required on every autologin.
+   *
+   * `device_id` is derived per Saveful user rather than being one shared
+   * constant: their example value would have made every member of ours look
+   * like the same handset, which is the pattern their security feature exists
+   * to spot. It is a plain hash of the user id — stable, no secret involved,
+   * and it tells them nothing they do not already know from the login itself.
+   *
+   * The rest describe our backend. Their API does not validate these values
+   * (verified: `platform: 'server'` is accepted), and claiming to be a Samsung
+   * would put junk in their analytics.
+   */
+  private deviceFields(userId: string) {
+    return {
+      device_id: `sv-${createHash('sha256').update(userId).digest('hex').slice(0, 24)}`,
+      platform: this.config.get<string>('PERKS_CORP_PLATFORM', 'server'),
+      device_type: this.config.get<string>('PERKS_CORP_DEVICE_TYPE', 'server'),
+      device_name: this.config.get<string>('PERKS_CORP_DEVICE_NAME', 'Saveful'),
+      device_model: this.config.get<string>(
+        'PERKS_CORP_DEVICE_MODEL',
+        'saveful-backend',
+      ),
+      os_version: this.config.get<string>('PERKS_CORP_OS_VERSION', 'n/a'),
+      app_version: this.config.get<string>('PERKS_CORP_APP_VERSION', '1.0.0'),
+      // We have no WeMAD push integration; a real token would be a fiction.
+      push_token: this.config.get<string>('PERKS_CORP_PUSH_TOKEN', 'none'),
+    };
+  }
+
   private normalisePhone(value: unknown): string | null {
     const digits = String(value ?? '').replace(/\D+/g, '');
     return digits.length >= 8 && digits.length <= 11 ? digits : null;
@@ -223,14 +255,28 @@ export class PerksCorpSessionService {
       });
     }
 
-    // Kept for the pre-fix behaviour and any other upstream fault: a 5xx during
-    // signup was, in practice, almost always the duplicate phone.
+    // A 5xx used to mean "duplicate phone", so it told people to check their
+    // number. Since WeMAD started returning 400 for duplicates (2026-08), a 5xx
+    // is just their server failing — blaming the phone sent people off editing
+    // a profile that was never the problem, and offering no way forward.
     if (error.statusCode >= 500) {
+      return new ServiceUnavailableException({
+        message:
+          'My Perks is temporarily unavailable — our partner is not responding. Nothing has been charged. Please try again shortly.',
+        code: 'PERKS_UPSTREAM_UNAVAILABLE',
+        upstreamMessage: error.message,
+      });
+    }
+
+    // The WeMAD account exists but rejects the password we derive for this user.
+    // Editing a Saveful profile cannot fix that — only WeMAD resetting the
+    // account can — so say so plainly instead of sending them round the profile
+    // modal forever. Seen after their crash left accounts behind (2026-08).
+    if (this.isCredentialMismatch(error)) {
       return new UnprocessableEntityException({
         message:
-          'WeMAD could not create your Perks account. This usually means your phone number is already registered — please check it and try again.',
-        missingFields: ['phone'] satisfies PerksMissingField[],
-        code: error.code,
+          'We could not connect your Saveful account to My Perks. Please contact support so we can reset it.',
+        code: 'PERKS_ACCOUNT_LINK_FAILED',
         upstreamMessage: error.message,
       });
     }
@@ -249,6 +295,10 @@ export class PerksCorpSessionService {
     }
 
     return error;
+  }
+
+  private isCredentialMismatch(error: PerksCorpApiError): boolean {
+    return /invalid (email|credentials|email or password)/i.test(error.message);
   }
 
   private isDuplicatePhone(error: PerksCorpApiError): boolean {

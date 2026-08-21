@@ -51,8 +51,12 @@ export function resolveEntitlement(
     paymentRequired: false,
   });
 
-  if (!options.billingEnabled) return entitled('billing_disabled');
+  // Region exemption is checked first, and deliberately before the kill switch:
+  // it is a policy fact about this member, not a rollout state. The app reads
+  // `reason` to decide whether to show a price at all, so an exempt member must
+  // report `free_region` even while billing is switched off for everyone.
   if (isFreeRegion(user?.country)) return entitled('free_region');
+  if (!options.billingEnabled) return entitled('billing_disabled');
 
   if (membership) {
     if (isGrandfathered(membership, options.grandfatherBefore)) {

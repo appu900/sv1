@@ -26,6 +26,21 @@ export interface CorpAutologinPayload {
   firstname: string;
   lastname: string;
   password: string;
+  /**
+   * WeMAD's device-tracking fields, mandatory since 2026-08. All eight must be
+   * present and non-empty or autologin returns 422. We are a server-to-server
+   * caller with no handset — autologin also runs from the Stripe webhook, where
+   * no user request exists — so these describe our backend honestly rather than
+   * impersonating a phone.
+   */
+  device_id: string;
+  platform: string;
+  device_type: string;
+  device_name: string;
+  device_model: string;
+  os_version: string;
+  app_version: string;
+  push_token: string;
 }
 
 export interface CorpSsoPayload {

@@ -146,6 +146,17 @@ describe('resolveEntitlement', () => {
     ).toMatchObject({ entitled: true, reason: 'billing_disabled' });
   });
 
+  it('still reports free_region for India while billing is switched off', () => {
+    // The app shows or hides the A$10 price based on this reason, so an exempt
+    // member must never be lumped in with "billing not rolled out yet".
+    expect(
+      resolveEntitlement({ country: 'IN' }, null, {
+        ...OPTIONS,
+        billingEnabled: false,
+      }).reason,
+    ).toBe('free_region');
+  });
+
   it('does not grandfather anyone when no cutoff is configured', () => {
     const membership = {
       status: PerksMembershipStatus.ACTIVE,
