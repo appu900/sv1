@@ -7,6 +7,7 @@ import {
 import { PerksCartStatus } from '../../database/schemas/perks-cart.schema';
 import { PerksSpendFrequency } from './dto/perks.dto';
 import { PerksCorpApiError } from './corp/perks-corp-api.client';
+import { legacyWalletCardKey } from './corp/perks-corp.mapper';
 import { PerksService } from './perks.service';
 
 const userId = new Types.ObjectId().toString();
@@ -1179,6 +1180,75 @@ describe('PerksService (corp)', () => {
         service.getWalletCard(userId, card.cardKey),
       ).resolves.toMatchObject({ cardName: 'Coles' });
       expect(listMyGiftCards).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps a card archived after WeMAD issues it', async () => {
+      // The reported bug: archive a processing card, WeMAD issues it and adds a
+      // voucher code, the old key changed and the card jumped back to Active.
+      const processing = [
+        {
+          id: 9,
+          order_number: '0001',
+          gift_card_id: '1',
+          amount: '50',
+          purchase_type: 'self',
+          status: 'processing',
+        },
+      ];
+      const issued = [
+        { ...processing[0], status: 'sent', card_number: '627123456' },
+      ];
+
+      const { service: before } = createService({
+        api: { listMyGiftCards: jest.fn().mockResolvedValue(processing) },
+      });
+      const [card] = await before.getWallet(userId, false, 'active');
+
+      const { service: after } = createService({
+        api: { listMyGiftCards: jest.fn().mockResolvedValue(issued) },
+        walletMetadataModel: {
+          find: jest.fn(() =>
+            lean([{ cardKey: card.cardKey, archived: true, hidden: false }]),
+          ),
+        },
+      });
+
+      const archived = await after.getWallet(userId, false, 'archived');
+      expect(archived).toHaveLength(1);
+      expect(await after.getWallet(userId, false, 'active')).toEqual([]);
+    });
+
+    it('finds archive state saved under the old volatile key and migrates it', async () => {
+      const entries = [
+        {
+          id: 9,
+          order_number: '0001',
+          gift_card_id: '1',
+          gift_card_name: 'Coles',
+          amount: '50',
+          purchase_type: 'self',
+          created_at: '2026-08-21T07:00:00Z',
+          card_number: '627123456',
+        },
+      ];
+      // Exactly what an existing row in Mongo looks like.
+      const legacyKey = legacyWalletCardKey(entries[0], false);
+      const bulkWrite = jest.fn().mockResolvedValue({});
+
+      const { service } = createService({
+        api: { listMyGiftCards: jest.fn().mockResolvedValue(entries) },
+        walletMetadataModel: {
+          find: jest.fn(() =>
+            lean([{ cardKey: legacyKey, archived: true, hidden: false }]),
+          ),
+          bulkWrite,
+        },
+      });
+
+      const archived = await service.getWallet(userId, false, 'archived');
+      expect(archived).toHaveLength(1);
+      // And the row is moved onto the stable key so the repair is one-off.
+      expect(bulkWrite).toHaveBeenCalled();
     });
 
     it('applies local archive and hide state over the upstream list', async () => {

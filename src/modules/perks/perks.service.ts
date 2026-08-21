@@ -748,11 +748,24 @@ export class PerksService {
    * app shows its "receipt unavailable" message.
    */
   async getTaxReceipt(userId: string, orderNumber: string) {
-    const order = await this.getOrder(userId, orderNumber);
-    return {
-      orderNumber: order.orderNumber ?? orderNumber,
-      receiptUrl: order.receiptUrl ?? null,
-    };
+    try {
+      const order = await this.getOrder(userId, orderNumber);
+      return {
+        orderNumber: order.orderNumber ?? orderNumber,
+        receiptUrl: order.receiptUrl ?? null,
+      };
+    } catch (error) {
+      // A wallet card can reference an order id that the (paginated) order list
+      // does not surface. "No receipt yet" is both true and useful here; a 404
+      // would show the customer an error for a card they legitimately own.
+      if (error instanceof NotFoundException) {
+        this.logger.warn(
+          `Perks tax receipt: order ${orderNumber} not found for this user`,
+        );
+        return { orderNumber, receiptUrl: null as string | null };
+      }
+      throw error;
+    }
   }
 
   private async fetchOrders(userId: string) {
@@ -849,17 +862,28 @@ export class PerksService {
       'wallet',
     );
     const mapped = entries.map((entry) => mapWalletCard(entry, cards));
+
+    // Look under both keys: rows saved before the key was made stable are
+    // stored against the old hash, and dropping them would silently un-archive
+    // cards people had already filed away.
     const metadata = await this.walletMetadataModel
       .find({
         userId: objectId,
-        cardKey: { $in: mapped.map((entry) => entry.cardKey) },
+        cardKey: {
+          $in: [
+            ...mapped.map((entry) => entry.cardKey),
+            ...mapped.map((entry) => entry.legacyCardKey),
+          ],
+        },
       })
       .lean();
     const byKey = new Map(metadata.map((entry) => [entry.cardKey, entry]));
 
+    await this.migrateWalletKeys(objectId, mapped, byKey);
+
     return mapped
-      .map((entry) => {
-        const local = byKey.get(entry.cardKey);
+      .map(({ legacyCardKey, ...entry }) => {
+        const local = byKey.get(entry.cardKey) ?? byKey.get(legacyCardKey);
         return {
           ...entry,
           archived: local?.archived ?? false,
@@ -868,6 +892,45 @@ export class PerksService {
         };
       })
       .filter((entry) => !entry.hidden);
+  }
+
+  /**
+   * Moves archive/hide rows from the old volatile key onto the stable one, so
+   * the repair happens once rather than on every read. Skips any card that
+   * already has a row under the new key — the unique index would reject it.
+   */
+  private async migrateWalletKeys(
+    userId: Types.ObjectId,
+    mapped: Array<{ cardKey: string; legacyCardKey: string }>,
+    byKey: Map<string, unknown>,
+  ) {
+    const stale = mapped.filter(
+      (entry) =>
+        entry.legacyCardKey !== entry.cardKey &&
+        byKey.has(entry.legacyCardKey) &&
+        !byKey.has(entry.cardKey),
+    );
+    if (!stale.length) return;
+
+    try {
+      await this.walletMetadataModel.bulkWrite(
+        stale.map((entry) => ({
+          updateOne: {
+            filter: { userId, cardKey: entry.legacyCardKey },
+            update: { $set: { cardKey: entry.cardKey } },
+          },
+        })),
+      );
+      this.logger.log(
+        `Migrated ${stale.length} perks wallet metadata row(s) to stable keys`,
+      );
+    } catch (error) {
+      // Losing the migration is survivable — the fallback lookup above still
+      // finds the row under its old key on every read.
+      this.logger.warn(
+        `Perks wallet key migration skipped: ${(error as Error).message}`,
+      );
+    }
   }
 
   async getWallet(

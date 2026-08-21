@@ -13,6 +13,7 @@ import {
   resolveDiscountPercent,
   resolveImageUrl,
   resolvePricing,
+  legacyWalletCardKey,
   walletCardKey,
 } from './perks-corp.mapper';
 
@@ -414,6 +415,41 @@ describe('perks corp mapper', () => {
     });
   });
 
+  describe('order line labelling', () => {
+    it('uses an embedded gift_card when the line carries one', () => {
+      const order = {
+        order_number: '0001',
+        order_item: [
+          {
+            id: 9,
+            gift_card_id: 3,
+            amount: '50.00',
+            gift_card: { id: 3, name: 'Coles Gift Card', image: 'giftcards/3.jpg' },
+          },
+        ],
+      };
+      expect(mapOrder(order).lines[0]).toMatchObject({
+        ecardId: '3',
+        ecardName: 'Coles Gift Card',
+        ecardImageUrl: 'https://sandbox.wemad.com.au/storage/giftcards/3.jpg',
+      });
+    });
+
+    it('falls back to the catalogue when the line is just an id', () => {
+      const order = {
+        order_number: '0001',
+        order_item: [{ id: 9, gift_card_id: 3, amount: '50.00' }],
+      };
+      const cards = new Map([
+        ['3', { name: 'Coles Gift Card', imageUrl: 'https://cdn/coles.png' }],
+      ]);
+      expect(mapOrder(order, cards).lines[0]).toMatchObject({
+        ecardName: 'Coles Gift Card',
+        ecardImageUrl: 'https://cdn/coles.png',
+      });
+    });
+  });
+
   describe('order receipt / invoice link', () => {
     const base = { order_reference: 'REF-1', order_number: '0001', order_item: [] };
 
@@ -513,6 +549,38 @@ describe('perks corp mapper', () => {
     it('reads the value and balance however they are named', () => {
       expect(mapWalletCard({ face_value: '25.00', balance: '10.00' })).toMatchObject(
         { value: 25, balance: 10 },
+      );
+    });
+
+    it('does not collide when rows carry no identifiers at all', () => {
+      // Two such rows would otherwise share a key, and archiving one would
+      // archive the other.
+      expect(
+        walletCardKey({ gift_card_name: 'Coles', amount: '50' }, false),
+      ).not.toBe(walletCardKey({ gift_card_name: 'Kmart', amount: '20' }, false));
+    });
+
+    it('keeps the same key once the card is issued', () => {
+      // The old key hashed the voucher code, which only appears on issue — so a
+      // card archived while processing lost its archive the moment it issued.
+      const processing = { ...entry, card_number: undefined, status: 'processing' };
+      const issued = { ...entry, card_number: '627123456', status: 'sent' };
+
+      expect(walletCardKey(processing, false)).toBe(walletCardKey(issued, false));
+      expect(legacyWalletCardKey(processing, false)).not.toBe(
+        legacyWalletCardKey(issued, false),
+      );
+    });
+
+    it('is unaffected by the name resolving differently', () => {
+      expect(walletCardKey({ ...entry, gift_card_name: undefined }, false)).toBe(
+        walletCardKey({ ...entry, gift_card_name: 'Coles Gift Card' }, false),
+      );
+    });
+
+    it('still separates two different cards in one order', () => {
+      expect(walletCardKey({ ...entry, id: 1, gift_card_id: 1 }, false)).not.toBe(
+        walletCardKey({ ...entry, id: 2, gift_card_id: 3 }, false),
       );
     });
 

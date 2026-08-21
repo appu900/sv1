@@ -338,16 +338,25 @@ export function mapOrder(
     const faceValueCents = toCents(item.amount);
     const deliveryFeeCents = toCents(item.delivery_fees);
     const totalCents = toCents(item.total_amount);
-    const ecardId = str(item.gift_card_id);
+    // Their cart embeds a `gift_card` object; order lines may too. Read it when
+    // present so the name and artwork survive even if the catalogue lookup
+    // fails — otherwise a paid order renders as "Gift card" with no image.
+    const embedded = (item.gift_card ?? {}) as Record<string, unknown>;
+    const ecardId = str(item.gift_card_id ?? embedded.id);
     const catalogue = cards?.get(ecardId);
     return {
       lineId: str(item.id),
       ecardId,
       ecardName:
+        nullableStr(embedded.name) ??
         nullableStr(item.gift_card_name ?? item.name) ??
         catalogue?.name ??
         'Gift card',
-      ecardImageUrl: resolveImageUrl(item.image) ?? catalogue?.imageUrl ?? null,
+      ecardImageUrl:
+        resolveImageUrl(embedded.image) ??
+        resolveImageUrl(item.image) ??
+        catalogue?.imageUrl ??
+        null,
       quantity: 1,
       discountPercent: num(item.discount_percentage) ?? 0,
       faceValue: (num(item.amount) ?? 0),
@@ -413,7 +422,52 @@ export function mapOrder(
   };
 }
 
+/**
+ * Stable identity for a wallet card, used as the key for our local archive /
+ * hide overlay.
+ *
+ * Only immutable fields go in. The original version also hashed the card name,
+ * created_at and the voucher code — and the voucher code only appears once
+ * WeMAD *issues* the card. So archiving a card while it was still processing
+ * produced one key, issuing it produced another, and the archive row was
+ * orphaned: the card vanished from Archived and reappeared in Active.
+ */
 export function walletCardKey(
+  entry: Record<string, unknown>,
+  gifted: boolean,
+): string {
+  const embedded = (entry.gift_card ?? {}) as Record<string, unknown>;
+  const identity = [
+    // The row's own id is the strongest identifier when present.
+    str(entry.id),
+    str(entry.order_number ?? entry.order_id),
+    str(entry.order_reference),
+    str(entry.gift_card_id ?? embedded.id),
+  ];
+
+  // A row with none of those cannot be told apart from another such row, and a
+  // shared key would archive them all together. Fall back to the contents so
+  // they stay distinct; such a row has no stable identity to preserve anyway.
+  const parts = identity.some(Boolean)
+    ? identity
+    : [
+        ...identity,
+        str(entry.name ?? entry.gift_card_name),
+        str(entry.amount),
+        str(entry.created_at ?? entry.issued_at),
+        str(entry.card_number ?? entry.voucher_code),
+      ];
+
+  return createHash('sha256')
+    .update([gifted ? 'gifted' : 'owned', ...parts].join('|'))
+    .digest('hex');
+}
+
+/**
+ * The pre-2026-08 key. Still computed so archive/hide state saved under it can
+ * be found and migrated onto the stable key rather than silently lost.
+ */
+export function legacyWalletCardKey(
   entry: Record<string, unknown>,
   gifted: boolean,
 ): string {
@@ -464,6 +518,7 @@ export function mapWalletCard(
 
   return {
     cardKey: walletCardKey(entry, gifted),
+    legacyCardKey: legacyWalletCardKey(entry, gifted),
     gifted,
     ecardId,
     cardName,
