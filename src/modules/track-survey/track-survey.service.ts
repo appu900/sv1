@@ -19,6 +19,10 @@ import {
 import { QantasService } from '../qantas/qantas.service';
 import { SurveyConfigService } from '../survey-config/survey-config.service';
 import { SurveyConfigDocument } from 'src/database/schemas/survey-config.schema';
+import {
+  moneySavedFromFoodGrams,
+  resolveCurrencySymbol,
+} from '../analytics/utils/impact-pricing.util';
 
 @Injectable()
 export class TrackSurveyService {
@@ -80,24 +84,6 @@ export class TrackSurveyService {
       throw new BadRequestException('User has no country set — please complete onboarding');
     }
 
-    let countryRate = config.countryRates.find(
-      (r) => r.countryCode === dto.country && r.isActive,
-    );
-    if (!countryRate) {
-      countryRate = config.countryRates.find(
-        (r) => r.countryCode === 'IN' && r.isActive,
-      );
-      if (!countryRate) {
-        countryRate = config.countryRates.find((r) => r.isActive);
-      }
-      if (!countryRate) {
-        this.logger.warn(`No country rate found for ${dto.country}, using hardcoded fallback`);
-        countryRate = { countryCode: dto.country!, countryName: 'Unknown', costPerGram: 0.015, currencySymbol: '₹', isActive: true };
-      } else {
-        this.logger.warn(`Country code ${dto.country} not configured — falling back to ${countryRate.countryCode}`);
-      }
-    }
-
     const { co2PerGram, avgWeeklyWasteGrams, scrapsWeightPerUnit, leftoversWeightPerUnit } =
       config.calculationConstants;
 
@@ -115,14 +101,37 @@ export class TrackSurveyService {
     const foodSaved = Math.max(0, avgWeeklyWasteGrams - totalWasteGrams);
 
     const co2_savings = Math.round(foodSaved * co2PerGram);
-    const cost_savings =
-      Math.round(foodSaved * countryRate.costPerGram * 100) / 100;
+    // Same country-rate lookup as track money saved, so "Australia" and "AU"
+    // both resolve to AUD instead of falling back to India/₹.
+    const cost_savings = moneySavedFromFoodGrams(
+      foodSaved,
+      dto.country,
+      config.countryRates,
+    );
 
     return {
       co2_savings,
       cost_savings,
       food_saved: Math.round(foodSaved),
-      currency_symbol: countryRate.currencySymbol,
+      currency_symbol: resolveCurrencySymbol(dto.country, config.countryRates),
+    };
+  }
+
+  private overlayCurrencySymbol(
+    savings: {
+      co2_savings: number;
+      cost_savings: number;
+      food_saved: number;
+      currency_symbol: string;
+    } | undefined,
+    country: string | undefined,
+    config: SurveyConfigDocument,
+  ) {
+    if (!savings) return savings;
+    if (!country) return savings;
+    return {
+      ...savings,
+      currency_symbol: resolveCurrencySymbol(country, config.countryRates),
     };
   }
 
@@ -236,6 +245,11 @@ export class TrackSurveyService {
     }
 
     const dto_response = this.toResponseDto(saved);
+    dto_response.calculatedSavings = this.overlayCurrencySymbol(
+      dto_response.calculatedSavings,
+      user.country,
+      config,
+    )!;
     dto_response.prev_personal_bests = personalBests;
 
     const weekNumber = (eligibility.surveys_count % (config.weeklyTips?.length || 1)) + 1;
@@ -256,27 +270,49 @@ export class TrackSurveyService {
   async getUserSurveys(userId: string): Promise<TrackSurveyResponseDto[]> {
     const userIdObj = new Types.ObjectId(userId);
 
-    const surveys = await this.trackSurveyModel
-      .find({ userId: userIdObj })
-      .sort({ surveyWeek: -1 })
-      .lean();
+    const [surveys, user, config] = await Promise.all([
+      this.trackSurveyModel
+        .find({ userId: userIdObj })
+        .sort({ surveyWeek: -1 })
+        .lean(),
+      this.userModel.findById(userId).select('country').lean(),
+      this.surveyConfigService.getActiveConfig(),
+    ]);
 
-    return surveys.map((s) => this.toResponseDto(s));
+    return surveys.map((s) => {
+      const dto = this.toResponseDto(s);
+      dto.calculatedSavings = this.overlayCurrencySymbol(
+        dto.calculatedSavings,
+        user?.country,
+        config,
+      )!;
+      return dto;
+    });
   }
 
   async getLatestSurvey(userId: string): Promise<TrackSurveyResponseDto> {
     const userIdObj = new Types.ObjectId(userId);
 
-    const survey = await this.trackSurveyModel
-      .findOne({ userId: userIdObj })
-      .sort({ surveyWeek: -1 })
-      .lean();
+    const [survey, user, config] = await Promise.all([
+      this.trackSurveyModel
+        .findOne({ userId: userIdObj })
+        .sort({ surveyWeek: -1 })
+        .lean(),
+      this.userModel.findById(userId).select('country').lean(),
+      this.surveyConfigService.getActiveConfig(),
+    ]);
 
     if (!survey) {
       throw new NotFoundException('No surveys found for this user');
     }
 
-    return this.toResponseDto(survey);
+    const dto = this.toResponseDto(survey);
+    dto.calculatedSavings = this.overlayCurrencySymbol(
+      dto.calculatedSavings,
+      user?.country,
+      config,
+    )!;
+    return dto;
   }
 
   private async getPersonalBests(userId: string) {
@@ -316,10 +352,12 @@ export class TrackSurveyService {
       throw new NotFoundException('No surveys found');
     }
 
-    const personalBests = await this.getPersonalBests(userId);
-    const allSurveys = await this.trackSurveyModel
-      .find({ userId: userIdObj })
-      .lean();
+    const [personalBests, allSurveys, user, config] = await Promise.all([
+      this.getPersonalBests(userId),
+      this.trackSurveyModel.find({ userId: userIdObj }).lean(),
+      this.userModel.findById(userId).select('country').lean(),
+      this.surveyConfigService.getActiveConfig(),
+    ]);
 
     const totalSavings = allSurveys.reduce(
       (acc, survey) => ({
@@ -330,12 +368,26 @@ export class TrackSurveyService {
       { co2: 0, cost: 0, food: 0 },
     );
 
+    const currencySymbol = user?.country
+      ? resolveCurrencySymbol(user.country, config.countryRates)
+      : surveys[0].calculatedSavings.currency_symbol;
+
     return {
-      current_week: surveys[0].calculatedSavings,
-      previous_week: surveys[1]?.calculatedSavings || null,
+      current_week: this.overlayCurrencySymbol(
+        surveys[0].calculatedSavings,
+        user?.country,
+        config,
+      )!,
+      previous_week: surveys[1]
+        ? this.overlayCurrencySymbol(
+            surveys[1].calculatedSavings,
+            user?.country,
+            config,
+          )!
+        : null,
       personal_bests: {
         ...personalBests,
-        currency_symbol: surveys[0].calculatedSavings.currency_symbol ?? '₹',
+        currency_symbol: currencySymbol,
       },
       total_surveys: allSurveys.length,
       total_co2_saved: totalSavings.co2,

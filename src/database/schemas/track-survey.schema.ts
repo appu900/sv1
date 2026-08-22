@@ -57,7 +57,7 @@ export class TrackSurvey {
       co2_savings: 0,
       cost_savings: 0,
       food_saved: 0,
-      currency_symbol: '₹',
+      currency_symbol: '$',
     },
   })
   calculatedSavings: WeeklySavings;

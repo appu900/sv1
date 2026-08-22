@@ -5,13 +5,15 @@ import {
   co2SavedInGramsFromFood,
   resolveCostPerGram,
   DEFAULT_COST_PER_GRAM,
+  getCurrencySymbol,
+  resolveCurrencySymbol,
 } from './impact-pricing.util';
 
 describe('impact-pricing.util', () => {
   const surveyRates = [
-    { countryCode: 'AU', countryName: 'Australia', costPerGram: 0.004, isActive: true },
-    { countryCode: 'US', countryName: 'United States', costPerGram: 0.003, isActive: true },
-    { countryCode: 'IN', countryName: 'India', costPerGram: 0.015, isActive: true },
+    { countryCode: 'AU', countryName: 'Australia', costPerGram: 0.004, currencySymbol: 'A$', isActive: true },
+    { countryCode: 'US', countryName: 'United States', costPerGram: 0.003, currencySymbol: '$', isActive: true },
+    { countryCode: 'IN', countryName: 'India', costPerGram: 0.015, currencySymbol: '₹', isActive: true },
   ];
 
   describe('countryToSurveyCode', () => {
@@ -20,9 +22,32 @@ describe('impact-pricing.util', () => {
       expect(countryToSurveyCode('AU')).toBe('AU');
     });
 
+    it('maps Australia case-insensitively', () => {
+      expect(countryToSurveyCode('australia')).toBe('AU');
+      expect(countryToSurveyCode('au')).toBe('AU');
+    });
+
     it('maps United States', () => {
       expect(countryToSurveyCode('United States')).toBe('US');
       expect(countryToSurveyCode('US')).toBe('US');
+    });
+  });
+
+  describe('getCurrencySymbol / resolveCurrencySymbol', () => {
+    it('returns A$ for Australia even when stored as a full name', () => {
+      expect(getCurrencySymbol('Australia')).toBe('A$');
+      expect(getCurrencySymbol('AU')).toBe('A$');
+      expect(getCurrencySymbol('australia')).toBe('A$');
+    });
+
+    it('uses survey config symbol when present', () => {
+      expect(resolveCurrencySymbol('Australia', surveyRates)).toBe('A$');
+      expect(resolveCurrencySymbol('AU', surveyRates)).toBe('A$');
+    });
+
+    it('does not fall back to rupee for Australia', () => {
+      expect(resolveCurrencySymbol('Australia', [])).toBe('A$');
+      expect(getCurrencySymbol('Australia')).not.toBe('₹');
     });
   });
 

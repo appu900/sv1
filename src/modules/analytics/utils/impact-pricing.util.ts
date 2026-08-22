@@ -54,18 +54,73 @@ export type CountryRateLike = {
   countryCode: string;
   countryName?: string;
   costPerGram: number;
+  currencySymbol?: string;
   isActive?: boolean;
+};
+
+// Display symbols match the app's getCurrencySymbol (src/common/utils/currency.ts).
+const COUNTRY_CURRENCY_SYMBOLS: Record<string, string> = {
+  IN: '₹',
+  AU: 'A$',
+  NZ: 'NZ$',
+  US: '$',
+  GB: '£',
+  CA: 'C$',
+  CN: '¥',
+  JP: '¥',
+  KR: '₩',
+  SG: 'S$',
+  AE: 'AED',
+  DE: '€',
+  FR: '€',
 };
 
 export function countryToSurveyCode(country?: string | null): string | null {
   if (!country) return null;
   const trimmed = country.trim();
   if (!trimmed) return null;
-  return (
-    COUNTRY_TO_CODE[trimmed] ||
-    COUNTRY_TO_CODE[trimmed.toUpperCase()] ||
-    null
+  if (COUNTRY_TO_CODE[trimmed]) return COUNTRY_TO_CODE[trimmed];
+  if (COUNTRY_TO_CODE[trimmed.toUpperCase()]) {
+    return COUNTRY_TO_CODE[trimmed.toUpperCase()];
+  }
+  const lower = trimmed.toLowerCase();
+  for (const [key, code] of Object.entries(COUNTRY_TO_CODE)) {
+    if (key.toLowerCase() === lower) return code;
+  }
+  return null;
+}
+
+export function getCurrencySymbol(country?: string | null): string {
+  const code = countryToSurveyCode(country);
+  if (code && COUNTRY_CURRENCY_SYMBOLS[code]) return COUNTRY_CURRENCY_SYMBOLS[code];
+  return '$';
+}
+
+export function resolveCurrencySymbol(
+  country?: string | null,
+  countryRates?: CountryRateLike[] | null,
+): string {
+  const code = countryToSurveyCode(country);
+  const activeRates = (countryRates || []).filter(
+    (r) => r && (r.isActive === undefined || r.isActive),
   );
+
+  if (activeRates.length > 0) {
+    if (code) {
+      const byCode = activeRates.find(
+        (r) => (r.countryCode || '').toUpperCase() === code,
+      );
+      if (byCode?.currencySymbol) return byCode.currencySymbol;
+    }
+
+    const byName = activeRates.find(
+      (r) =>
+        (r.countryName || '').toLowerCase() === (country || '').toLowerCase(),
+    );
+    if (byName?.currencySymbol) return byName.currencySymbol;
+  }
+
+  return getCurrencySymbol(country);
 }
 
 export function resolveCostPerGram(
