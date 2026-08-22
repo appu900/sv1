@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 
-const CARD_IMAGE_BASE = 'https://sandbox.wemad.com.au/storage';
+const CARD_IMAGE_BASE = 'https://admin.wemad.com.au/storage';
 
 export interface CatalogueCard {
   id: string;
@@ -69,7 +69,21 @@ export function resolveDeliveryFee(card: Record<string, unknown>): number {
 export function resolveImageUrl(value: unknown): string | null {
   const path = nullableStr(value);
   if (!path) return null;
-  if (/^https?:\/\//i.test(path)) return path;
+  if (/^https?:\/\//i.test(path)) {
+    try {
+      const url = new URL(path);
+      if (
+        (url.hostname === 'sandbox.wemad.com.au' ||
+          url.hostname === 'www.wemad.com.au') &&
+        url.pathname.startsWith('/storage/')
+      ) {
+        return `${CARD_IMAGE_BASE}${url.pathname.slice('/storage'.length)}${url.search}`;
+      }
+    } catch {
+      return path;
+    }
+    return path;
+  }
   if (path.includes('..')) return null;
   return `${CARD_IMAGE_BASE}/${path.replace(/^\/+/, '')}`;
 }

@@ -1032,7 +1032,7 @@ describe('PerksService (corp)', () => {
       const result = await service.listOrders(userId, { limit: 20, offset: 0 });
       expect(result.items[0].lines[0]).toMatchObject({
         ecardName: 'Coles Gift Card',
-        ecardImageUrl: 'https://sandbox.wemad.com.au/storage/giftcards/3.jpg',
+        ecardImageUrl: 'https://admin.wemad.com.au/storage/giftcards/3.jpg',
       });
     });
 

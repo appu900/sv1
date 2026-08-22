@@ -77,14 +77,22 @@ describe('perks corp mapper', () => {
   describe('resolveImageUrl', () => {
     it('expands storage-relative paths', () => {
       expect(resolveImageUrl('giftcards/1.jpg')).toBe(
-        'https://sandbox.wemad.com.au/storage/giftcards/1.jpg',
+        'https://admin.wemad.com.au/storage/giftcards/1.jpg',
       );
     });
 
-    it('passes absolute URLs through untouched', () => {
+    it('passes unrelated absolute URLs through untouched', () => {
       expect(resolveImageUrl('https://cdn.example.com/a.png')).toBe(
         'https://cdn.example.com/a.png',
       );
+    });
+
+    it('rewrites sandbox storage URLs onto the admin host', () => {
+      expect(
+        resolveImageUrl(
+          'https://sandbox.wemad.com.au/storage/giftcards/883.jpg',
+        ),
+      ).toBe('https://admin.wemad.com.au/storage/giftcards/883.jpg');
     });
 
     it('rejects traversal attempts', () => {
@@ -277,7 +285,7 @@ describe('perks corp mapper', () => {
         name: 'WISH gift card from Woolworths',
         category: 'groceries',
         discountPercent: 2,
-        imageUrl: 'https://sandbox.wemad.com.au/storage/giftcards/1.jpg',
+        imageUrl: 'https://admin.wemad.com.au/storage/giftcards/1.jpg',
         priceType: 'fixed',
         availableValues: [50],
         deliveryFee: 1,
@@ -330,8 +338,8 @@ describe('perks corp mapper', () => {
             {
               id: '1',
               name: 'Balloon',
-              thumbnailUrl: 'https://sandbox.wemad.com.au/storage/a/t.png',
-              imageUrl: 'https://sandbox.wemad.com.au/storage/a/i.png',
+              thumbnailUrl: 'https://admin.wemad.com.au/storage/a/t.png',
+              imageUrl: 'https://admin.wemad.com.au/storage/a/i.png',
             },
           ],
         },
@@ -431,7 +439,7 @@ describe('perks corp mapper', () => {
       expect(mapOrder(order).lines[0]).toMatchObject({
         ecardId: '3',
         ecardName: 'Coles Gift Card',
-        ecardImageUrl: 'https://sandbox.wemad.com.au/storage/giftcards/3.jpg',
+        ecardImageUrl: 'https://admin.wemad.com.au/storage/giftcards/3.jpg',
       });
     });
 
@@ -511,7 +519,7 @@ describe('perks corp mapper', () => {
       ).toMatchObject({
         ecardId: '1',
         cardName: 'Coles Gift Card',
-        imageUrl: 'https://sandbox.wemad.com.au/storage/giftcards/3.jpg',
+        imageUrl: 'https://admin.wemad.com.au/storage/giftcards/3.jpg',
         balanceLink: 'https://coles/balance',
       });
     });
