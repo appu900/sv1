@@ -13,6 +13,7 @@ export const DATA_VERSION_KEYS = [
   'frameworkCategories',
   'stickers',
   'chefs',
+  'promoCards',
 ] as const;
 
 export type DataVersionKey = (typeof DATA_VERSION_KEYS)[number];
