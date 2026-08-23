@@ -11,6 +11,7 @@ import { Gender } from '../../../database/schemas/nutrition/health-profile.schem
 import { User } from '../../../database/schemas/user.auth.schema';
 import { RedisService } from '../../../redis/redis.service';
 import { cacheAttempt } from './cache';
+import { toWemadPhone } from './phone';
 import {
   CorpSession,
   PerksCorpApiClient,
@@ -81,6 +82,17 @@ export class PerksCorpSessionService {
 
     const missing = this.missingProfileFields(user, fallbackGender);
     if (missing.length > 0) {
+      // A number that is simply not Australian is not a gap in their profile.
+      // "Complete your profile" would send them to a form showing the number
+      // they already entered, with nothing to correct.
+      if (missing.includes('phone') && String(user.phoneNumber ?? '').trim()) {
+        throw new UnprocessableEntityException({
+          message:
+            'My Perks needs an Australian mobile number. Add one to your Saveful profile to join.',
+          missingFields: ['phone'] satisfies PerksMissingField[],
+          code: 'PERKS_PHONE_NOT_SUPPORTED',
+        });
+      }
       throw new UnprocessableEntityException({
         message: 'Complete your Saveful profile before using Perks',
         missingFields: missing,
@@ -231,8 +243,7 @@ export class PerksCorpSessionService {
   }
 
   private normalisePhone(value: unknown): string | null {
-    const digits = String(value ?? '').replace(/\D+/g, '');
-    return digits.length >= 8 && digits.length <= 11 ? digits : null;
+    return toWemadPhone(value);
   }
 
   private explainLoginFailure(

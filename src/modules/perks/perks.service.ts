@@ -51,6 +51,7 @@ import {
 import { User, UserDocument } from '../../database/schemas/user.auth.schema';
 import { RedisService } from '../../redis/redis.service';
 import { cacheAttempt } from './corp/cache';
+import { toWemadPhone } from './corp/phone';
 import {
   PerksCorpApiClient,
   PerksCorpApiError,
@@ -538,6 +539,27 @@ export class PerksService {
     return { ecardId, removed: true };
   }
 
+  /**
+   * A gift recipient's number in WeMAD's format, or a clear refusal.
+   *
+   * Checked where the gift is created rather than at checkout: WeMAD applies
+   * the same nine-digit rule to `recipient_phone` as to the member's own, and
+   * finding out after the whole gift form is filled in is the failure mode we
+   * already fixed once for unbuyable cards.
+   */
+  private requireGiftPhone(value?: string | null): string | null {
+    const phone = toWemadPhone(value);
+    if (!phone) {
+      throw new UnprocessableEntityException({
+        message:
+          'Enter an Australian mobile number for the person receiving this gift.',
+        code: 'PERKS_GIFT_PHONE_NOT_SUPPORTED',
+        fields: ['giftRecipientPhone'],
+      });
+    }
+    return phone;
+  }
+
   async getCart(userId: string) {
     const cart = await this.getOrCreateActiveCart(userId);
     return this.cartResponse(cart.toObject());
@@ -547,6 +569,9 @@ export class PerksService {
     await this.requireActiveMembership(userId);
     const card = await this.getCatalogueCard(dto.ecardId);
     this.assertCardValue(card, dto.ecardValue);
+    const giftPhone = dto.sendAsGift
+      ? this.requireGiftPhone(dto.giftRecipientPhone)
+      : null;
 
     const cart = await this.getOrCreateActiveCart(userId);
     const faceValueCents = Math.round(dto.ecardValue * 100);
@@ -569,7 +594,7 @@ export class PerksService {
           ? {
               recipientName: dto.giftRecipientName!,
               recipientEmail: dto.giftRecipientEmail!,
-              recipientPhone: dto.giftRecipientPhone!,
+              recipientPhone: giftPhone!,
               templateId: dto.giftTemplateId!,
               templateDesignId: dto.giftTemplateDesignId!,
               ...(dto.giftMessage ? { message: dto.giftMessage } : {}),
@@ -634,7 +659,7 @@ export class PerksService {
             ? {
                 recipientName: dto.giftRecipientName!,
                 recipientEmail: dto.giftRecipientEmail!,
-                recipientPhone: dto.giftRecipientPhone!,
+                recipientPhone: this.requireGiftPhone(dto.giftRecipientPhone)!,
                 templateId: dto.giftTemplateId!,
                 templateDesignId: dto.giftTemplateDesignId!,
                 ...(dto.giftMessage ? { message: dto.giftMessage } : {}),
@@ -704,7 +729,11 @@ export class PerksService {
           ? {
               recipient_name: item.gift.recipientName,
               recipient_email: item.gift.recipientEmail,
-              recipient_phone: item.gift.recipientPhone,
+              // Normalised again here: carts saved before the nine-digit rule
+              // was applied still hold the number exactly as it was typed.
+              recipient_phone:
+                toWemadPhone(item.gift.recipientPhone) ??
+                item.gift.recipientPhone,
               gift_template_id: item.gift.templateId,
               gift_template_design_id: item.gift.templateDesignId,
               ...(item.gift.message ? { message: item.gift.message } : {}),

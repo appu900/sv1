@@ -124,6 +124,54 @@ describe('PerksCorpSessionService', () => {
       ).toContain('phone');
     });
 
+    // WeMAD wants the Australian national number and nothing else: their
+    // production API answers anything but nine digits with
+    // 422 "The phone field must be 9 digits". We used to forward 8-11 digits
+    // untouched, so every real Australian mobile went with its leading zero
+    // and no member could ever complete sign-up.
+    it('reduces every way of writing an Australian mobile to nine digits', () => {
+      const { service, api } = createService();
+      const forms = [
+        '0412 228 301',
+        '+61 412 228 301',
+        '61412228301',
+        '0061412228301',
+        '412228301',
+      ];
+
+      for (const phoneNumber of forms) {
+        expect(
+          service.missingProfileFields({
+            ...(validUser as object),
+            phoneNumber,
+          } as never),
+        ).not.toContain('phone');
+      }
+
+      return Promise.all(
+        forms.map(async (phoneNumber) => {
+          api.autologin.mockClear();
+          await service.login(USER_ID, {
+            ...(validUser as object),
+            phoneNumber,
+          } as never);
+          expect(api.autologin.mock.calls[0][0].phone).toBe('412228301');
+        }),
+      );
+    });
+
+    it('rejects a number that cannot be an Australian one', () => {
+      const { service } = createService();
+      // A ten-digit Indian mobile has no trunk zero to strip, so it can never
+      // be nine digits. Caught here rather than as a 422 from WeMAD.
+      expect(
+        service.missingProfileFields({
+          ...(validUser as object),
+          phoneNumber: '8260951404',
+        } as never),
+      ).toContain('phone');
+    });
+
     it('accepts gender supplied by the health profile fallback', () => {
       const { service } = createService();
       const withoutGender = { ...(validUser as object), gender: undefined } as never;
@@ -142,7 +190,8 @@ describe('PerksCorpSessionService', () => {
       expect(api.autologin).toHaveBeenCalledWith(
         expect.objectContaining({
           email: 'tester@saveful.com',
-          phone: '61400000000',
+          // Nine digits, no country code, no trunk zero.
+          phone: '400000000',
           firstname: 'Saveful',
           lastname: 'Tester',
         }),
@@ -258,7 +307,7 @@ describe('PerksCorpSessionService', () => {
         first_name: 'Saveful',
         last_name: 'Tester',
         email: 'tester@saveful.com',
-        phone: '61400000000',
+        phone: '400000000',
         redirect_url: '/checkout',
       });
       expect(api.buildCheckoutUrl).not.toHaveBeenCalled();

@@ -954,7 +954,9 @@ describe('PerksService (corp)', () => {
           purchase_type: 'gift',
           recipient_name: 'John Doe',
           recipient_email: 'john@example.com',
-          recipient_phone: '0400000000',
+          // Stored with its trunk zero before the nine-digit rule existed;
+          // normalised on the way out so old carts still check out.
+          recipient_phone: '400000000',
           gift_template_id: '2',
           gift_template_design_id: '4',
           message: 'Happy Birthday!',
