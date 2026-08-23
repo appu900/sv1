@@ -115,12 +115,6 @@ export class AIInteractionService {
     });
   }
 
-  /**
-   * Log an aggregated pipeline that made multiple OpenAI calls across
-   * possibly different models. Cost is computed accurately per-call using
-   * each call's own pricing, then summed. The stored `model` is a comma
-   * separated list of distinct models touched.
-   */
   async logAggregated(
     base: Omit<LogAiInteractionInput, 'promptTokens' | 'completionTokens' | 'totalTokens' | 'model'>,
     calls: AggregatedCall[],
@@ -192,8 +186,6 @@ export class AIInteractionService {
       [AIUserAction.COOKED]: 3,
     };
     const incomingPriority = priority[action];
-    // Only upgrade if the current stored action has strictly lower priority
-    // (null counts as below IGNORED=0). Atomic: one query, safe under concurrency.
     const lowerActions = Object.entries(priority)
       .filter(([, p]) => p < incomingPriority)
       .map(([a]) => a);
@@ -218,8 +210,6 @@ export class AIInteractionService {
 
     if (updated) return updated;
 
-    // Either the event doesn't exist / isn't owned by this user,
-    // or the stored action is already at or above the incoming priority.
     const existing = await this.model.findById(oid).exec();
     if (!existing) {
       throw new NotFoundException('AI interaction event not found');
