@@ -35,7 +35,8 @@
     "grant:legend-access": "ts-node -r tsconfig-paths/register scripts/grant-legend-access.ts",
     "export:ingredients": "ts-node -r tsconfig-paths/register scripts/export-ingredients.ts",
     "reset:legacy-perks": "ts-node -r tsconfig-paths/register scripts/reset-legacy-perks-memberships.ts",
-    "diagnose:perks-member": "ts-node -r tsconfig-paths/register scripts/diagnose-perks-member.ts"
+    "diagnose:perks-member": "ts-node -r tsconfig-paths/register scripts/diagnose-perks-member.ts",
+    "recover:perks-member": "ts-node -r tsconfig-paths/register scripts/recover-perks-member.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.958.0",

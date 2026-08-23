@@ -184,18 +184,26 @@ async function main() {
           '     complete. `lastErrorMessage` above is WeMAD\'s own reason.',
       );
     }
+    if (!membership.lastStripeEventId) {
+      console.log(
+        '\n  >> NO STRIPE EVENT HAS EVER BEEN APPLIED to this membership. If the\n' +
+          '     member has paid, the webhook never reached the handler — check the\n' +
+          '     endpoint\'s delivery attempts in the Stripe dashboard, not WeMAD.',
+      );
+    }
   }
 
   // --- audit trail ------------------------------------------------------
+  // The event schema timestamps into `at`, not `createdAt`.
   const events = await db
     .collection('perksmembershipevents')
     .find({ userId })
-    .sort({ createdAt: -1 })
+    .sort({ at: -1 })
     .limit(20)
     .toArray();
   console.log('\n=== membership events (newest first) ===');
   for (const event of events) {
-    const when = event.createdAt?.toISOString?.() ?? String(event.createdAt);
+    const when = event.at?.toISOString?.() ?? String(event.at);
     console.log(`  ${when}  ${event.type}  ${JSON.stringify(event.metadata ?? null)}`);
   }
   if (!events.length) console.log('  none');
