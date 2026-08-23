@@ -126,6 +126,16 @@ export class PerksBillingService {
       });
     }
 
+    // Our record says they have not paid. Before taking money, ask Stripe —
+    // a webhook that never landed is the difference between "not a member" and
+    // "already paying", and only one of those should reach a payment page.
+    if (existing && (await this.reconcileFromStripe(existing))) {
+      throw new ConflictException({
+        message: 'Your Perks membership is already active.',
+        code: 'PERKS_BILLING_NOT_REQUIRED',
+      });
+    }
+
     const healthProfile = await this.healthProfileModel
       .findOne({ userId: objectId })
       .select({ gender: 1 })
@@ -149,11 +159,19 @@ export class PerksBillingService {
         status: PerksMembershipStatus.PENDING,
       }));
 
-    const checkoutUrl = await this.stripe.createCheckoutSession({
-      userId,
-      email: user.email.toLowerCase(),
-      customerId: membership.stripeCustomerId ?? null,
-    });
+    const { url: checkoutUrl, customerId } =
+      await this.stripe.createCheckoutSession({
+        userId,
+        email: user.email.toLowerCase(),
+        customerId: membership.stripeCustomerId ?? null,
+      });
+
+    // Recorded before they reach the payment page, not after the webhook: this
+    // is the handle that finds their money again if the webhook never arrives.
+    if (membership.stripeCustomerId !== customerId) {
+      membership.stripeCustomerId = customerId;
+      await membership.save();
+    }
 
     await this.recordEvent(
       objectId,
@@ -223,6 +241,80 @@ export class PerksBillingService {
     membership.cancelledAt = null;
     await membership.save();
     return membership;
+  }
+
+  /**
+   * Pull the subscription's real state from Stripe and apply it locally.
+   *
+   * The webhook is the normal path and stays the source of truth. This is the
+   * fallback for when it does not arrive: a member is charged, Stripe is happy,
+   * and our database still says they owe money — from here, nothing self-heals
+   * and the app can only offer to charge them again.
+   *
+   * Returns true when the member is entitled afterwards. Never throws: a Stripe
+   * outage must not take out the caller, which is usually just reading status.
+   */
+  async reconcileFromStripe(
+    membership: PerksMembershipDocument,
+  ): Promise<boolean> {
+    let subscription: Stripe.Subscription | null = null;
+    try {
+      // The stored id can be missing or stale, so ask Stripe for every customer
+      // belonging to this user rather than trusting our own record.
+      const customerIds = new Set<string>();
+      if (membership.stripeCustomerId) {
+        customerIds.add(membership.stripeCustomerId);
+      }
+      if (membership.email) {
+        for (const id of await this.stripe.findCustomerIds(
+          String(membership.userId),
+          membership.email,
+        )) {
+          customerIds.add(id);
+        }
+      }
+      if (!customerIds.size) return false;
+
+      for (const customerId of customerIds) {
+        subscription = await this.stripe.findActiveSubscription(customerId);
+        if (subscription) {
+          membership.stripeCustomerId = customerId;
+          break;
+        }
+      }
+    } catch (error) {
+      this.logger.error(
+        `Could not reconcile Perks billing for ${String(membership.userId)}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return false;
+    }
+    if (!subscription) return false;
+
+    membership.stripeSubscriptionId = subscription.id;
+    membership.billingStatus = this.mapStatus(subscription.status);
+    membership.cancelAtPeriodEnd = Boolean(subscription.cancel_at_period_end);
+    membership.accessEndsAt =
+      this.periodEnd(subscription) ?? membership.accessEndsAt;
+    if (membership.billingStatus === PerksBillingStatus.ACTIVE) {
+      this.markPaid(membership);
+    }
+    await membership.save();
+
+    const entitled = this.entitlementFor(null, membership).entitled;
+    if (entitled) {
+      this.logger.warn(
+        `Perks membership ${String(membership.userId)} was reconciled from Stripe — ` +
+          `subscription ${subscription.id} was paid but no webhook had applied it`,
+      );
+      await this.recordEvent(
+        membership.userId,
+        PerksMembershipEventType.BILLING_ACTIVATED,
+        { source: 'reconcile', subscriptionId: subscription.id },
+      );
+    }
+    return entitled;
   }
 
   async applyWebhookEvent(event: Stripe.Event): Promise<WebhookOutcome> {

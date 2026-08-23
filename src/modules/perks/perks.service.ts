@@ -195,13 +195,20 @@ export class PerksService {
     const { user, fallbackGender } = await this.loadUserProfile(objectId);
 
     if (this.billing.entitlementFor(user, existing).paymentRequired) {
-      throw new HttpException(
-        {
-          message: 'Perks membership requires payment to continue.',
-          code: 'PERKS_PAYMENT_REQUIRED',
-        },
-        HttpStatus.PAYMENT_REQUIRED,
-      );
+      // Last check with Stripe before telling a member they have not paid: if
+      // their webhook was lost, the money is gone and only Stripe knows.
+      const reconciled = existing
+        ? await this.billing.reconcileFromStripe(existing)
+        : false;
+      if (!reconciled) {
+        throw new HttpException(
+          {
+            message: 'Perks membership requires payment to continue.',
+            code: 'PERKS_PAYMENT_REQUIRED',
+          },
+          HttpStatus.PAYMENT_REQUIRED,
+        );
+      }
     }
 
     if (existing?.status === PerksMembershipStatus.ACTIVE && !legacy) {
@@ -258,13 +265,16 @@ export class PerksService {
     const { user, fallbackGender } = await this.loadUserProfile(objectId);
 
     if (this.billing.entitlementFor(user, membership).paymentRequired) {
-      throw new HttpException(
-        {
-          message: 'Perks membership requires payment to continue.',
-          code: 'PERKS_PAYMENT_REQUIRED',
-        },
-        HttpStatus.PAYMENT_REQUIRED,
-      );
+      const reconciled = await this.billing.reconcileFromStripe(membership);
+      if (!reconciled) {
+        throw new HttpException(
+          {
+            message: 'Perks membership requires payment to continue.',
+            code: 'PERKS_PAYMENT_REQUIRED',
+          },
+          HttpStatus.PAYMENT_REQUIRED,
+        );
+      }
     }
     return this.registerUpstream(userId, membership, user, fallbackGender);
   }
@@ -1526,6 +1536,7 @@ export class PerksService {
       plan: PerksMembershipPlan.FREE,
       cancelledAt: null,
       accessEndsAt: null,
+      registrationErrorCode: null,
     };
   }
 
@@ -1536,6 +1547,7 @@ export class PerksService {
     plan?: PerksMembershipPlan;
     cancelledAt?: Date | null;
     accessEndsAt?: Date | null;
+    lastErrorCode?: string | null;
   }) {
     return {
       wmadUserId: membership.wmadUserId ?? null,
@@ -1544,6 +1556,14 @@ export class PerksService {
       plan: membership.plan ?? PerksMembershipPlan.FREE,
       cancelledAt: membership.cancelledAt ?? null,
       accessEndsAt: membership.accessEndsAt ?? null,
+      // Why sign-up failed, so a member who has already paid is told what is
+      // actually wrong instead of being asked to keep waiting for a payment
+      // that landed long ago. Only our own error code travels — upstream
+      // messages are not safe to show and have leaked stack traces before.
+      registrationErrorCode:
+        membership.status === PerksMembershipStatus.FAILED
+          ? (membership.lastErrorCode ?? 'REGISTRATION_FAILED')
+          : null,
     };
   }
 

@@ -4,6 +4,13 @@ import Stripe = require('stripe');
 
 export const PERKS_PRODUCT_TAG = 'perks_membership';
 
+/** Stripe statuses that mean the member has paid for access right now. */
+const ACTIVE_SUBSCRIPTION_STATUSES = new Set<Stripe.Subscription.Status>([
+  'active',
+  'trialing',
+  'past_due',
+]);
+
 export class PerksBillingError extends Error {
   constructor(
     message: string,
@@ -90,7 +97,9 @@ export class PerksStripeClient {
     return created.id;
   }
 
-  async createCheckoutSession(request: CheckoutSessionRequest): Promise<string> {
+  async createCheckoutSession(
+    request: CheckoutSessionRequest,
+  ): Promise<{ url: string; customerId: string }> {
     const stripe = this.require();
     if (!this.priceId) {
       throw new PerksBillingError(
@@ -135,7 +144,53 @@ export class PerksStripeClient {
       );
     }
 
-    return session.url;
+    // The caller stores this before redirecting. Only the webhook used to
+    // record it, so every abandoned checkout minted another Stripe customer
+    // for the same person — one live account had three.
+    return { url: session.url, customerId };
+  }
+
+  /**
+   * Every Stripe customer we have ever created for this Saveful user.
+   *
+   * The stored id can be missing (the member never completed a checkout that
+   * produced a webhook) or stale (the duplicates above), and a member who has
+   * paid must be findable either way.
+   */
+  async findCustomerIds(userId: string, email: string): Promise<string[]> {
+    const stripe = this.require();
+    const ids = new Set<string>();
+
+    try {
+      const byMetadata = await stripe.customers.search({
+        query: `metadata['savefulUserId']:'${userId.replace(/'/g, '')}'`,
+        limit: 20,
+      });
+      for (const customer of byMetadata.data) ids.add(customer.id);
+    } catch (error) {
+      this.logger.warn(
+        `Stripe customer search failed for ${userId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+
+    // Search indexes lag by up to a minute, so a checkout that just finished
+    // may only be findable by email.
+    try {
+      const byEmail = await stripe.customers.list({ email, limit: 20 });
+      for (const customer of byEmail.data) {
+        if (customer.metadata?.savefulUserId === userId) ids.add(customer.id);
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Stripe customer lookup by email failed for ${userId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+
+    return [...ids];
   }
 
   async createPortalSession(customerId: string, returnUrl: string) {
@@ -149,6 +204,41 @@ export class PerksStripeClient {
 
   async getSubscription(subscriptionId: string) {
     return this.require().subscriptions.retrieve(subscriptionId);
+  }
+
+  /**
+   * The customer's live Perks subscription, if Stripe has one.
+   *
+   * Asked before starting a checkout, and whenever our own record says a member
+   * has not paid. A webhook that never lands — dropped, mis-signed, delivered
+   * while the backend was down — otherwise leaves someone charged but locked
+   * out, with a second checkout the only thing the app knows how to offer.
+   */
+  async findActiveSubscription(
+    customerId: string,
+  ): Promise<Stripe.Subscription | null> {
+    const stripe = this.require();
+    const { data } = await stripe.subscriptions.list({
+      customer: customerId,
+      status: 'all',
+      limit: 20,
+    });
+
+    const live = data.filter((subscription) =>
+      ACTIVE_SUBSCRIPTION_STATUSES.has(subscription.status),
+    );
+    const priceId = this.priceId;
+    const perks = live.filter(
+      (subscription) =>
+        subscription.metadata?.savefulProduct === PERKS_PRODUCT_TAG ||
+        (priceId &&
+          subscription.items.data.some((item) => item.price?.id === priceId)),
+    );
+
+    // Newest first: if a duplicate ever exists, the current one governs.
+    return (
+      perks.sort((left, right) => right.created - left.created)[0] ?? null
+    );
   }
 
   async setCancelAtPeriodEnd(subscriptionId: string, cancel: boolean) {

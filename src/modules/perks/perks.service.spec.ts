@@ -187,6 +187,8 @@ function createService(overrides: Record<string, unknown> = {}) {
     }),
     scheduleCancellation: jest.fn().mockResolvedValue(null),
     resumeSubscription: jest.fn().mockResolvedValue(null),
+    // Stripe says no subscription unless a test says otherwise.
+    reconcileFromStripe: jest.fn().mockResolvedValue(false),
   };
   Object.assign(billing, overrides.billing);
 
@@ -347,6 +349,29 @@ describe('PerksService (corp)', () => {
         status: 402,
       });
       expect(session.login).not.toHaveBeenCalled();
+    });
+
+    // A member paid, Stripe took the money, and the webhook never landed. The
+    // app's only move on a 402 is to open checkout again, so without this the
+    // fix for being locked out is being charged twice.
+    it('registers a member Stripe says has paid, even with no webhook applied', async () => {
+      const pending = membershipDoc({ status: PerksMembershipStatus.PENDING });
+      const { service, session, billing } = createService({
+        membershipModel: { findOne: jest.fn().mockResolvedValue(pending) },
+        billing: {
+          entitlementFor: jest.fn().mockReturnValue({
+            entitled: false,
+            reason: 'none',
+            paymentRequired: true,
+          }),
+          reconcileFromStripe: jest.fn().mockResolvedValue(true),
+        },
+      });
+
+      await service.ensureMembership(userId);
+
+      expect(billing.reconcileFromStripe).toHaveBeenCalledWith(pending);
+      expect(session.login).toHaveBeenCalled();
     });
 
     it('asks a lapsed member to renew even while their record still says active', async () => {

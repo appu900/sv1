@@ -61,9 +61,12 @@ function createService(overrides: Record<string, unknown> = {}) {
   };
   const stripe = {
     configured: true,
-    createCheckoutSession: jest
-      .fn()
-      .mockResolvedValue('https://checkout.stripe.com/c/pay/cs_test_1'),
+    createCheckoutSession: jest.fn().mockResolvedValue({
+      url: 'https://checkout.stripe.com/c/pay/cs_test_1',
+      customerId: 'cus_123',
+    }),
+    findCustomerIds: jest.fn().mockResolvedValue([]),
+    findActiveSubscription: jest.fn().mockResolvedValue(null),
     createPortalSession: jest.fn().mockResolvedValue('https://billing.stripe.com/p/1'),
     getSubscription: jest.fn().mockResolvedValue({ status: 'active' }),
     setCancelAtPeriodEnd: jest.fn().mockResolvedValue({
@@ -141,6 +144,87 @@ describe('PerksBillingService', () => {
       expect(membershipEventModel.create).toHaveBeenCalledWith(
         expect.objectContaining({ type: 'billing_checkout_started' }),
       );
+    });
+
+    // Only the webhook recorded the customer id before this, so every abandoned
+    // checkout minted another Stripe customer for the same person — one live
+    // account accumulated three, and none of them was on the membership.
+    it('records the Stripe customer before sending the member to pay', async () => {
+      const pending = membershipDoc({ stripeCustomerId: null });
+      const { service } = createService({
+        membershipModel: { findOne: jest.fn().mockResolvedValue(pending) },
+      });
+
+      await service.startCheckout(USER_ID);
+
+      expect(pending.stripeCustomerId).toBe('cus_123');
+      expect(pending.save).toHaveBeenCalled();
+    });
+
+    // The member has paid and the webhook never landed. A 402 here sends the
+    // app straight back to Stripe, so without this the cure is a second charge.
+    it('refuses to charge again when Stripe says the member already pays', async () => {
+      const pending = membershipDoc({ stripeCustomerId: 'cus_123' });
+      const { service, stripe } = createService({
+        membershipModel: { findOne: jest.fn().mockResolvedValue(pending) },
+        stripe: {
+          findActiveSubscription: jest.fn().mockResolvedValue(subscription()),
+        },
+      });
+
+      await expect(service.startCheckout(USER_ID)).rejects.toMatchObject({
+        response: { code: 'PERKS_BILLING_NOT_REQUIRED' },
+      });
+      expect(stripe.createCheckoutSession).not.toHaveBeenCalled();
+      expect(pending.plan).toBe('paid');
+    });
+  });
+
+  describe('reconcileFromStripe', () => {
+    it('finds the subscription even when our record has no customer id', async () => {
+      const pending = membershipDoc({ stripeCustomerId: null });
+      const { service } = createService({
+        stripe: {
+          findCustomerIds: jest.fn().mockResolvedValue(['cus_abandoned', 'cus_123']),
+          findActiveSubscription: jest
+            .fn()
+            .mockImplementation(async (id: string) =>
+              id === 'cus_123' ? subscription() : null,
+            ),
+        },
+      });
+
+      await expect(service.reconcileFromStripe(pending as never)).resolves.toBe(
+        true,
+      );
+      expect(pending.stripeCustomerId).toBe('cus_123');
+      expect(pending.stripeSubscriptionId).toBe('sub_123');
+      expect(pending.plan).toBe('paid');
+    });
+
+    it('stays false, and never throws, when Stripe is unreachable', async () => {
+      const pending = membershipDoc({ stripeCustomerId: 'cus_123' });
+      const { service } = createService({
+        stripe: {
+          findActiveSubscription: jest
+            .fn()
+            .mockRejectedValue(new Error('Stripe is down')),
+        },
+      });
+
+      await expect(service.reconcileFromStripe(pending as never)).resolves.toBe(
+        false,
+      );
+    });
+
+    it('leaves an unpaid member unpaid', async () => {
+      const pending = membershipDoc({ stripeCustomerId: 'cus_123' });
+      const { service } = createService();
+
+      await expect(service.reconcileFromStripe(pending as never)).resolves.toBe(
+        false,
+      );
+      expect(pending.plan).not.toBe('paid');
     });
 
     it('refuses to charge before the profile is complete', async () => {
