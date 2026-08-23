@@ -310,7 +310,12 @@ export class PerksService {
           : ((error as HttpException)?.getStatus?.() ?? 'REGISTRATION_FAILED');
       membership.status = PerksMembershipStatus.FAILED;
       membership.lastErrorCode = String(code);
-      membership.lastErrorMessage = (error as Error)?.message ?? null;
+      // `explainLoginFailure` replaces WeMAD's wording with something a member
+      // can act on, and carries the original as `upstreamMessage`. Persist that
+      // instead: our own sentence tells support nothing they did not know, and
+      // WeMAD's is the only text that says which field they rejected.
+      membership.lastErrorMessage =
+        this.upstreamMessageOf(error) ?? (error as Error)?.message ?? null;
       await membership.save();
 
       await this.recordEvent(
@@ -1565,6 +1570,17 @@ export class PerksService {
           ? (membership.lastErrorCode ?? 'REGISTRATION_FAILED')
           : null,
     };
+  }
+
+  /** WeMAD's own error text, when the failure carries one. */
+  private upstreamMessageOf(error: unknown): string | null {
+    if (error instanceof PerksCorpApiError) return error.message;
+    const response = (error as HttpException)?.getResponse?.();
+    if (response && typeof response === 'object') {
+      const upstream = (response as { upstreamMessage?: unknown }).upstreamMessage;
+      if (typeof upstream === 'string' && upstream.trim()) return upstream;
+    }
+    return null;
   }
 
   private toObjectId(userId: string): Types.ObjectId {

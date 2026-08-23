@@ -282,13 +282,20 @@ export class PerksCorpSessionService {
     }
 
     if (error.statusCode === 400 || error.statusCode === 422) {
-      const missing = this.missingProfileFields(user, fallbackGender);
+      // Only name, phone and email reach WeMAD — postcode and gender are
+      // preconditions we enforce ourselves and are never in the autologin
+      // payload. Naming them here sent people round the profile modal editing
+      // fields WeMAD had not even seen; one test account failed five times in
+      // a row that way. Blame only what we actually sent.
+      const missing = this.missingProfileFields(user, fallbackGender).filter(
+        (field) => field === 'name' || field === 'phone',
+      );
       return new UnprocessableEntityException({
         message:
-          'WeMAD could not verify your Perks account. Confirm your name, phone number, postcode and gender, then try again.',
+          'My Perks could not accept your details. Check your name and phone number are correct, then try again.',
         missingFields: missing.length
           ? missing
-          : (['name', 'phone', 'pincode', 'gender'] satisfies PerksMissingField[]),
+          : (['name', 'phone'] satisfies PerksMissingField[]),
         code: error.code,
         upstreamMessage: error.message,
       });

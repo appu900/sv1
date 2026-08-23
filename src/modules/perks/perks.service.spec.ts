@@ -1,4 +1,6 @@
-import { ConflictException, ForbiddenException } from '@nestjs/common';
+import { ConflictException, ForbiddenException,
+  UnprocessableEntityException,
+} from '@nestjs/common';
 import { Types } from 'mongoose';
 import {
   PerksMembershipPlan,
@@ -329,6 +331,31 @@ describe('PerksService (corp)', () => {
       expect(pending.wmadUserId).toBe('119');
       expect(membershipEventModel.create).toHaveBeenCalledWith(
         expect.objectContaining({ type: 'registered' }),
+      );
+    });
+
+    // Support reads `lastErrorMessage`. Our own sentence tells them nothing they
+    // did not already know; WeMAD's says which field was rejected.
+    it('records WeMAD\'s own words when sign-up fails, not our paraphrase', async () => {
+      const pending = membershipDoc({ status: PerksMembershipStatus.PENDING });
+      const { service } = createService({
+        membershipModel: { findOne: jest.fn().mockResolvedValue(pending) },
+        session: {
+          login: jest.fn().mockRejectedValue(
+            new UnprocessableEntityException({
+              message: 'WeMAD could not verify your Perks account.',
+              code: 'PERKS_PROFILE_REJECTED',
+              upstreamMessage: 'The phone field must be a valid AU mobile.',
+            }),
+          ),
+        },
+      });
+
+      await expect(service.ensureMembership(userId)).rejects.toBeDefined();
+
+      expect(pending.status).toBe(PerksMembershipStatus.FAILED);
+      expect(pending.lastErrorMessage).toBe(
+        'The phone field must be a valid AU mobile.',
       );
     });
 
