@@ -28,13 +28,18 @@ describe('toWemadPhone', () => {
     expect(toWemadPhone('03 9123 4567')).toBe('391234567');
   });
 
-  it('refuses a number that cannot be an Australian one', () => {
-    // A ten-digit Indian mobile has no trunk zero to strip, so nothing makes
-    // it nine digits. Better caught here than as a 422 from WeMAD.
-    expect(toWemadPhone('8260951404')).toBeNull();
-    expect(toWemadPhone('7008485825')).toBeNull();
-    // A US number with its country code is eleven digits but not +61.
-    expect(toWemadPhone('+1 415 555 0123')).toBeNull();
+  it('takes the last nine digits from anything longer', () => {
+    // WeMAD accepts nine digits and nothing else — 10, 11 and 8 all answer
+    // 422 "The phone field must be 9 digits" — so rather than turning a member
+    // away over formatting, keep the subscriber number.
+    expect(toWemadPhone('8260951404')).toBe('260951404');
+    expect(toWemadPhone('+1 415 555 0123')).toBe('155550123');
+    expect(toWemadPhone('0061 3 9123 4567')).toBe('391234567');
+  });
+
+  it('refuses a number too short to be one, rather than padding it', () => {
+    expect(toWemadPhone('12345678')).toBeNull();
+    expect(toWemadPhone('123')).toBeNull();
   });
 
   it('refuses anything too short or absent', () => {

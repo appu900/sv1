@@ -161,14 +161,24 @@ describe('PerksCorpSessionService', () => {
       );
     });
 
-    it('rejects a number that cannot be an Australian one', () => {
+    it('accepts a long number by keeping its last nine digits', () => {
+      // WeMAD takes nine digits and nothing else, so rather than turning a
+      // member away over formatting we keep the subscriber number.
       const { service } = createService();
-      // A ten-digit Indian mobile has no trunk zero to strip, so it can never
-      // be nine digits. Caught here rather than as a 422 from WeMAD.
       expect(
         service.missingProfileFields({
           ...(validUser as object),
           phoneNumber: '8260951404',
+        } as never),
+      ).not.toContain('phone');
+    });
+
+    it('still flags a number too short to use', () => {
+      const { service } = createService();
+      expect(
+        service.missingProfileFields({
+          ...(validUser as object),
+          phoneNumber: '12345',
         } as never),
       ).toContain('phone');
     });
