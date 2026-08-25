@@ -48,13 +48,26 @@ describe('perks corp mapper', () => {
       ).toBe(2);
     });
 
-    it('falls back to display_discount while discount is 0.00 upstream', () => {
+    // `display_discount` is what the cart charges, not `discount`. Measured on
+    // live cards as a Platinum member: Oakley reads discount 4.5 /
+    // display_discount 9.5 and is charged 9.5; Hoyts reads 0 / 6.65 and is
+    // charged 6.65. Reading `discount` first showed less than members get, and
+    // showed "no discount" on cards that do give one.
+    it('reports the discount the cart will actually charge', () => {
       expect(
-        resolveDiscountPercent({ discount: '0.00', display_discount: '5.00' }),
-      ).toBe(5);
+        resolveDiscountPercent({ discount: '4.50', display_discount: '9.50' }),
+      ).toBe(9.5);
       expect(
-        resolveDiscountPercent({ discount: '4.00', display_discount: '5.00' }),
-      ).toBe(4);
+        resolveDiscountPercent({ discount: '0.00', display_discount: '6.65' }),
+      ).toBe(6.65);
+    });
+
+    it('falls back to discount while WeMAD finishes reconfiguring cards', () => {
+      expect(
+        resolveDiscountPercent({ discount: '7.50', display_discount: '0.00' }),
+      ).toBe(7.5);
+      expect(resolveDiscountPercent({ discount: '2.00' })).toBe(2);
+      expect(resolveDiscountPercent({})).toBe(0);
     });
   });
 

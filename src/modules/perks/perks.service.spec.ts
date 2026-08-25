@@ -162,6 +162,9 @@ function createService(overrides: Record<string, unknown> = {}) {
     ),
     clearCachedToken: jest.fn(),
     missingProfileFields: jest.fn().mockReturnValue([]),
+    // My Perks sells one WeMAD tier, Platinum; without it every card is 0% off.
+    membershipTierId: '3',
+    applyMembershipTier: jest.fn().mockResolvedValue('3'),
     createCheckoutUrl: jest.fn(
       async (s: { accessToken: string; webToken: string }) =>
         `https://frontend.test/sso/login?token=${s.webToken}`,
@@ -376,6 +379,68 @@ describe('PerksService (corp)', () => {
         status: 402,
       });
       expect(session.login).not.toHaveBeenCalled();
+    });
+
+    // WeMAD prices discounts per tier and everyone starts on standard, where
+    // every card reads per_standard: 0.00. A member who pays A$10/month and is
+    // left on standard gets literally no discount, so this is not optional.
+    it('puts a newly registered member on the Platinum tier', async () => {
+      const pending = membershipDoc({ status: PerksMembershipStatus.PENDING });
+      const { service, session } = createService({
+        membershipModel: { findOne: jest.fn().mockResolvedValue(pending) },
+      });
+
+      await service.ensureMembership(userId);
+
+      expect(session.applyMembershipTier).toHaveBeenCalledWith('access-1');
+      expect(pending.wmadMembershipId).toBe('3');
+    });
+
+    it('still registers them when the tier upgrade fails', async () => {
+      // Shopping at standard rates beats being locked out entirely; the tier
+      // stays unrecorded so the next visit retries it.
+      const pending = membershipDoc({ status: PerksMembershipStatus.PENDING });
+      const { service } = createService({
+        membershipModel: { findOne: jest.fn().mockResolvedValue(pending) },
+        session: { applyMembershipTier: jest.fn().mockResolvedValue(null) },
+      });
+
+      const result = await service.ensureMembership(userId);
+
+      expect(result.status).toBe(PerksMembershipStatus.ACTIVE);
+      expect(pending.wmadMembershipId).toBeNull();
+    });
+
+    it('upgrades a member who registered before the tier existed', async () => {
+      const active = membershipDoc({
+        status: PerksMembershipStatus.ACTIVE,
+        wmadUserId: '119',
+        wmadMembershipId: null,
+      });
+      const { service, session } = createService({
+        membershipModel: { findOne: jest.fn().mockResolvedValue(active) },
+      });
+
+      await service.ensureMembership(userId);
+
+      expect(session.applyMembershipTier).toHaveBeenCalled();
+      expect(active.wmadMembershipId).toBe('3');
+      expect(active.save).toHaveBeenCalled();
+    });
+
+    it('does not call WeMAD again once the member is on the right tier', async () => {
+      const active = membershipDoc({
+        status: PerksMembershipStatus.ACTIVE,
+        wmadUserId: '119',
+        wmadMembershipId: '3',
+      });
+      const { service, session } = createService({
+        membershipModel: { findOne: jest.fn().mockResolvedValue(active) },
+      });
+
+      await service.ensureMembership(userId);
+
+      expect(session.applyMembershipTier).not.toHaveBeenCalled();
     });
 
     // A member paid, Stripe took the money, and the webhook never landed. The

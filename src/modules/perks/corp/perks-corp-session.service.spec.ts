@@ -26,6 +26,7 @@ function createService(overrides: Record<string, unknown> = {}) {
       (token: string) =>
         `https://sandbox.wemad.com.au/frontend/sso/login?token=${token}`,
     ),
+    changeMembership: jest.fn().mockResolvedValue(undefined),
     ...(overrides.api as object),
   };
   const cache = new Map<string, unknown>();
@@ -182,7 +183,54 @@ describe('PerksCorpSessionService', () => {
     });
   });
 
-  describe('login', () => {
+  describe('applyMembershipTier', () => {
+  // Off unless configured: WeMAD's /change-membership answers 500 for every id
+  // (their own `Unknown column 'site_id'`), and a member with no upgrade
+  // already receives the advertised discount. Retrying a broken endpoint on
+  // every visit would buy nothing.
+  it('does nothing when no tier is configured', async () => {
+    const { service, api } = createService({
+      config: { get: jest.fn((_key: string, fallback: unknown) => fallback) },
+    });
+
+    await expect(service.applyMembershipTier('access-1')).resolves.toBeNull();
+    expect(api.changeMembership).not.toHaveBeenCalled();
+  });
+
+  it('upgrades and reports the tier once one is configured', async () => {
+    const { service, api } = createService({
+      config: {
+        get: jest.fn((key: string, fallback: unknown) =>
+          key === 'WMAD_CORP_MEMBERSHIP_ID' ? '3' : fallback,
+        ),
+      },
+    });
+
+    await expect(service.applyMembershipTier('access-1')).resolves.toBe('3');
+    expect(api.changeMembership).toHaveBeenCalledWith('access-1', '3');
+  });
+
+  it('reports null rather than throwing when WeMAD rejects it', async () => {
+    // Registration must survive this: a member on the wrong tier can still
+    // shop, one whose sign-up blew up cannot.
+    const { service } = createService({
+      config: {
+        get: jest.fn((key: string, fallback: unknown) =>
+          key === 'WMAD_CORP_MEMBERSHIP_ID' ? '3' : fallback,
+        ),
+      },
+      api: {
+        changeMembership: jest
+          .fn()
+          .mockRejectedValue(new Error('SQLSTATE[42S22]: Unknown column')),
+      },
+    });
+
+    await expect(service.applyMembershipTier('access-1')).resolves.toBeNull();
+  });
+});
+
+describe('login', () => {
     it('sends a normalised payload and returns the session', async () => {
       const { service, api } = createService();
       const session = await service.login(USER_ID, validUser);

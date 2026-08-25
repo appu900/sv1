@@ -31,6 +31,31 @@ export class PerksCorpSessionService {
   private readonly logger = new Logger(PerksCorpSessionService.name);
   private readonly credentialSecret: string;
   private readonly tokenTtlSeconds: number;
+  /**
+   * The WeMAD tier to put members on, or empty to leave them alone.
+   *
+   * OFF by default, and that is a deliberate safety decision. Measured against
+   * WeMAD on 2026-08-25 by moving one account through all four tiers and
+   * reading back what its cart was actually charged:
+   *
+   *   card #771   catalogue says 11.5% off, on every tier
+   *     Standard        charged 11.5%   $100 -> $89.50
+   *     Gold            charged  7.5%   $100 -> $93.50
+   *     Platinum        charged  3.5%   $100 -> $97.50
+   *     Platinum Plus   charged  2.5%   $100 -> $98.50
+   *
+   * The rule is `charged = discount - per_<tier>`, so the `per_*` columns are
+   * subtracted from the member's discount, not granted to them. Upgrading a
+   * member REDUCES what they save, and Standard — what everyone already is —
+   * pays the least.
+   *
+   * Worse, the catalogue `discount` does not move with the tier. Upgrading
+   * would have us advertise 11.5% and charge 3.5%.
+   *
+   * Do not set `WMAD_CORP_MEMBERSHIP_ID` until WeMAD confirms which way their
+   * tiers are meant to work; their stated model is the reverse of this.
+   */
+  readonly membershipTierId: string;
 
   constructor(
     private readonly api: PerksCorpApiClient,
@@ -43,6 +68,31 @@ export class PerksCorpSessionService {
     this.tokenTtlSeconds = Number(
       this.config.get<number>('PERKS_CORP_TOKEN_TTL_SECONDS', 6 * 60 * 60),
     );
+    this.membershipTierId = this.config
+      .get<string>('WMAD_CORP_MEMBERSHIP_ID', '')
+      .trim();
+  }
+
+  /**
+   * Puts the member on the Platinum tier, returning the id when it worked.
+   *
+   * Never throws. A member who is registered but still on standard can shop —
+   * they just see no discount — so losing their whole sign-up over this would
+   * be the worse outcome. The caller records the result and retries later.
+   */
+  async applyMembershipTier(accessToken: string): Promise<string | null> {
+    if (!this.membershipTierId) return null;
+    try {
+      await this.api.changeMembership(accessToken, this.membershipTierId);
+      return this.membershipTierId;
+    } catch (error) {
+      this.logger.error(
+        `WeMAD membership upgrade to tier ${this.membershipTierId} failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return null;
+    }
   }
 
  

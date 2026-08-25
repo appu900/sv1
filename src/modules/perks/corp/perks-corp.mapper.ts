@@ -56,10 +56,30 @@ function siteAware(
   return fromSite !== null ? fromSite : num(card[field]);
 }
 
+/**
+ * The discount the member will actually be charged.
+ *
+ * `display_discount` is the field that matches, not `discount`. Measured
+ * 2026-08-25 by adding cards to a real cart as a Platinum member and comparing
+ * both fields with the cart's own `discount_percentage`:
+ *
+ *   Oakley #771          discount 4.5   display_discount 9.5    charged 9.5
+ *   Hoyts #35            discount 0     display_discount 6.65   charged 6.65
+ *   Coles Groceries #278 discount 0     display_discount 4      charged 4
+ *   JB Hi-Fi #25         discount 1     display_discount 0      charged 0
+ *
+ * `discount` matched on none of them. Reading it, as we used to, would have
+ * shown 4.5% on a card that gives 9.5%, and — worse — "no discount" on Hoyts
+ * and Coles, which do give one.
+ *
+ * `discount` stays as the fallback: WeMAD is mid-migration and cards they have
+ * not reconfigured still disagree with both fields, so something is better than
+ * nothing until they finish.
+ */
 export function resolveDiscountPercent(card: Record<string, unknown>): number {
-  const resolved = siteAware(card, 'discount');
-  if (resolved !== null && resolved > 0) return resolved;
-  return siteAware(card, 'display_discount') ?? resolved ?? 0;
+  const displayed = siteAware(card, 'display_discount');
+  if (displayed !== null && displayed > 0) return displayed;
+  return siteAware(card, 'discount') ?? displayed ?? 0;
 }
 
 export function resolveDeliveryFee(card: Record<string, unknown>): number {

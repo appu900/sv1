@@ -213,6 +213,7 @@ export class PerksService {
     }
 
     if (existing?.status === PerksMembershipStatus.ACTIVE && !legacy) {
+      await this.ensureMembershipTier(userId, existing, user, fallbackGender);
       return this.membershipResponse(existing.toObject());
     }
     if (existing?.status === PerksMembershipStatus.CANCELLED && !legacy) {
@@ -280,6 +281,47 @@ export class PerksService {
     return this.registerUpstream(userId, membership, user, fallbackGender);
   }
 
+  /**
+   * Moves an already-registered member onto the Platinum tier if they are not
+   * on it yet.
+   *
+   * Everyone who registered before the upgrade existed is on standard, where
+   * the catalogue shows 0% off on every card. This repairs them on their next
+   * visit instead of requiring a migration, and costs one upstream call only
+   * while the tier is still wrong.
+   */
+  private async ensureMembershipTier(
+    userId: string,
+    membership: PerksMembershipDocument,
+    user: User,
+    fallbackGender: Gender | null,
+  ): Promise<void> {
+    const wanted = this.session.membershipTierId;
+    if (!wanted || membership.wmadMembershipId === wanted) return;
+
+    try {
+      const applied = await this.session.withAccessToken(
+        userId,
+        user,
+        (accessToken) => this.session.applyMembershipTier(accessToken),
+        {
+          credentialVersion: membership.credentialVersion ?? 1,
+          fallbackGender,
+        },
+      );
+      if (!applied) return;
+      membership.wmadMembershipId = applied;
+      await membership.save();
+    } catch (error) {
+      // Shopping at standard rates beats being locked out of the app.
+      this.logger.warn(
+        `Could not upgrade Perks tier for ${userId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
   private async registerUpstream(
     userId: string,
     membership: PerksMembershipDocument,
@@ -294,6 +336,11 @@ export class PerksService {
       });
       membership.wmadUserId = session.wmadUserId;
       membership.wmadEmail = user.email.toLowerCase();
+      // Without this the member is on WeMAD's standard tier, where every card
+      // is 0% off — they would be paying A$10/month for no discount at all.
+      membership.wmadMembershipId = await this.session.applyMembershipTier(
+        session.accessToken,
+      );
       membership.status = PerksMembershipStatus.ACTIVE;
       membership.registeredAt = membership.registeredAt ?? new Date();
       membership.lastErrorCode = null;

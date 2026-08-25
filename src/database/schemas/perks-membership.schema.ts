@@ -34,6 +34,17 @@ export class PerksMembership {
   @Prop({ type: String, default: null })
   wmadUserId: string | null;
 
+  /**
+   * The WeMAD membership tier this member is actually on.
+   *
+   * Card discounts are per tier and everyone starts on standard, where every
+   * card is 0% off. Recorded so a member left on the wrong tier — the upgrade
+   * call failed, or they registered before we made it — is found and fixed on
+   * their next visit rather than quietly shopping at full price.
+   */
+  @Prop({ type: String, default: null })
+  wmadMembershipId: string | null;
+
   @Prop({
     type: String,
     enum: PerksMembershipStatus,

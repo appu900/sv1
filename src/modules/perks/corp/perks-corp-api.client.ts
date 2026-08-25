@@ -210,6 +210,28 @@ export class PerksCorpApiClient {
     }, accessToken);
   }
 
+  /**
+   * Puts the member on a WeMAD membership tier.
+   *
+   * Card discounts are per tier (`per_standard`, `per_gold`, `per_platinum`,
+   * `per_platinum_plus`), and everyone starts on standard, where every card
+   * reads `per_standard: 0.00`. That is why the catalogue showed 0% off across
+   * the board — not a WeMAD data gap, our members were simply never upgraded.
+   *
+   * My Perks sells one level, Platinum, so this runs after every successful
+   * registration and is retried until it sticks.
+   */
+  async changeMembership(
+    accessToken: string,
+    membershipId: string,
+  ): Promise<void> {
+    await this.request(
+      '/change-membership',
+      { method: 'POST', body: JSON.stringify({ membership_id: membershipId }) },
+      accessToken,
+    );
+  }
+
   async listGiftCards(filters: {
     paginate?: number;
     page?: number;
