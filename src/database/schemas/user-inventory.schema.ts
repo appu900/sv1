@@ -86,6 +86,13 @@ export class UserInventoryItem {
   @Prop({ default: false })
   isDiscarded: boolean;
 
+  /**
+   * Set by the nightly cleanup for items left in the pantry long past their expiry
+   * date, so they can be told apart from the ones the user discarded themselves.
+   */
+  @Prop({ default: false })
+  autoDiscarded: boolean;
+
   @Prop({ type: String, enum: Object.values(WasteType) })
   wasteType?: WasteType;
 

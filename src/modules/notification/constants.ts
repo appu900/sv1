@@ -20,6 +20,13 @@ export const BULLMQ_PRIORITY = {
 export const MAX_RETRIES = 3;
 export const TOKEN_FAILURE_THRESHOLD = 3;
 
+/**
+ * How many times a batch may be re-queued for its retryable tokens. Without a cap a
+ * persistently-retryable token (an Expo/FCM outage, an unconfigured gateway) re-queues
+ * itself forever and can re-deliver the same push on every pass.
+ */
+export const MAX_BATCH_REQUEUE_DEPTH = 2;
+
 export const BROADCAST_RATE_KEY = 'notif:broadcast:last';
 export const BROADCAST_COOLDOWN_SECONDS = 300;
 

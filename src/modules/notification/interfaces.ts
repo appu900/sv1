@@ -42,6 +42,8 @@ export interface SendBatchJobData {
   tokens: TokenWithType[];
   batchIndex: number;
   totalBatches: number;
+  /** How many times this batch has already been re-queued for retryable tokens. */
+  retryDepth?: number;
 }
 
 export type NotificationJobData = FanOutJobData | SendBatchJobData;

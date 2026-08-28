@@ -62,6 +62,7 @@ export class NotificationProducer {
     notificationId: string,
     tokens: TokenWithType[],
     priority: 'high' | 'normal' | 'low' = 'normal',
+    retryDepth = 0,
   ): Promise<number> {
     const chunks: TokenWithType[][] = [];
     for (let i = 0; i < tokens.length; i += FAN_OUT_BATCH_SIZE) {
@@ -78,6 +79,7 @@ export class NotificationProducer {
         tokens: tokenChunk,
         batchIndex: index,
         totalBatches,
+        retryDepth,
       } satisfies SendBatchJobData,
       opts: {
         priority: BULLMQ_PRIORITY[priority],
@@ -98,6 +100,7 @@ export class NotificationProducer {
       notificationId,
       totalBatches,
       totalTokens: tokens.length,
+      retryDepth,
     });
 
     return totalBatches;

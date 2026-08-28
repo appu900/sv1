@@ -30,6 +30,7 @@ import {
   WORKER_CONCURRENCY,
   TOKEN_FAILURE_THRESHOLD,
   FAN_OUT_BATCH_SIZE,
+  MAX_BATCH_REQUEUE_DEPTH,
 } from './constants';
 
 @Processor(NOTIFICATION_QUEUE_NAME, {
@@ -172,7 +173,7 @@ export class NotificationWorker extends WorkerHost {
 
 
   private async handleSendBatch(job: Job<SendBatchJobData>): Promise<void> {
-    const { notificationId, tokens, batchIndex, totalBatches } = job.data;
+    const { notificationId, tokens, batchIndex, retryDepth } = job.data;
 
     const notif = await this.notifModel.findById(notificationId);
     if (!notif) {
@@ -184,12 +185,13 @@ export class NotificationWorker extends WorkerHost {
       return;
     }
 
-    await this.sendTokens(notif, tokens);
+    await this.sendTokens(notif, tokens, retryDepth ?? 0);
   }
 
   private async sendTokens(
     notif: NotificationDocument,
     tokens: TokenWithType[],
+    retryDepth = 0,
   ): Promise<void> {
     const payload: FirebaseMessagePayload = {
       title: notif.title,
@@ -202,8 +204,27 @@ export class NotificationWorker extends WorkerHost {
       imageUrl: notif.imageUrl,
     };
 
-    const expoTokens = tokens.filter((t) => t.tokenType === 'expo').map((t) => t.token);
-    const fcmTokens = tokens.filter((t) => t.tokenType === 'fcm').map((t) => t.token);
+    // One device can only hold one active row per token, but a batch can still arrive
+    // with the same token twice (a re-queue overlapping the original fan-out). Sending
+    // the list as-is would put the same banner on the phone twice.
+    const uniqueTokens = this.dedupeTokens(tokens);
+
+    const expoTokens = uniqueTokens.filter((t) => t.tokenType === 'expo').map((t) => t.token);
+    const fcmTokens = uniqueTokens.filter((t) => t.tokenType === 'fcm').map((t) => t.token);
+    const unsupportedTokens = uniqueTokens.filter(
+      (t) => t.tokenType !== 'expo' && t.tokenType !== 'fcm',
+    );
+
+    if (unsupportedTokens.length > 0) {
+      // Neither gateway can deliver these. Counting them keeps totalProcessed in step
+      // with totalTargets so the notification can still finalize.
+      this.logger.warn('Skipping tokens with no delivery gateway', {
+        service: 'NotificationWorker',
+        notificationId: String(notif._id),
+        count: unsupportedTokens.length,
+        tokenTypes: [...new Set(unsupportedTokens.map((t) => t.tokenType))],
+      });
+    }
 
     const [expoResult, firebaseResult] = await Promise.all([
       expoTokens.length > 0
@@ -220,6 +241,34 @@ export class NotificationWorker extends WorkerHost {
       invalidTokens: [...expoResult.invalidTokens, ...firebaseResult.invalidTokens],
     };
 
+    // Everything from here on is bookkeeping. The pushes have already left, so an error
+    // must not bubble up: BullMQ would retry the job and deliver the whole batch again.
+    try {
+      await this.recordSendResult(notif, result, unsupportedTokens, retryDepth);
+    } catch (error) {
+      this.logger.error('Post-send bookkeeping failed — not retrying the delivery', {
+        service: 'NotificationWorker',
+        notificationId: String(notif._id),
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private dedupeTokens(tokens: TokenWithType[]): TokenWithType[] {
+    const seen = new Set<string>();
+    return tokens.filter((t) => {
+      if (seen.has(t.token)) return false;
+      seen.add(t.token);
+      return true;
+    });
+  }
+
+  private async recordSendResult(
+    notif: NotificationDocument,
+    result: BatchSendResult,
+    unsupportedTokens: TokenWithType[],
+    retryDepth: number,
+  ): Promise<void> {
     await this.updateTokenHealth(result.successTokens, result.invalidTokens);
 
     if (result.invalidTokens.length > 0) {
@@ -229,7 +278,10 @@ export class NotificationWorker extends WorkerHost {
       );
     }
 
-    const failedCount = result.invalidTokens.length + result.retryableTokens.length;
+    const failedCount =
+      result.invalidTokens.length +
+      result.retryableTokens.length +
+      unsupportedTokens.length;
 
     await this.notifModel.findOneAndUpdate(
       { _id: notif._id },
@@ -242,30 +294,60 @@ export class NotificationWorker extends WorkerHost {
         { $addToSet: { failedTokens: { $each: result.retryableTokens } } },
       );
 
-      // Auto-requeue retryable tokens as a new batch job
-      const retryDocs = await this.tokenModel
-        .find({ token: { $in: result.retryableTokens }, isActive: true })
-        .select('token tokenType')
-        .lean();
-      if (retryDocs.length > 0) {
-        const retryTokens: TokenWithType[] = retryDocs.map((d) => ({
-          token: d.token,
-          tokenType: d.tokenType,
-        }));
-        await this.producer.enqueueBatches(
-          String(notif._id),
-          retryTokens,
-          'low',
-        );
-        this.logger.info('Retryable tokens requeued', {
-          service: 'NotificationWorker',
-          notificationId: String(notif._id),
-          retryCount: retryTokens.length,
-        });
-      }
+      await this.requeueRetryableTokens(notif, result.retryableTokens, retryDepth);
     }
 
     await this.finalizeIfComplete(notif._id);
+  }
+
+  /**
+   * Re-queues tokens the gateway said to try again later — but only a bounded number of
+   * times. An outage that marks every token retryable used to re-queue itself endlessly,
+   * re-delivering the same notification on each pass.
+   */
+  private async requeueRetryableTokens(
+    notif: NotificationDocument,
+    retryableTokens: string[],
+    retryDepth: number,
+  ): Promise<void> {
+    const nextDepth = retryDepth + 1;
+
+    if (nextDepth > MAX_BATCH_REQUEUE_DEPTH) {
+      this.logger.warn('Retryable tokens dropped — requeue limit reached', {
+        service: 'NotificationWorker',
+        notificationId: String(notif._id),
+        retryCount: retryableTokens.length,
+        retryDepth,
+        maxDepth: MAX_BATCH_REQUEUE_DEPTH,
+      });
+      return;
+    }
+
+    const retryDocs = await this.tokenModel
+      .find({ token: { $in: retryableTokens }, isActive: true })
+      .select('token tokenType')
+      .lean();
+
+    if (retryDocs.length === 0) return;
+
+    const retryTokens: TokenWithType[] = retryDocs.map((d) => ({
+      token: d.token,
+      tokenType: d.tokenType,
+    }));
+
+    await this.producer.enqueueBatches(
+      String(notif._id),
+      retryTokens,
+      'low',
+      nextDepth,
+    );
+
+    this.logger.info('Retryable tokens requeued', {
+      service: 'NotificationWorker',
+      notificationId: String(notif._id),
+      retryCount: retryTokens.length,
+      retryDepth: nextDepth,
+    });
   }
 
   private async finalizeIfComplete(notificationId: any): Promise<void> {

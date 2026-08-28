@@ -32,6 +32,11 @@ export class RegisterTokenDto {
   @IsOptional()
   @IsString()
   appBundle?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  installationId?: string;
 }
 
 export class UnregisterTokenDto {

@@ -34,6 +34,14 @@ export class DeviceToken {
   @Prop({ required: true, enum: TokenMode, default: TokenMode.PROD })
   tokenMode: TokenMode;
 
+  /**
+   * Stable per app install, sent by the client. A device that is re-issued a push token
+   * (reinstall, restored backup, credential rotation) would otherwise leave the old row
+   * active and receive every notification once per stale token.
+   */
+  @Prop({ index: true })
+  installationId?: string;
+
   @Prop()
   appVersion?: string;
 
@@ -57,12 +65,17 @@ export class DeviceToken {
 
   @Prop()
   deactivationReason?: string;
+
+  /** Refreshed on every register call, including no-op re-registrations. */
+  @Prop({ type: Date })
+  lastRegisteredAt?: Date;
 }
 
 export type DeviceTokenDocument = DeviceToken & Document;
 export const DeviceTokenSchema = SchemaFactory.createForClass(DeviceToken);
 
 DeviceTokenSchema.index({ userId: 1, isActive: 1 });
+DeviceTokenSchema.index({ userId: 1, installationId: 1 });
 
 DeviceTokenSchema.index(
   { lastFailureAt: 1 },

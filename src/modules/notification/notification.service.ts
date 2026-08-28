@@ -39,6 +39,7 @@ export interface RegisterTokenInput {
   appVersion?: string;
   appBuild?: string;
   appBundle?: string;
+  installationId?: string;
 }
 
 export interface SendNotificationInput {
@@ -81,15 +82,20 @@ export class NotificationService {
       existing.appVersion = input.appVersion;
       existing.appBuild = input.appBuild;
       existing.appBundle = input.appBundle;
+      existing.installationId = input.installationId;
       existing.isActive = true;
       existing.failureCount = 0;
       existing.deactivationReason = undefined;
+      existing.lastRegisteredAt = new Date();
       await existing.save();
+
+      const retired = await this.retireSupersededTokens(userId, input);
 
       this.logger.info('Device token re-registered', {
         service: 'NotificationService',
         userId,
         platform: input.platform,
+        retiredDuplicates: retired,
       });
       return { message: 'Token updated' };
     }
@@ -103,14 +109,52 @@ export class NotificationService {
       appVersion: input.appVersion,
       appBuild: input.appBuild,
       appBundle: input.appBundle,
+      installationId: input.installationId,
+      lastRegisteredAt: new Date(),
     });
+
+    const retired = await this.retireSupersededTokens(userId, input);
 
     this.logger.info('Device token registered', {
       service: 'NotificationService',
       userId,
       platform: input.platform,
+      retiredDuplicates: retired,
     });
     return { message: 'Token registered' };
+  }
+
+  /**
+   * Deactivates the other tokens belonging to the same app install. A device whose push
+   * token is re-issued (reinstall, restored backup, credential rotation) registers the
+   * new one but leaves the old row active — and every notification then lands on the
+   * phone once per stale token.
+   *
+   * Keyed on installationId so a user's second real device keeps its own token.
+   */
+  private async retireSupersededTokens(
+    userId: string,
+    input: RegisterTokenInput,
+  ): Promise<number> {
+    if (!input.installationId) return 0;
+
+    const result = await this.tokenModel.updateMany(
+      {
+        userId: new Types.ObjectId(userId),
+        installationId: input.installationId,
+        token: { $ne: input.token },
+        isActive: true,
+      },
+      {
+        $set: {
+          isActive: false,
+          deactivationReason: 'superseded_by_newer_token',
+          lastFailureAt: new Date(),
+        },
+      },
+    );
+
+    return result.modifiedCount;
   }
 
   async unregisterToken(
