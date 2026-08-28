@@ -57,29 +57,31 @@ function siteAware(
 }
 
 /**
- * The discount the member will actually be charged.
+ * The discount to show for a card.
  *
- * `display_discount` is the field that matches, not `discount`. Measured
- * 2026-08-25 by adding cards to a real cart as a Platinum member and comparing
- * both fields with the cart's own `discount_percentage`:
+ * WeMAD send two fields and **which one is authoritative keeps changing**.
+ * Measured against a real cart, as a Platinum member, on consecutive days:
  *
- *   Oakley #771          discount 4.5   display_discount 9.5    charged 9.5
- *   Hoyts #35            discount 0     display_discount 6.65   charged 6.65
- *   Coles Groceries #278 discount 0     display_discount 4      charged 4
- *   JB Hi-Fi #25         discount 1     display_discount 0      charged 0
+ *   2026-08-25   Oakley  discount 4.5  display_discount 9.5   charged 9.5
+ *                Hoyts   discount 0    display_discount 6.65  charged 6.65
+ *   2026-08-29   Oakley  discount 9.5  display_discount 9.5   charged 9.5
+ *                Forever New  2.5 / 1.5  charged 2.5
+ *                Adore Beauty 1.5 / 0.5  charged 1.5
  *
- * `discount` matched on none of them. Reading it, as we used to, would have
- * shown 4.5% on a card that gives 9.5%, and — worse — "no discount" on Hoyts
- * and Coles, which do give one.
+ * So on the 25th `display_discount` was right and on the 29th `discount` is —
+ * they reconfigured underneath us. `discount` first with `display_discount` as
+ * the fallback matches every card measured today, and still covers the cards
+ * that carry a rate only in `display_discount`.
  *
- * `discount` stays as the fallback: WeMAD is mid-migration and cards they have
- * not reconfigured still disagree with both fields, so something is better than
- * nothing until they finish.
+ * Treat this as indicative. The authoritative number is the quote, which asks
+ * WeMAD what this member will actually pay; that is what the card detail and
+ * cart totals are built from. Do not flip this again on one day's data —
+ * re-measure against `/cart` first, the way the entries above were.
  */
 export function resolveDiscountPercent(card: Record<string, unknown>): number {
-  const displayed = siteAware(card, 'display_discount');
-  if (displayed !== null && displayed > 0) return displayed;
-  return siteAware(card, 'discount') ?? displayed ?? 0;
+  const resolved = siteAware(card, 'discount');
+  if (resolved !== null && resolved > 0) return resolved;
+  return siteAware(card, 'display_discount') ?? resolved ?? 0;
 }
 
 export function resolveDeliveryFee(card: Record<string, unknown>): number {
