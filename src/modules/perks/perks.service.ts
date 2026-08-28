@@ -622,11 +622,23 @@ export class PerksService {
 
     const cart = await this.getOrCreateActiveCart(userId);
     const faceValueCents = Math.round(dto.ecardValue * 100);
+    // Two gifts of the same card at the same value are only the same line when
+    // they go to the same person. Merging on card and value alone quietly threw
+    // away the second recipient — both cards were emailed to the first, and
+    // nothing in the cart showed it had happened.
+    const sameRecipient = (item: { gift?: Record<string, string> | null }) =>
+      !dto.sendAsGift ||
+      ((item.gift?.recipientEmail ?? '').toLowerCase() ===
+        (dto.giftRecipientEmail ?? '').trim().toLowerCase() &&
+        (item.gift?.recipientPhone ?? '') === (giftPhone ?? '') &&
+        (item.gift?.recipientName ?? '') === (dto.giftRecipientName ?? '').trim());
+
     const existing = cart.items.find(
       (item) =>
         item.ecardId === dto.ecardId &&
         item.faceValueCents === faceValueCents &&
-        item.sendAsGift === Boolean(dto.sendAsGift),
+        item.sendAsGift === Boolean(dto.sendAsGift) &&
+        sameRecipient(item),
     );
     if (existing) {
       existing.quantity = Math.min(100, existing.quantity + dto.quantity);

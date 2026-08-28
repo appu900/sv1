@@ -503,6 +503,68 @@ describe('PerksService (corp)', () => {
       ).rejects.toMatchObject({ status: 403 });
     });
 
+    // Gifts to two different people are two different lines. Merging them on
+    // card and value alone silently dropped the second recipient: both cards
+    // were emailed to the first person, and the cart looked correct.
+    it('keeps gifts to different people as separate cart lines', async () => {
+      const cart = cartDoc([]);
+      const { service } = createService({
+        cartModel: { findOne: jest.fn().mockResolvedValue(cart) },
+      });
+
+      const gift = {
+        ecardId: '1',
+        ecardValue: 50,
+        quantity: 1,
+        sendAsGift: true,
+        giftTemplateId: '2',
+        giftTemplateDesignId: '4',
+      };
+
+      await service.addCartItem(userId, {
+        ...gift,
+        giftRecipientName: 'Kim',
+        giftRecipientEmail: 'kim@saveful.com',
+        giftRecipientPhone: '400101868',
+      } as never);
+      await service.addCartItem(userId, {
+        ...gift,
+        giftRecipientName: 'Sam',
+        giftRecipientEmail: 'sam@saveful.com',
+        giftRecipientPhone: '400202979',
+      } as never);
+
+      const lines = cart.items as Array<{ gift: { recipientName: string } }>;
+      expect(lines).toHaveLength(2);
+      expect(lines.map((line) => line.gift.recipientName)).toEqual(['Kim', 'Sam']);
+    });
+
+    it('still merges a repeat gift to the same person', async () => {
+      const cart = cartDoc([]);
+      const { service } = createService({
+        cartModel: { findOne: jest.fn().mockResolvedValue(cart) },
+      });
+
+      const gift = {
+        ecardId: '1',
+        ecardValue: 50,
+        quantity: 1,
+        sendAsGift: true,
+        giftTemplateId: '2',
+        giftTemplateDesignId: '4',
+        giftRecipientName: 'Kim',
+        giftRecipientEmail: 'kim@saveful.com',
+        giftRecipientPhone: '400101868',
+      };
+
+      await service.addCartItem(userId, gift as never);
+      await service.addCartItem(userId, gift as never);
+
+      const lines = cart.items as Array<{ quantity: number }>;
+      expect(lines).toHaveLength(1);
+      expect(lines[0].quantity).toBe(2);
+    });
+
     it('names the cart line that blocks the total instead of failing anonymously', async () => {
       const cart = cartDoc([
         {
