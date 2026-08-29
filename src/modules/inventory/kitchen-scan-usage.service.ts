@@ -12,7 +12,6 @@ import {
 import { SubscriptionService } from '../subscription/subscription.service';
 import { PLANS, UNLIMITED } from '../subscription/subscription.constants';
 
-export const KITCHEN_SCAN_LIFETIME_LIMIT = 5;
 
 @Injectable()
 export class KitchenScanUsageService {

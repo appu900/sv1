@@ -13,7 +13,6 @@ import { Model } from 'mongoose';
 import { User, UserDocument } from 'src/database/schemas/user.auth.schema';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ImageUploadService } from '../image-upload/image-upload.service';
-import { COOKBOOKAI_FREE_GENERATION_LIMIT } from './cookbookai.constants';
 import { SubscriptionService } from '../subscription/subscription.service';
 import { UNLIMITED } from '../subscription/subscription.constants';
 
