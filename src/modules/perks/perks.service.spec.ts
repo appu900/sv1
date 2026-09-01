@@ -85,6 +85,9 @@ function createService(overrides: Record<string, unknown> = {}) {
       return result;
     }),
     create: jest.fn(),
+    // Registration failures write through a conditional update so they cannot
+    // demote a membership another caller has already activated.
+    updateOne: jest.fn().mockResolvedValue({ modifiedCount: 1 }),
   };
   const membershipEventModel = { create: jest.fn(), find: jest.fn() };
   const favouriteModel = {
@@ -334,6 +337,42 @@ describe('PerksService (corp)', () => {
       expect(pending.wmadUserId).toBe('119');
       expect(membershipEventModel.create).toHaveBeenCalledWith(
         expect.objectContaining({ type: 'registered' }),
+      );
+    });
+
+    // Seen in production on 2026-08-27. Stripe sent subscription.created and
+    // checkout.session.completed 350ms apart, the webhook handler registered on
+    // both, WeMAD 500'd the second autologin, and the failure wrote FAILED over
+    // the ACTIVE the winner had just written:
+    //   03:56:56.377  registered
+    //   03:56:56.482  registration_failed "Server Error"
+    // Only a retry five seconds later rescued a member who had already paid.
+    it('does not demote a membership another caller already activated', async () => {
+      const pending = membershipDoc({ status: PerksMembershipStatus.PENDING });
+      const { service, membershipModel, membershipEventModel } = createService({
+        membershipModel: {
+          findOne: jest.fn().mockResolvedValue(pending),
+          // The winning call already set ACTIVE, so the guarded write matches
+          // nothing.
+          updateOne: jest.fn().mockResolvedValue({ modifiedCount: 0 }),
+        },
+        session: {
+          login: jest.fn().mockRejectedValue(new Error('Server Error')),
+        },
+      });
+
+      await expect(service.ensureMembership(userId)).rejects.toBeDefined();
+
+      // Guarded on status, not blindly overwritten.
+      expect(membershipModel.updateOne).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: { $ne: PerksMembershipStatus.ACTIVE },
+        }),
+        expect.anything(),
+      );
+      // And the audit trail does not claim a failure that never applied.
+      expect(membershipEventModel.create).not.toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'registration_failed' }),
       );
     });
 

@@ -356,21 +356,54 @@ export class PerksService {
         error instanceof PerksCorpApiError
           ? error.code
           : ((error as HttpException)?.getStatus?.() ?? 'REGISTRATION_FAILED');
-      membership.status = PerksMembershipStatus.FAILED;
-      membership.lastErrorCode = String(code);
       // `explainLoginFailure` replaces WeMAD's wording with something a member
       // can act on, and carries the original as `upstreamMessage`. Persist that
       // instead: our own sentence tells support nothing they did not know, and
       // WeMAD's is the only text that says which field they rejected.
-      membership.lastErrorMessage =
+      const message =
         this.upstreamMessageOf(error) ?? (error as Error)?.message ?? null;
-      await membership.save();
 
-      await this.recordEvent(
-        objectId,
-        PerksMembershipEventType.REGISTRATION_FAILED,
-        { message: membership.lastErrorMessage },
+      // Never demote a membership another caller has already made active.
+      //
+      // Stripe sends `customer.subscription.created` and
+      // `checkout.session.completed` within a few hundred milliseconds, and the
+      // webhook handler registers on both. They race, WeMAD answers the second
+      // autologin with a 500, and this used to write FAILED straight over the
+      // ACTIVE the winner had just written. Seen in production 2026-08-27:
+      // registered at 03:56:56.377, failed at 03:56:56.482, and only a retry
+      // five seconds later rescued a member who had already paid.
+      //
+      // The condition lives in the query rather than on the in-memory document,
+      // whose `status` was read before the other call wrote.
+      const demoted = await this.membershipModel.updateOne(
+        { userId: objectId, status: { $ne: PerksMembershipStatus.ACTIVE } },
+        {
+          $set: {
+            status: PerksMembershipStatus.FAILED,
+            lastErrorCode: String(code),
+            lastErrorMessage: message,
+          },
+        },
       );
+
+      // Only record the failure if it actually applied. Logging it regardless
+      // is how the audit trail came to show a registration failing after it had
+      // already succeeded.
+      if (demoted.modifiedCount > 0) {
+        membership.status = PerksMembershipStatus.FAILED;
+        membership.lastErrorCode = String(code);
+        membership.lastErrorMessage = message;
+        await this.recordEvent(
+          objectId,
+          PerksMembershipEventType.REGISTRATION_FAILED,
+          { message },
+        );
+      } else {
+        this.logger.warn(
+          `Perks registration for ${userId} failed but the membership is ` +
+            `already active — another caller won the race: ${message}`,
+        );
+      }
       throw error;
     }
   }
