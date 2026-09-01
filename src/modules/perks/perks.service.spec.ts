@@ -1371,6 +1371,61 @@ describe('PerksService (corp)', () => {
   });
 
   describe('wallet', () => {
+    // `/my-gift-cards` returns orders, each holding an `order_item[]`. Mapping
+    // the order instead showed one blank row per order: a live account with
+    // three orders and six purchased cards showed three "Gift card" $0 rows.
+    it('lists every purchased card, not one row per order', async () => {
+      const { service, api } = createService({
+        api: {
+          listMyGiftCards: jest.fn().mockResolvedValue([
+            {
+              id: 400017,
+              order_number: 'WMDAU3-1005',
+              order_reference: '',
+              status: 'completed',
+              order_item: [
+                {
+                  id: 400030,
+                  gift_card_id: '774',
+                  amount: '25.00',
+                  purchase_type: 'self',
+                  status: 'completed',
+                  gift_card: { id: 774, name: 'IGA Supermarkets' },
+                },
+                {
+                  id: 400031,
+                  gift_card_id: '55',
+                  amount: '50.00',
+                  purchase_type: 'gift',
+                  status: 'pending',
+                  recipient_name: 'Kim McDonnell',
+                  gift_card: { id: 55, name: 'Lorna Jane Gift Card' },
+                },
+              ],
+            },
+          ]),
+        },
+      });
+
+      const owned = await service.getWallet(userId, false, 'active');
+      const gifted = await service.getWallet(userId, true, 'active');
+      expect(api.listMyGiftCards).toHaveBeenCalled();
+
+      // One order of two cards is two wallet rows, not one blank one.
+      expect(owned.map((c) => c.cardName)).toEqual(['IGA Supermarkets']);
+      expect(gifted.map((c) => c.cardName)).toEqual(['Lorna Jane Gift Card']);
+
+      // And they carry their real value, not $0.
+      expect(owned[0].value).toBe(25);
+      expect(gifted[0].value).toBe(50);
+      expect(gifted[0].recipientName).toBe('Kim McDonnell');
+
+      // Each card gets its own archive key, so archiving one keeps the other.
+      expect(owned[0].cardKey).not.toBe(gifted[0].cardKey);
+    });
+  });
+
+  describe('wallet', () => {
     it('splits owned from gifted cards', async () => {
       const { service } = createService({
         api: {

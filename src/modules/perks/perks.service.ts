@@ -985,11 +985,35 @@ export class PerksService {
       ),
     );
 
-    // WeMAD's wallet rows carry a gift_card_id but usually no brand name or
-    // artwork, so join the catalogue exactly as orders do. Without it every
-    // card renders as "eGift card" with a placeholder image.
+    // `/my-gift-cards` returns ORDERS, not cards. Each order carries an
+    // `order_item[]`, and every purchased card is one of those items — that is
+    // where `gift_card_id`, `amount`, the embedded `gift_card` and the
+    // `gift_card_stock` voucher live.
+    //
+    // We used to map each order as though it were a card. None of those fields
+    // exist at the order level, so every entry fell through to "Gift card" for
+    // $0, and an order of two cards showed as one row. Verified against a live
+    // account 2026-09-01: three orders, six purchased cards, three blank rows.
+    //
+    // The order's number and reference are merged onto each item so the wallet
+    // can still say which order a card came from, and so `walletCardKey` keeps
+    // an identity that survives the card being issued.
+    const rows = entries.flatMap((order) => {
+      const items = Array.isArray(order.order_item) ? order.order_item : [];
+      if (!items.length) return [order];
+      return items.map((item) => ({
+        ...(item as Record<string, unknown>),
+        order_number: order.order_number,
+        order_reference: order.order_reference,
+        // An item is only issued once its own status completes, but a cancelled
+        // order overrides that, so keep the order's status as a fallback.
+        order_status: order.status,
+      }));
+    });
+
+    // Join the catalogue for anything the embedded card does not carry.
     const cards = await this.cardLookup(
-      entries.map((entry) =>
+      rows.map((entry) =>
         str(
           entry.gift_card_id ??
             (entry.gift_card as Record<string, unknown> | undefined)?.id,
@@ -997,7 +1021,7 @@ export class PerksService {
       ),
       'wallet',
     );
-    const mapped = entries.map((entry) => mapWalletCard(entry, cards));
+    const mapped = rows.map((entry) => mapWalletCard(entry, cards));
 
     // Look under both keys: rows saved before the key was made stable are
     // stored against the old hash, and dropping them would silently un-archive

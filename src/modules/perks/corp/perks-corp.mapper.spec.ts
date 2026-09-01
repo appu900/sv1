@@ -565,6 +565,85 @@ describe('perks corp mapper', () => {
       });
     });
 
+    // Shape captured from a live account on 2026-09-01. `/my-gift-cards`
+    // returns orders; the purchased card is an `order_item`, and mapping the
+    // ORDER instead is what produced "Gift card" for $0 on every wallet row.
+    it('maps a real order item, name, value and voucher included', () => {
+      const item = {
+        id: 400030,
+        order_id: 400017,
+        gift_card_id: 774,
+        amount: '25.00',
+        total_amount: '24.38',
+        purchase_type: 'self',
+        status: 'completed',
+        order_number: 'WMDAU3-202609011005059EA11BC2',
+        gift_card: {
+          id: 774,
+          name: 'IGA Supermarkets (Grocery Only) Gift Card',
+          image: 'giftcards/01M0J31RNXGRX2PTH73GVX3BCA.jpg',
+          balance_link: 'https://igagiftcards.viisolutions.com.au/',
+        },
+        gift_card_stock: {
+          value: '25.00',
+          code: null,
+          pin: null,
+          link: 'eyJ2IjoxLCJpdiI6Imt0U2RJYndcL1BQR3ZLczdVIn0=',
+          access_type: 'link',
+          status: 'sold',
+        },
+      };
+
+      expect(mapWalletCard(item)).toMatchObject({
+        cardName: 'IGA Supermarkets (Grocery Only) Gift Card',
+        value: 25,
+        gifted: false,
+        orderNumber: 'WMDAU3-202609011005059EA11BC2',
+        balanceLink: 'https://igagiftcards.viisolutions.com.au/',
+        cardUrl: 'eyJ2IjoxLCJpdiI6Imt0U2RJYndcL1BQR3ZLczdVIn0=',
+      });
+      expect(mapWalletCard(item).imageUrl).toContain(
+        '01M0J31RNXGRX2PTH73GVX3BCA.jpg',
+      );
+    });
+
+    it('keeps the recipient on a gifted item that is not issued yet', () => {
+      // Kim's cards: purchased, still pending, so no voucher exists.
+      const gift = {
+        id: 400031,
+        gift_card_id: 55,
+        amount: '50.00',
+        purchase_type: 'gift',
+        status: 'pending',
+        recipient_name: 'Kim McDonnell',
+        recipient_email: 'kimm@thankful.org',
+        recipient_phone: '400101868',
+        gift_card: { id: 55, name: 'Lorna Jane Gift Card' },
+        gift_card_stock: null,
+      };
+
+      const mapped = mapWalletCard(gift);
+      expect(mapped).toMatchObject({
+        cardName: 'Lorna Jane Gift Card',
+        value: 50,
+        gifted: true,
+        recipientName: 'Kim McDonnell',
+      });
+      // No voucher yet — but the card is still worth $50, not $0.
+      expect(mapped.cardNumber).toBeNull();
+      expect(mapped.pin).toBeNull();
+    });
+
+    // `Number(null)` is 0, which is finite, so an empty first field used to
+    // stop the fallback chain dead and report the card as worthless.
+    it('falls past an empty amount to the value that is there', () => {
+      expect(mapWalletCard({ amount: null, face_value: '25.00' }).value).toBe(25);
+      expect(mapWalletCard({ amount: '', gift_card_stock: { value: '40.00' } }).value)
+        .toBe(40);
+      // Nothing anywhere still means nothing — not zero.
+      expect(mapWalletCard({ status: 'sent' }).value).toBeNull();
+    });
+
     it('never renders a nameless card, even with nothing to join on', () => {
       const mapped = mapWalletCard({ amount: '50.00', status: 'sent' });
       expect(mapped.cardName).toBe('Gift card');

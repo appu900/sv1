@@ -33,7 +33,17 @@ export const nullableStr = (value: unknown): string | null => {
   return !result || result.toLowerCase() === 'null' ? null : result;
 };
 
+/**
+ * A number, or null when there isn't one.
+ *
+ * `Number(null)` and `Number('')` are both `0`, which is finite — so an absent
+ * field used to come back as `0` rather than null, and every `num(a) ?? num(b)`
+ * fallback stopped dead on the first empty field instead of trying the next.
+ * A wallet row with `amount: null` and a real `value` alongside it reported
+ * `$0`.
+ */
 export const num = (value: unknown): number | null => {
+  if (value === null || value === undefined || value === '') return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
 };
@@ -523,12 +533,17 @@ export function legacyWalletCardKey(
 }
 
 /**
- * WeMAD's wallet entries are shaped like order lines: they carry `gift_card_id`
- * and an amount, but the brand name and artwork live on the gift card itself.
- * Some payloads embed a `gift_card` object (their cart response does), others
- * do not — so read the embedded card when present and fall back to the
- * catalogue by id. Without this the wallet showed every card as "eGift card"
- * with a placeholder image.
+ * One purchased card in the wallet.
+ *
+ * The entry is an **order item**, not an order. `GET /my-gift-cards` returns
+ * orders — `data.items[]` each with an `order_item[]` — and every purchased
+ * card is one of those items; `perks.service` flattens them before calling
+ * here. Passing the order instead put none of these fields at the top level,
+ * so every card read "Gift card" for $0 (seen on a live account 2026-09-01).
+ *
+ * The brand name and artwork live on the item's embedded `gift_card`, and the
+ * redeemable voucher on `gift_card_stock`, which stays null until WeMAD
+ * actually issues the card.
  */
 export function mapWalletCard(
   entry: Record<string, unknown>,
@@ -536,6 +551,8 @@ export function mapWalletCard(
 ) {
   const gifted = str(entry.purchase_type).toLowerCase() === 'gift';
   const embedded = (entry.gift_card ?? {}) as Record<string, unknown>;
+  // Present only once WeMAD issues the card; null while the line is pending.
+  const stock = (entry.gift_card_stock ?? {}) as Record<string, unknown>;
   const ecardId = str(entry.gift_card_id ?? embedded.id);
   const catalogue = cards?.get(ecardId);
 
@@ -561,17 +578,28 @@ export function mapWalletCard(
     imageUrl,
     // `amount` is the face value on their order lines; the others are defensive
     // in case the wallet payload names it differently.
-    value: num(entry.amount) ?? num(entry.face_value) ?? num(entry.value),
+    value:
+      num(entry.amount) ??
+      num(stock.value) ??
+      num(entry.face_value) ??
+      num(entry.value) ??
+      num(entry.total_amount),
     issuedAt: nullableStr(entry.created_at ?? entry.issued_at),
     expiresIn: nullableStr(entry.expiry ?? entry.expires_at ?? entry.expiry_date),
     orderReference: nullableStr(entry.order_reference),
     orderNumber: nullableStr(entry.order_number ?? entry.order_id),
     orderStatus: mapOrderStatus(entry.status),
-    cardUrl: nullableStr(entry.card_url ?? entry.cardurl ?? entry.redeem_url),
-    cardNumber: nullableStr(
-      entry.card_number ?? entry.voucher_code ?? entry.voucher_id,
+    cardUrl: nullableStr(
+      entry.card_url ?? entry.cardurl ?? entry.redeem_url ?? stock.link,
     ),
-    pin: nullableStr(entry.card_pin ?? entry.pin),
+    cardNumber: nullableStr(
+      entry.card_number ??
+        entry.voucher_code ??
+        entry.voucher_id ??
+        stock.code ??
+        stock.instore_code,
+    ),
+    pin: nullableStr(entry.card_pin ?? entry.pin ?? stock.pin),
     barcode: nullableStr(entry.barcode ?? embedded.barcode_type),
     balance: num(entry.balance) ?? num(entry.remaining_balance),
     balanceLink: nullableStr(embedded.balance_link) ?? catalogue?.balanceLink ?? null,
