@@ -600,8 +600,10 @@ describe('perks corp mapper', () => {
         gifted: false,
         orderNumber: 'WMDAU3-202609011005059EA11BC2',
         balanceLink: 'https://igagiftcards.viisolutions.com.au/',
-        cardUrl: 'eyJ2IjoxLCJpdiI6Imt0U2RJYndcL1BQR3ZLczdVIn0=',
       });
+      // The stock `link` is an encrypted blob, not a URL, so it must not
+      // become a "View card securely" destination.
+      expect(mapWalletCard(item).cardUrl).toBeNull();
       expect(mapWalletCard(item).imageUrl).toContain(
         '01M0J31RNXGRX2PTH73GVX3BCA.jpg',
       );

@@ -589,9 +589,12 @@ export function mapWalletCard(
     orderReference: nullableStr(entry.order_reference),
     orderNumber: nullableStr(entry.order_number ?? entry.order_id),
     orderStatus: mapOrderStatus(entry.status),
-    cardUrl: nullableStr(
-      entry.card_url ?? entry.cardurl ?? entry.redeem_url ?? stock.link,
-    ),
+    // Deliberately NOT `gift_card_stock.link`: that is an AES-GCM blob
+    // (`{v,iv,tag,data}`, base64) only WeMAD can decrypt, not a URL. Pointing
+    // "View card securely" at it would open a browser on gibberish, which is
+    // worse than the button staying hidden. If they publish a redemption URL,
+    // add it here.
+    cardUrl: nullableStr(entry.card_url ?? entry.cardurl ?? entry.redeem_url),
     cardNumber: nullableStr(
       entry.card_number ??
         entry.voucher_code ??
