@@ -101,10 +101,12 @@ export function billingLabel(entitlement: Entitlement): string | null {
     case 'grandfathered':
       return 'Included on your account';
     case 'paid':
-      return 'A$10/month + GST';
+      // The charged total. Stripe bills A$11.00 GST-inclusive ($10 + $1 GST);
+      // quoting the ex-GST component alone understates what a member pays.
+      return 'A$11/month incl. GST';
     case 'billing_disabled':
       return null;
     default:
-      return 'A$10/month + GST';
+      return 'A$11/month incl. GST';
   }
 }
