@@ -589,12 +589,15 @@ export function mapWalletCard(
     orderReference: nullableStr(entry.order_reference),
     orderNumber: nullableStr(entry.order_number ?? entry.order_id),
     orderStatus: mapOrderStatus(entry.status),
-    // Deliberately NOT `gift_card_stock.link`: that is an AES-GCM blob
-    // (`{v,iv,tag,data}`, base64) only WeMAD can decrypt, not a URL. Pointing
-    // "View card securely" at it would open a browser on gibberish, which is
-    // worse than the button staying hidden. If they publish a redemption URL,
-    // add it here.
-    cardUrl: nullableStr(entry.card_url ?? entry.cardurl ?? entry.redeem_url),
+    // `gift_card_stock.url` is the member's card, added by WeMAD 2026-09-02
+    // and verified to return 200:
+    //   https://perks.saveful.app/giftcard/access/<token>
+    // It replaces the earlier `link`, which was an AES-GCM blob only they could
+    // decrypt — never send that to a browser. The field is absent until the
+    // card is issued, so this stays null while a line is pending.
+    cardUrl: nullableStr(
+      stock.url ?? entry.card_url ?? entry.cardurl ?? entry.redeem_url,
+    ),
     cardNumber: nullableStr(
       entry.card_number ??
         entry.voucher_code ??

@@ -584,13 +584,13 @@ describe('perks corp mapper', () => {
           image: 'giftcards/01M0J31RNXGRX2PTH73GVX3BCA.jpg',
           balance_link: 'https://igagiftcards.viisolutions.com.au/',
         },
+        // Shape as of 2026-09-02, when WeMAD added `url`.
         gift_card_stock: {
-          value: '25.00',
-          code: null,
-          pin: null,
-          link: 'eyJ2IjoxLCJpdiI6Imt0U2RJYndcL1BQR3ZLczdVIn0=',
-          access_type: 'link',
           status: 'sold',
+          access_type: 'link',
+          value: '25.00',
+          token: '3vW1LmKSoQeMb9bT0OHoe3yEPViec3BvDG4LEbYYgrAdbMZkSak7yAEGitTRMJJ4',
+          url: 'https://perks.saveful.app/giftcard/access/3vW1LmKSoQeMb9bT0OHoe3yEPViec3BvDG4LEbYYgrAdbMZkSak7yAEGitTRMJJ4',
         },
       };
 
@@ -600,10 +600,10 @@ describe('perks corp mapper', () => {
         gifted: false,
         orderNumber: 'WMDAU3-202609011005059EA11BC2',
         balanceLink: 'https://igagiftcards.viisolutions.com.au/',
+        // What "View card securely" opens.
+        cardUrl:
+          'https://perks.saveful.app/giftcard/access/3vW1LmKSoQeMb9bT0OHoe3yEPViec3BvDG4LEbYYgrAdbMZkSak7yAEGitTRMJJ4',
       });
-      // The stock `link` is an encrypted blob, not a URL, so it must not
-      // become a "View card securely" destination.
-      expect(mapWalletCard(item).cardUrl).toBeNull();
       expect(mapWalletCard(item).imageUrl).toContain(
         '01M0J31RNXGRX2PTH73GVX3BCA.jpg',
       );
@@ -631,7 +631,9 @@ describe('perks corp mapper', () => {
         gifted: true,
         recipientName: 'Kim McDonnell',
       });
-      // No voucher yet — but the card is still worth $50, not $0.
+      // Not issued yet, so there is nothing to open — the screen shows its
+      // "still being issued" state rather than a dead button.
+      expect(mapped.cardUrl).toBeNull();
       expect(mapped.cardNumber).toBeNull();
       expect(mapped.pin).toBeNull();
     });
