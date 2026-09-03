@@ -15,6 +15,7 @@ import {
   resolvePricing,
   legacyWalletCardKey,
   walletCardKey,
+  isOrderVisible,
 } from './perks-corp.mapper';
 
 describe('perks corp mapper', () => {
@@ -726,5 +727,64 @@ describe('perks corp mapper', () => {
       });
       expect(mapWalletCard(entry)).not.toHaveProperty('recipientName');
     });
+  });
+});
+
+/**
+ * WeMAD reported (2026-09-03) that orders which never completed payment were
+ * appearing in the app. They were: we rendered everything `/orders` returned.
+ *
+ * The risk in fixing it is over-hiding. Several of Mike's cards are paid but
+ * still unfulfilled upstream, and hiding those would delete a customer's only
+ * record of being charged — so these tests pin both directions.
+ */
+describe('isOrderVisible', () => {
+  it('hides an order whose payment never completed', () => {
+    for (const status of [
+      'unpaid',
+      'incomplete',
+      'pending_payment',
+      'awaiting_payment',
+      'failed',
+      'abandoned',
+      'expired',
+    ]) {
+      expect(isOrderVisible({ status })).toBe(false);
+      expect(isOrderVisible({ payment_status: status })).toBe(false);
+    }
+  });
+
+  it('keeps a paid order however its fulfilment is going', () => {
+    // Live shape, 2026-09-01: paid, still pending upstream. This is Mike's
+    // stuck gift card — the exact row a blanket "hide everything not
+    // completed" filter would wrongly erase.
+    expect(
+      isOrderVisible({ status: 'pending', payment_status: 'paid' }),
+    ).toBe(true);
+    expect(isOrderVisible({ status: 'processing' })).toBe(true);
+    expect(isOrderVisible({ status: 'completed' })).toBe(true);
+    expect(isOrderVisible({ status: 'sent' })).toBe(true);
+  });
+
+  it('keeps an order that took money even when its state says otherwise', () => {
+    // Money changed hands. Whatever the state string says, the customer is
+    // entitled to see it — a refund and a failed capture look alike from here.
+    expect(isOrderVisible({ status: 'failed', paid_amount: '24.38' })).toBe(true);
+    expect(isOrderVisible({ status: 'cancelled', total_paid: '10.00' })).toBe(true);
+  });
+
+  it('keeps an order whose status we do not recognise', () => {
+    // Their status enum has never been published. Guessing wrong in this
+    // direction shows one row too many; guessing wrong the other way hides a
+    // card someone paid for.
+    expect(isOrderVisible({ status: 'awaiting_stock' })).toBe(true);
+    expect(isOrderVisible({ status: '' })).toBe(true);
+    expect(isOrderVisible({})).toBe(true);
+  });
+
+  it('keeps refunded and cancelled orders that carry no payment field', () => {
+    // Not in WeMAD's list of what to hide, and a refund is a real financial
+    // event the customer should still be able to find.
+    expect(isOrderVisible({ status: 'refunded' })).toBe(true);
   });
 });

@@ -327,6 +327,67 @@ export function mapGiftTemplates(detail: Record<string, unknown>) {
 }
 
 
+/**
+ * Order states that mean the customer never actually bought anything: the
+ * checkout was abandoned, the payment never landed, or it was declined.
+ *
+ * WeMAD have never published their status enum, so this is the set we can name
+ * with confidence. Anything outside it is treated as a real order — see
+ * `isOrderVisible`.
+ */
+const UNPAID_ORDER_STATES = new Set([
+  'unpaid',
+  'incomplete',
+  'pending_payment',
+  'payment_pending',
+  'awaiting_payment',
+  'payment_failed',
+  'failed',
+  'declined',
+  'error',
+  'abandoned',
+  'draft',
+  'expired',
+  'void',
+  'voided',
+]);
+
+/**
+ * Whether an order belongs in the customer's history at all.
+ *
+ * WeMAD asked (2026-09-03) for pending-payment, incomplete and failed orders to
+ * stop appearing. They are right that we showed them: we rendered every order
+ * their API returned.
+ *
+ * Two rules keep that from going too far:
+ *
+ * 1. **Money paid always wins.** If any amount was taken, the order shows
+ *    whatever its state says. Several of Mike's cards are paid but still
+ *    unfulfilled upstream; hiding those would erase the only record a customer
+ *    has that they were charged, which is a far worse bug than the one being
+ *    fixed.
+ * 2. **Only hide what we can positively name.** An unrecognised status stays
+ *    visible. We are guessing at their vocabulary — the observed values are
+ *    `processing`, `pending`, `sent` and `completed`, and no unpaid order has
+ *    ever appeared in a captured payload — so an unknown string is far more
+ *    likely to be a state we have not seen than one we should hide.
+ *
+ * `pending` is deliberately absent from the unpaid set: on their data it means
+ * paid-but-not-yet-issued, which the customer must see.
+ */
+export function isOrderVisible(order: Record<string, unknown>): boolean {
+  const paid =
+    (num(order.paid_amount) ?? 0) > 0 ||
+    (num(order.total_paid) ?? 0) > 0 ||
+    str(order.payment_status).toLowerCase().trim() === 'paid';
+  if (paid) return true;
+
+  const payment = str(order.payment_status).toLowerCase().trim();
+  if (payment && UNPAID_ORDER_STATES.has(payment)) return false;
+
+  return !UNPAID_ORDER_STATES.has(str(order.status).toLowerCase().trim());
+}
+
 export function mapOrderStatus(value: unknown): string {
   const raw = str(value).toLowerCase().trim();
   if (!raw) return 'processing';

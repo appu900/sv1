@@ -64,6 +64,7 @@ import {
   mapCatalogueCard,
   mapCategoryTree,
   mapGiftTemplates,
+  isOrderVisible,
   mapOrder,
   mapWalletCard,
   OrderCardLookup,
@@ -915,7 +916,12 @@ export class PerksService {
       ),
     );
 
-    const list = Array.isArray(payload) ? payload : [];
+    // Drop orders that never completed payment. WeMAD return them alongside
+    // real ones and asked (2026-09-03) for them not to be shown. `isOrderVisible`
+    // keeps anything that was actually paid for, however it is progressing.
+    const list = (Array.isArray(payload) ? payload : []).filter((order) =>
+      isOrderVisible(order as Record<string, unknown>),
+    );
     if (!list.length) return [];
     // Only the cards these orders actually reference.
     const cards = await this.cardLookup(
@@ -998,7 +1004,7 @@ export class PerksService {
     // The order's number and reference are merged onto each item so the wallet
     // can still say which order a card came from, and so `walletCardKey` keeps
     // an identity that survives the card being issued.
-    const rows = entries.flatMap((order) => {
+    const rows = entries.filter(isOrderVisible).flatMap((order) => {
       const items = Array.isArray(order.order_item) ? order.order_item : [];
       if (!items.length) return [order];
       return items.map((item) => ({
