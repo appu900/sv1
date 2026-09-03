@@ -21,12 +21,23 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor, FileFieldsInterceptor } from '@nestjs/platform-express';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiParam,
+  ApiQuery,
+  ApiBody,
+  ApiConsumes,
+  ApiOkResponse,
+  ApiCreatedResponse,
+} from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import {
   RequireFeature,
   SubscriptionGuard,
 } from '../subscription/subscription.guard';
 import { SubscriptionService } from '../subscription/subscription.service';
+import { ApiSubscription } from '../../common/swagger/api-auth.decorators';
 import { FoodItemService } from './food-item.service';
 import { UserCustomFoodService } from './user-custom-food.service';
 import { NutritionService } from './nutrition.service';
@@ -66,6 +77,8 @@ import { Model } from 'mongoose';
 import { User, UserDocument } from '../../database/schemas/user.auth.schema';
 
 
+@ApiTags('Nutrition')
+@ApiSubscription()
 @Controller('nutrition')
 @UseGuards(JwtAuthGuard, SubscriptionGuard)
 @RequireFeature('nutrition_insights')
@@ -102,6 +115,16 @@ export class NutritionController {
 
 
   @Get('foods/search')
+  @ApiOperation({
+    summary: 'Search the food catalog',
+    description:
+      'Hydra search across catalog foods. Query `q` (max 120 chars), optional `locale` (or the user’s country), `limit` (1–50, default 20), and `verifiedOnly`. Requires an active subscription with `nutrition_insights`.',
+  })
+  @ApiQuery({ name: 'q', required: false, description: 'Search text (max 120 chars).' })
+  @ApiQuery({ name: 'locale', required: false, description: 'Country/locale code, or `global`.' })
+  @ApiQuery({ name: 'limit', required: false, description: 'Max results (1–50). Defaults to 20.' })
+  @ApiQuery({ name: 'verifiedOnly', required: false, description: 'If true, only verified catalog foods.' })
+  @ApiOkResponse({ description: 'Matching food items.' })
   async searchFoods(@Request() req: any, @Query() query: FoodSearchQueryDto) {
     const userId = this.resolveUserId(req); // ensure authenticated user
     const country = await this.resolveUserCountry(userId);
@@ -113,6 +136,13 @@ export class NutritionController {
 
  
   @Get('foods/:id')
+  @ApiOperation({
+    summary: 'Get a catalog food by id',
+    description:
+      'Returns one catalog food item by Mongo ObjectId, including per-serving nutrition facts.',
+  })
+  @ApiParam({ name: 'id', description: 'Food item ObjectId.' })
+  @ApiOkResponse({ description: 'Food item document.' })
   async getFood(@Param('id') id: string) {
     if (!isValidObjectId(id)) {
       throw new BadRequestException('Invalid food id');
@@ -124,6 +154,13 @@ export class NutritionController {
   @Post('foods/barcode')
   @HttpCode(HttpStatus.OK)
   @RequireFeature('barcode_scanning')
+  @ApiOperation({
+    summary: 'Look up a food by barcode',
+    description:
+      'Looks up a packaged product by barcode (6–14 digits) using country-aware sources. Requires the `barcode_scanning` feature and consumes one kitchen-scan slot (refunded if the lookup fails). Returns 404 when no product is found.',
+  })
+  @ApiBody({ type: BarcodeLookupDto })
+  @ApiOkResponse({ description: 'Matched product from catalog or Open Food Facts.' })
   async lookupBarcode(@Request() req: any, @Body() dto: BarcodeLookupDto) {
     const userId = this.resolveUserId(req);
     const country = await this.resolveUserCountry(userId);
@@ -183,6 +220,40 @@ export class NutritionController {
       },
     ),
   )
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({
+    summary: 'Analyze product photos (barcode / label / front)',
+    description:
+      'Multipart AI product scan. Send any combination of `barcode`, `nutrition`, and `front` images, or a legacy single `image`. Each file max 10 MB. Rate-limited to **5 requests per 60 seconds**. Requires `barcode_scanning`. Returns an existing catalog match when the barcode/name is known, otherwise creates a catalog item from the AI analysis.',
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        image: {
+          type: 'string',
+          format: 'binary',
+          description: 'Legacy single product photo (used when barcode/nutrition/front are omitted).',
+        },
+        barcode: {
+          type: 'string',
+          format: 'binary',
+          description: 'Photo of the barcode.',
+        },
+        nutrition: {
+          type: 'string',
+          format: 'binary',
+          description: 'Photo of the nutrition-facts panel.',
+        },
+        front: {
+          type: 'string',
+          format: 'binary',
+          description: 'Photo of the front of pack.',
+        },
+      },
+    },
+  })
+  @ApiOkResponse({ description: 'Matched or newly created product.' })
   async analyzeProductImage(
     @Request() req: any,
     @UploadedFiles() files: { image?: Express.Multer.File[]; barcode?: Express.Multer.File[]; nutrition?: Express.Multer.File[]; front?: Express.Multer.File[] },
@@ -303,6 +374,28 @@ export class NutritionController {
       },
     }),
   )
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({
+    summary: 'Identify food in a photo and search the catalog',
+    description:
+      'Multipart. Field `image` is a plate / food photo (max 10 MB). Rate-limited to **10 requests per 60 seconds**. Requires `barcode_scanning`. AI names the food, then Hydra searches the catalog. Optional `limit` (1–50, default 20) and `locale`.',
+  })
+  @ApiQuery({ name: 'limit', required: false, description: 'Max catalog hits (1–50). Defaults to 20.' })
+  @ApiQuery({ name: 'locale', required: false, description: 'Override locale; defaults to the user’s country.' })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['image'],
+      properties: {
+        image: {
+          type: 'string',
+          format: 'binary',
+          description: 'Photo of the food / plate.',
+        },
+      },
+    },
+  })
+  @ApiOkResponse({ description: 'Identified food name plus catalog search results.' })
   async identifyFoodFromImage(
     @Request() req: any,
     @UploadedFile() file: Express.Multer.File,
@@ -361,6 +454,32 @@ export class NutritionController {
       },
     }),
   )
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({
+    summary: 'Photo quick-add: estimate nutrition and save a custom food',
+    description:
+      'Multipart. Field `image` is required (max 10 MB). Optional form fields: `description`, `servingLabel`, `servingGrams`, `mealSlot`, `date` (YYYY-MM-DD), `autoLog`. Rate-limited to **5 requests per 60 seconds**. Requires `barcode_scanning`. AI estimates full nutrition, saves a user custom food, and optionally logs it to daily intake when `autoLog` is true.',
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['image'],
+      properties: {
+        image: {
+          type: 'string',
+          format: 'binary',
+          description: 'Photo of the meal or food.',
+        },
+        description: { type: 'string', description: 'Optional hint, e.g. "dal chawal with papad".' },
+        servingLabel: { type: 'string', description: 'Optional serving label, e.g. "1 large plate".' },
+        servingGrams: { type: 'number', description: 'Optional estimated weight in grams (1–5000).' },
+        mealSlot: { type: 'string', description: 'Meal slot used when autoLog is true.' },
+        date: { type: 'string', description: 'Log date YYYY-MM-DD when autoLog is true.' },
+        autoLog: { type: 'boolean', description: 'If true, also write a daily-intake entry.' },
+      },
+    },
+  })
+  @ApiOkResponse({ description: 'Analysis, saved custom food, and optional log entry.' })
   async photoQuickAdd(
     @Request() req: any,
     @UploadedFile() file: Express.Multer.File,
@@ -436,6 +555,12 @@ export class NutritionController {
   }
 
   @Get('custom-foods')
+  @ApiOperation({
+    summary: 'List the user’s custom foods',
+    description:
+      'Returns every custom food the subscriber has created (including photo-quick-add items).',
+  })
+  @ApiOkResponse({ description: '{ count, items } of custom foods.' })
   async listCustomFoods(@Request() req: any) {
     const userId = this.resolveUserId(req);
     const items = await this.userCustomFoodService.list(userId);
@@ -443,12 +568,26 @@ export class NutritionController {
   }
 
   @Get('custom-foods/:id')
+  @ApiOperation({
+    summary: 'Get one custom food',
+    description:
+      'Returns a custom food owned by the subscriber.',
+  })
+  @ApiParam({ name: 'id', description: 'Custom food ObjectId.' })
+  @ApiOkResponse({ description: 'Custom food document.' })
   async getCustomFood(@Request() req: any, @Param('id') id: string) {
     const userId = this.resolveUserId(req);
     return this.userCustomFoodService.findOne(userId, id);
   }
 
   @Post('custom-foods')
+  @ApiOperation({
+    summary: 'Create a custom food',
+    description:
+      'Manually creates a custom food with name, serving, and per-serving nutrition facts.',
+  })
+  @ApiBody({ type: CreateCustomFoodDto })
+  @ApiCreatedResponse({ description: 'Custom food created.' })
   async createCustomFood(
     @Request() req: any,
     @Body() dto: CreateCustomFoodDto,
@@ -458,6 +597,14 @@ export class NutritionController {
   }
 
   @Patch('custom-foods/:id')
+  @ApiOperation({
+    summary: 'Update a custom food',
+    description:
+      'Partial update of a custom food owned by the subscriber.',
+  })
+  @ApiParam({ name: 'id', description: 'Custom food ObjectId.' })
+  @ApiBody({ type: UpdateCustomFoodDto })
+  @ApiOkResponse({ description: 'Updated custom food.' })
   async updateCustomFood(
     @Request() req: any,
     @Param('id') id: string,
@@ -469,6 +616,13 @@ export class NutritionController {
 
   @Delete('custom-foods/:id')
   @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Soft-delete a custom food',
+    description:
+      'Soft-deletes a custom food owned by the subscriber. Existing log entries that reference it are kept.',
+  })
+  @ApiParam({ name: 'id', description: 'Custom food ObjectId.' })
+  @ApiOkResponse({ description: 'Custom food soft-deleted.' })
   async deleteCustomFood(@Request() req: any, @Param('id') id: string) {
     const userId = this.resolveUserId(req);
     return this.userCustomFoodService.softDelete(userId, id);
@@ -476,6 +630,13 @@ export class NutritionController {
 
  
   @Post('log')
+  @ApiOperation({
+    summary: 'Log a food to daily intake',
+    description:
+      'Adds an entry to the daily diary. `ref.kind` is food | custom | recipe | user_recipe | freeform. `portion.mode` is serving | count | grams | ml. Optional `mealSlot` and `date` (YYYY-MM-DD, defaults to the user’s local today).',
+  })
+  @ApiBody({ type: CreateLogEntryDto })
+  @ApiCreatedResponse({ description: 'Log entry created.' })
   async logEntry(@Request() req: any, @Body() dto: CreateLogEntryDto) {
     const userId = this.resolveUserId(req);
     return this.nutritionService.logEntry(userId, dto);
@@ -483,6 +644,13 @@ export class NutritionController {
 
 
   @Get('daily')
+  @ApiOperation({
+    summary: 'Get a daily intake diary',
+    description:
+      'Returns entries, totals, targets, and water intake for `date` (YYYY-MM-DD). Omitting `date` uses the user’s local today. An empty structured diary is returned when nothing has been logged.',
+  })
+  @ApiQuery({ name: 'date', required: false, description: 'YYYY-MM-DD. Defaults to the user’s local today.' })
+  @ApiOkResponse({ description: 'Daily diary (or an empty structured day).' })
   async getDaily(@Request() req: any, @Query() query: DailyQueryDto) {
     const userId = this.resolveUserId(req);
     const daily = await this.nutritionService.getDaily(userId, query.date);
@@ -501,6 +669,13 @@ export class NutritionController {
   }
 
   @Get('daily-history')
+  @ApiOperation({
+    summary: 'Get a month of daily diaries',
+    description:
+      'Returns a compact day-by-day history for calendar / streak views. `month` is required and must be `YYYY-MM`.',
+  })
+  @ApiQuery({ name: 'month', required: true, description: 'Month in YYYY-MM format (01–12).' })
+  @ApiOkResponse({ description: '{ days } for that month.' })
   async getDailyHistory(
     @Request() req: any,
     @Query('month') month: string,
@@ -514,6 +689,12 @@ export class NutritionController {
   }
 
   @Get('streak')
+  @ApiOperation({
+    summary: 'Get the logging streak',
+    description:
+      'Returns the subscriber’s current and longest daily-logging streaks.',
+  })
+  @ApiOkResponse({ description: 'Logging streak payload.' })
   async getLoggingStreak(@Request() req: any) {
     const userId = this.resolveUserId(req);
     return this.nutritionService.getLoggingStreak(userId);
@@ -521,6 +702,14 @@ export class NutritionController {
 
 
   @Patch('log/:entryId')
+  @ApiOperation({
+    summary: 'Update a log entry',
+    description:
+      'Partial update of portion, meal slot, ref, or freeform facts on a daily-intake entry owned by the subscriber.',
+  })
+  @ApiParam({ name: 'entryId', description: 'Log entry ObjectId.' })
+  @ApiBody({ type: UpdateLogEntryDto })
+  @ApiOkResponse({ description: 'Updated log entry / daily totals.' })
   async updateEntry(
     @Request() req: any,
     @Param('entryId') entryId: string,
@@ -536,6 +725,13 @@ export class NutritionController {
 
   @Delete('log/:entryId')
   @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Delete a log entry',
+    description:
+      'Removes a daily-intake entry and recalculates that day’s totals.',
+  })
+  @ApiParam({ name: 'entryId', description: 'Log entry ObjectId.' })
+  @ApiOkResponse({ description: 'Entry deleted and totals recalculated.' })
   async deleteEntry(
     @Request() req: any,
     @Param('entryId') entryId: string,
@@ -551,6 +747,13 @@ export class NutritionController {
   @HttpCode(HttpStatus.OK)
   @UseGuards(ThrottlerGuard)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiOperation({
+    summary: 'AI-estimate nutrition from a food description',
+    description:
+      'Estimates macros from a free-text `foodDescription` plus optional `servingLabel` / `servingGrams`. Rate-limited to **10 requests per 60 seconds**. Used when the user types a food that is not in the catalog.',
+  })
+  @ApiBody({ type: AiEstimateDto })
+  @ApiOkResponse({ description: 'Estimated nutrition facts.' })
   async aiEstimate(@Request() req: any, @Body() dto: AiEstimateDto) {
     const userId = this.resolveUserId(req);
     const country = await this.resolveUserCountry(userId);
@@ -565,6 +768,15 @@ export class NutritionController {
   /* ─── Recipe Nutrition ────────────────────────────────── */
 
   @Get('recipes/search')
+  @ApiOperation({
+    summary: 'Search recipes for nutrition logging',
+    description:
+      'Finds cookbook recipes that can be logged as a meal. Query `q`, optional `limit` (default 20), and `country`.',
+  })
+  @ApiQuery({ name: 'q', required: false, description: 'Recipe search text.' })
+  @ApiQuery({ name: 'limit', required: false, description: 'Max results. Defaults to 20.' })
+  @ApiQuery({ name: 'country', required: false, description: 'ISO country code to scope the catalog.' })
+  @ApiOkResponse({ description: '{ items } of matching recipes.' })
   async searchRecipes(
     @Request() req: any,
     @Query('q') q?: string,
@@ -585,6 +797,13 @@ export class NutritionController {
   @Get('recipes/:id/nutrition')
   @UseGuards(ThrottlerGuard)
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @ApiOperation({
+    summary: 'Get or compute recipe nutrition',
+    description:
+      'Returns cached per-serving nutrition for a recipe, computing it from ingredients when missing. Rate-limited to **5 requests per 60 seconds**.',
+  })
+  @ApiParam({ name: 'id', description: 'Recipe ObjectId.' })
+  @ApiOkResponse({ description: 'Recipe nutrition facts.' })
   async getRecipeNutrition(
     @Request() req: any,
     @Param('id') id: string,
@@ -599,6 +818,12 @@ export class NutritionController {
   /* ─── Health Profile ────────────────────────────────── */
 
   @Get('health-profile')
+  @ApiOperation({
+    summary: 'Get the health profile',
+    description:
+      'Returns the subscriber’s health profile (sex, age, height, weight, activity, goals) or null when not created yet.',
+  })
+  @ApiOkResponse({ description: '{ profile }' })
   async getHealthProfile(@Request() req: any) {
     const userId = this.resolveUserId(req);
     const profile = await this.healthProfileService.getProfile(userId);
@@ -606,6 +831,13 @@ export class NutritionController {
   }
 
   @Post('health-profile')
+  @ApiOperation({
+    summary: 'Create a health profile',
+    description:
+      'Creates the subscriber’s health profile and computes initial daily calorie / macro targets.',
+  })
+  @ApiBody({ type: CreateHealthProfileDto })
+  @ApiCreatedResponse({ description: '{ profile }' })
   async createHealthProfile(
     @Request() req: any,
     @Body() dto: CreateHealthProfileDto,
@@ -616,6 +848,13 @@ export class NutritionController {
   }
 
   @Patch('health-profile/weight')
+  @ApiOperation({
+    summary: 'Update weight on the health profile',
+    description:
+      'Logs a new weight reading and may recalculate daily targets.',
+  })
+  @ApiBody({ type: UpdateWeightDto })
+  @ApiOkResponse({ description: '{ profile }' })
   async updateWeight(@Request() req: any, @Body() dto: UpdateWeightDto) {
     const userId = this.resolveUserId(req);
     const profile = await this.healthProfileService.updateWeight(userId, dto);
@@ -624,12 +863,25 @@ export class NutritionController {
 
   @Post('health-profile/water')
   @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Log a water intake entry',
+    description:
+      'Adds a water amount (ml) to the daily diary for today or a supplied date.',
+  })
+  @ApiBody({ type: LogWaterDto })
+  @ApiOkResponse({ description: 'Updated water intake for the day.' })
   async logWater(@Request() req: any, @Body() dto: LogWaterDto) {
     const userId = this.resolveUserId(req);
     return this.healthProfileService.logWater(userId, dto);
   }
 
   @Get('health-profile/insights')
+  @ApiOperation({
+    summary: 'List monthly nutrition insight snapshots',
+    description:
+      'Returns previously generated monthly insight snapshots for the subscriber.',
+  })
+  @ApiOkResponse({ description: '{ snapshots }' })
   async getMonthlyInsights(@Request() req: any) {
     const userId = this.resolveUserId(req);
     const snapshots = await this.healthProfileService.getMonthlyInsights(userId);
@@ -641,6 +893,12 @@ export class NutritionController {
   @RequireFeature('nutrition_coaching')
   @UseGuards(ThrottlerGuard)
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @ApiOperation({
+    summary: 'Generate this month’s insight snapshot',
+    description:
+      'AI coaching snapshot for the current month from logged intake and the health profile. Requires `nutrition_coaching`. Rate-limited to **5 requests per 60 seconds**.',
+  })
+  @ApiOkResponse({ description: '{ snapshot }' })
   async generateMonthlySnapshot(@Request() req: any) {
     const userId = this.resolveUserId(req);
     const snapshot = await this.healthProfileService.generateMonthlySnapshot(userId);
@@ -651,6 +909,12 @@ export class NutritionController {
   @RequireFeature('nutrition_coaching')
   @UseGuards(ThrottlerGuard)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiOperation({
+    summary: 'Get today’s nutrition recommendation',
+    description:
+      'AI daily coaching tip based on remaining targets and recent logs. Requires `nutrition_coaching`. Rate-limited to **10 requests per 60 seconds**.',
+  })
+  @ApiOkResponse({ description: 'Daily recommendation payload.' })
   async getDailyRecommendation(@Request() req: any) {
     const userId = this.resolveUserId(req);
     return this.healthProfileService.getDailyRecommendation(userId);
@@ -659,6 +923,13 @@ export class NutritionController {
   /* ─── Edit & Reset ──────────────────────────────────── */
 
   @Patch('health-profile')
+  @ApiOperation({
+    summary: 'Update the health profile',
+    description:
+      'Partial update of goals, activity, height, etc. May recalculate daily targets.',
+  })
+  @ApiBody({ type: UpdateHealthProfileDto })
+  @ApiOkResponse({ description: '{ profile }' })
   async updateHealthProfile(
     @Request() req: any,
     @Body() dto: UpdateHealthProfileDto,
@@ -670,6 +941,13 @@ export class NutritionController {
 
   @Delete('daily/:date/entries')
   @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Reset all food entries for a day',
+    description:
+      'Deletes every food log entry for `date` (YYYY-MM-DD). Water and targets are left in place.',
+  })
+  @ApiParam({ name: 'date', description: 'Day to reset, YYYY-MM-DD.' })
+  @ApiOkResponse({ description: 'Day with empty entries / zeroed food totals.' })
   async resetDayEntries(
     @Request() req: any,
     @Param('date') date: string,
@@ -684,6 +962,13 @@ export class NutritionController {
 
   @Delete('daily/:date/recommendation')
   @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Clear the daily recommendation for a day',
+    description:
+      'Removes the cached AI daily recommendation for `date` (YYYY-MM-DD) so it can be regenerated.',
+  })
+  @ApiParam({ name: 'date', description: 'Day, YYYY-MM-DD.' })
+  @ApiOkResponse({ description: 'Recommendation cleared.' })
   async resetDailyRecommendation(
     @Request() req: any,
     @Param('date') date: string,
@@ -696,6 +981,14 @@ export class NutritionController {
   }
 
   @Patch('daily/:date/targets')
+  @ApiOperation({
+    summary: 'Override daily nutrition targets',
+    description:
+      'Sets calorie / macro targets for a specific `date` (YYYY-MM-DD) without changing the long-lived health-profile defaults.',
+  })
+  @ApiParam({ name: 'date', description: 'Day, YYYY-MM-DD.' })
+  @ApiBody({ type: UpdateDailyTargetsDto })
+  @ApiOkResponse({ description: '{ daily } with updated targets.' })
   async updateDailyTargets(
     @Request() req: any,
     @Param('date') date: string,
@@ -711,6 +1004,13 @@ export class NutritionController {
 
   @Delete('daily/:date/water')
   @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Reset all water intake for a day',
+    description:
+      'Clears every water entry for `date` (YYYY-MM-DD).',
+  })
+  @ApiParam({ name: 'date', description: 'Day, YYYY-MM-DD.' })
+  @ApiOkResponse({ description: 'Water intake reset.' })
   async resetWaterIntake(
     @Request() req: any,
     @Param('date') date: string,
@@ -724,6 +1024,14 @@ export class NutritionController {
 
   @Delete('daily/:date/water/:index')
   @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Delete one water entry',
+    description:
+      'Removes a single water log at zero-based `index` for `date` (YYYY-MM-DD).',
+  })
+  @ApiParam({ name: 'date', description: 'Day, YYYY-MM-DD.' })
+  @ApiParam({ name: 'index', description: 'Zero-based index of the water entry.' })
+  @ApiOkResponse({ description: 'Water entry removed.' })
   async deleteWaterEntry(
     @Request() req: any,
     @Param('date') date: string,
@@ -742,6 +1050,13 @@ export class NutritionController {
 
   @Post('health-profile/insights/reset/:month')
   @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Reset one monthly insight snapshot',
+    description:
+      'Deletes and returns a cleared snapshot for `month` (YYYY-MM) so it can be regenerated.',
+  })
+  @ApiParam({ name: 'month', description: 'Month in YYYY-MM format.' })
+  @ApiOkResponse({ description: '{ snapshot } after reset.' })
   async resetMonthlySnapshot(
     @Request() req: any,
     @Param('month') month: string,
@@ -756,6 +1071,12 @@ export class NutritionController {
 
   @Post('health-profile/insights/reset')
   @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Reset all monthly insight snapshots',
+    description:
+      'Clears every stored monthly insight snapshot for the subscriber.',
+  })
+  @ApiOkResponse({ description: '{ snapshots } after reset.' })
   async resetAllSnapshots(@Request() req: any) {
     const userId = this.resolveUserId(req);
     const snapshots = await this.healthProfileService.resetAllSnapshots(userId);

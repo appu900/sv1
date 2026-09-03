@@ -1,4 +1,5 @@
 import { Controller, Get, Post, Patch, Delete, UseGuards, Body, Param, BadRequestException, NotFoundException, UseInterceptors, UploadedFile } from '@nestjs/common';
+import { ApiBody, ApiConsumes, ApiCreatedResponse, ApiOkResponse, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
 import { CookbookaiService } from './cookbookai.service';
 import { CookbookaiProducer } from './cookbookai.producer';
 import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
@@ -15,7 +16,9 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { ImageUploadService } from '../image-upload/image-upload.service';
 import { SubscriptionService } from '../subscription/subscription.service';
 import { UNLIMITED } from '../subscription/subscription.constants';
+import { ApiJwtRoles } from 'src/common/swagger/api-auth.decorators';
 
+@ApiTags('Cookbook AI')
 @Controller('cookbookai')
 export class CookbookaiController {
     constructor(
@@ -100,6 +103,13 @@ export class CookbookaiController {
     @Get()
     @Roles('USER')
     @UseGuards(JwtAuthGuard, RolesGuard)
+    @ApiJwtRoles()
+    @ApiOperation({
+        summary: 'Cookbook AI hello',
+        description:
+            'Authenticated ping that confirms Cookbook AI is reachable and echoes the JWT user. Requires JWT and role `user`.',
+    })
+    @ApiOkResponse({ description: 'Hello message plus the authenticated user payload.' })
     async getHello(@Request() req) {
      return { message: this.cookbookaiService.getHello(), user: req.user };
     }
@@ -112,6 +122,13 @@ export class CookbookaiController {
     @Get(['/user-recipes', '/recipes'])
     @Roles('USER')
     @UseGuards(JwtAuthGuard, RolesGuard)
+    @ApiJwtRoles()
+    @ApiOperation({
+        summary: 'List my cookbook recipes',
+        description:
+            'Returns every Cookbook AI recipe belonging to the authenticated user (pending and completed). Available at both `/cookbookai/user-recipes` and `/cookbookai/recipes`. Requires JWT and role `user`.',
+    })
+    @ApiOkResponse({ description: 'Array of the caller’s cookbook recipes with count.' })
     async getAllRecipes(@Request() req) {
         const userId = this.resolveUserId(req);
         const recipes = await this.cookbookaiService.findAllByUser(userId);
@@ -125,6 +142,14 @@ export class CookbookaiController {
     @Get('/recipes/:id')
     @Roles('USER')
     @UseGuards(JwtAuthGuard, RolesGuard)
+    @ApiJwtRoles()
+    @ApiOperation({
+        summary: 'Get cookbook recipe',
+        description:
+            'Fetches one of the caller’s Cookbook AI recipes by Mongo ObjectId. Returns 400 for an invalid id and 404 if the recipe is missing or not owned by the user. Requires JWT and role `user`.',
+    })
+    @ApiParam({ name: 'id', description: 'Cookbook recipe Mongo ObjectId (24-char hex).' })
+    @ApiOkResponse({ description: 'Single cookbook recipe document.' })
     async getRecipeById(@Request() req, @Param('id') id: string) {
         const userId = this.resolveUserId(req);
         if (!id || !/^[a-f\d]{24}$/i.test(id)) {
@@ -142,6 +167,14 @@ export class CookbookaiController {
     @Delete('/recipes/:id')
     @Roles('USER')
     @UseGuards(JwtAuthGuard, RolesGuard)
+    @ApiJwtRoles()
+    @ApiOperation({
+        summary: 'Delete cookbook recipe',
+        description:
+            'Deletes a Cookbook AI recipe owned by the authenticated user. Requires JWT and role `user`.',
+    })
+    @ApiParam({ name: 'id', description: 'Cookbook recipe Mongo ObjectId.' })
+    @ApiOkResponse({ description: 'Recipe deleted.' })
     async deleteRecipe(@Request() req, @Param('id') id: string) {
         const userId = this.resolveUserId(req);
         const result = await this.cookbookaiService.deleteRecipe(id, userId);
@@ -151,6 +184,17 @@ export class CookbookaiController {
     @Post("/add-recipe")
     @Roles('USER')
     @UseGuards(JwtAuthGuard, RolesGuard)
+    @ApiJwtRoles()
+    @ApiOperation({
+        summary: 'Queue AI recipe from text',
+        description:
+            'Creates a pending cookbook recipe from a free-text `message` and enqueues AI extraction. Enforces the live cookbook-count cap and monthly AI-meal quota (returns `LIMIT_REACHED` when exhausted). Usage is incremented then refunded if enqueue fails. Requires JWT and role `user`.',
+    })
+    @ApiBody({ type: AddRecipeDto })
+    @ApiCreatedResponse({
+        description:
+            'Recipe queued with jobId, pending document, and remaining AI quota. May return LIMIT_REACHED instead of creating.',
+    })
     async addRecipe(@Request() req, @Body() body: AddRecipeDto) {
         try {
             const userId = this.resolveUserId(req);
@@ -224,6 +268,13 @@ export class CookbookaiController {
     @Get("/ai-generation-count")
     @Roles('USER')
     @UseGuards(JwtAuthGuard, RolesGuard)
+    @ApiJwtRoles()
+    @ApiOperation({
+        summary: 'AI generation quota',
+        description:
+            'Returns the caller’s monthly AI-meal usage (`count`), plan limit, remaining generations, and whether the plan is unlimited. Requires JWT and role `user`.',
+    })
+    @ApiOkResponse({ description: 'Used / limit / remaining AI meal generations for the current period.' })
     async getAiGenerationCount(@Request() req) {
         const userId = this.resolveUserId(req);
         const { used, limit, remaining } = await this.subscriptionService.checkLimit(
@@ -242,6 +293,17 @@ export class CookbookaiController {
     @Post("/generate-from-ingredients")
     @Roles('USER')
     @UseGuards(JwtAuthGuard, RolesGuard)
+    @ApiJwtRoles()
+    @ApiOperation({
+        summary: 'Generate recipe from ingredients',
+        description:
+            'Queues an AI recipe built from an ingredient list and optional preference. Same cookbook-count and monthly AI-meal quota rules as add-recipe. Country is taken from the user profile for localisation. Requires JWT and role `user`.',
+    })
+    @ApiBody({ type: GenerateFromIngredientsDto })
+    @ApiCreatedResponse({
+        description:
+            'Recipe queued with jobId, pending document, and remaining AI quota. May return LIMIT_REACHED instead of creating.',
+    })
     async generateFromIngredients(@Request() req, @Body() body: GenerateFromIngredientsDto) {
         try {
             const userId = this.resolveUserId(req);
@@ -321,6 +383,28 @@ export class CookbookaiController {
     @Roles('USER')
     @UseGuards(JwtAuthGuard, RolesGuard)
     @UseInterceptors(FileInterceptor('photo'))
+    @ApiJwtRoles()
+    @ApiConsumes('multipart/form-data')
+    @ApiOperation({
+        summary: 'Upload cookbook hero photo',
+        description:
+            'Uploads a hero image for one of the caller’s cookbook recipes. Field name must be `photo`. Allowed types: JPEG, PNG, WEBP, HEIC, HEIF. Requires JWT and role `user`.',
+    })
+    @ApiParam({ name: 'id', description: 'Cookbook recipe Mongo ObjectId (24-char hex).' })
+    @ApiBody({
+        schema: {
+            type: 'object',
+            required: ['photo'],
+            properties: {
+                photo: {
+                    type: 'string',
+                    format: 'binary',
+                    description: 'Hero image file (field name `photo`).',
+                },
+            },
+        },
+    })
+    @ApiOkResponse({ description: 'Updated recipe with the new heroImageUrl.' })
     async uploadHeroImage(
         @Request() req,
         @Param('id') id: string,
@@ -348,6 +432,26 @@ export class CookbookaiController {
     @Patch('/recipes/reorder')
     @Roles('USER')
     @UseGuards(JwtAuthGuard, RolesGuard)
+    @ApiJwtRoles()
+    @ApiOperation({
+        summary: 'Reorder cookbook recipes',
+        description:
+            'Persists a new display order for the caller’s cookbook recipes. Send the full list of recipe ids in the desired order. Requires JWT and role `user`.',
+    })
+    @ApiBody({
+        schema: {
+            type: 'object',
+            required: ['recipeIds'],
+            properties: {
+                recipeIds: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description: 'Cookbook recipe ObjectIds in the new order.',
+                },
+            },
+        },
+    })
+    @ApiOkResponse({ description: 'Recipes reordered for the caller.' })
     async reorderRecipes(@Request() req, @Body() body: { recipeIds: string[] }) {
         const userId = this.resolveUserId(req);
         return this.cookbookaiService.reorderRecipes(userId, body?.recipeIds || []);
@@ -356,6 +460,13 @@ export class CookbookaiController {
     @Get("/invalidate-cache")
     @Roles('USER')
     @UseGuards(JwtAuthGuard, RolesGuard)
+    @ApiJwtRoles()
+    @ApiOperation({
+        summary: 'Invalidate my cookbook cache',
+        description:
+            'Deletes Redis keys matching `user:{userId}:cookbookai*` for the authenticated user so the next read is fresh. Requires JWT and role `user`.',
+    })
+    @ApiOkResponse({ description: 'Caller’s cookbookai cache keys deleted.' })
     async invalidateCache(@Request() req) {
         const userId = this.resolveUserId(req);
         await this.redisService.delByPattern(`user:${userId}:cookbookai*`);
@@ -365,6 +476,13 @@ export class CookbookaiController {
     @Get("/dev-reset-limits")
     @Roles('ADMIN')
     @UseGuards(JwtAuthGuard, RolesGuard)
+    @ApiJwtRoles()
+    @ApiOperation({
+        summary: 'Reset all cookbook AI rate limits',
+        description:
+            'Admin-only. Clears every Redis key matching `user:*:cookbookai*` (rate-limit / cache state for all users). Requires JWT and role `admin`.',
+    })
+    @ApiOkResponse({ description: 'All cookbookai rate-limit keys cleared.' })
     async devResetLimits() {
         // Gated behind admin role. Previously unauthenticated, which let
         // anyone wipe cookbookai rate-limit state for every user.
@@ -372,5 +490,3 @@ export class CookbookaiController {
         return { message: "All cookbookai rate limits cleared." };
     }
 }
-
-

@@ -5,6 +5,7 @@ import { ValidationPipe } from '@nestjs/common';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 import * as bodyParser from 'body-parser';
 import * as compression from 'compression';
+import { setupSwagger } from './swagger.setup';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -59,6 +60,8 @@ app.enableCors({
     whitelist: true
   }));
 
+  setupSwagger(app);
+
   app.use((req, res, next) => {
     logger.log(`Request: ${req.method} ${req.url}`, {
       method: req.method,
@@ -69,7 +72,9 @@ app.enableCors({
     next();
   });
 
-  await app.listen(process.env.PORT ?? 3000, '0.0.0.0');
-  logger.log(`Application is running on: http://0.0.0.0:${process.env.PORT ?? 3000}`);
+  const port = process.env.PORT ?? 3000;
+  await app.listen(port, '0.0.0.0');
+  logger.log(`Application is running on: http://0.0.0.0:${port}`);
+  logger.log(`OpenAPI docs: http://0.0.0.0:${port}/api-docs`);
 }
 bootstrap();

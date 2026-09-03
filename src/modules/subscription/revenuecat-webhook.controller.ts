@@ -11,9 +11,17 @@ import {
   Req,
   UnauthorizedException,
 } from '@nestjs/common';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiHeader,
+  ApiOkResponse,
+  ApiBody,
+} from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import { SubscriptionService } from './subscription.service';
 
+@ApiTags('Webhooks')
 @Controller('webhook/revenuecat')
 export class RevenueCatWebhookController {
   private readonly logger = new Logger(RevenueCatWebhookController.name);
@@ -25,6 +33,22 @@ export class RevenueCatWebhookController {
 
   @Post()
   @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'RevenueCat subscription webhook',
+    description:
+      'Called by RevenueCat (not the mobile app). Authenticate with `Authorization: Bearer <REVENUECAT_WEBHOOK_SECRET>` — this is the webhook secret, not a user JWT. Body is the RevenueCat event payload (`event` or a root event). Syncs subscription state and returns `{ received: true }`.',
+  })
+  @ApiHeader({
+    name: 'authorization',
+    required: true,
+    description:
+      'Bearer <REVENUECAT_WEBHOOK_SECRET>. Compared with timing-safe equality against the configured secret. Not an app JWT.',
+  })
+  @ApiBody({
+    description: 'RevenueCat webhook JSON. Typically `{ event: { type, app_user_id, product_id, ... } }`.',
+    schema: { type: 'object', additionalProperties: true },
+  })
+  @ApiOkResponse({ description: '`{ received: true }` after the event is processed.' })
   async handle(
     @Headers('authorization') authHeader: string | undefined,
     @Body() payload: any,

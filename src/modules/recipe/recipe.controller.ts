@@ -17,6 +17,17 @@ import {
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { FileInterceptor } from '@nestjs/platform-express';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiParam,
+  ApiQuery,
+  ApiBody,
+  ApiConsumes,
+  ApiOkResponse,
+  ApiCreatedResponse,
+  ApiExtraModels,
+} from '@nestjs/swagger';
 import { sendCacheableJson } from '../../common/http/cacheable-json';
 import { DataVersionService } from '../data-version/data-version.service';
 import { RecipeService } from './recipe.service';
@@ -29,9 +40,58 @@ import { RolesGuard } from './../../common/guards/roles.guard';
 import { Roles } from './../../common/decorators/role.decorators';
 import { GetUser } from './../../common/decorators/Get.user.decorator';
 import { UserRole } from '../../database/schemas/user.auth.schema';
+import { ApiJwtAuth, ApiJwtRoles } from './../../common/swagger/api-auth.decorators';
 import { plainToClass } from 'class-transformer';
 import { validate } from 'class-validator';
 
+const RECIPE_MULTIPART_PROPERTIES = {
+  title: { type: 'string', description: 'Recipe title.' },
+  shortDescription: { type: 'string', description: 'Short card blurb.' },
+  longDescription: { type: 'string', description: 'Full recipe description.' },
+  youtubeId: { type: 'string', description: 'Optional YouTube video id.' },
+  heroImageUrl: {
+    type: 'string',
+    description: 'Existing hero image URL when not uploading a new file.',
+  },
+  portions: { type: 'string', description: 'Serving / portion label (e.g. "4").' },
+  prepCookTime: { type: 'string', description: 'Prep + cook time in minutes.' },
+  stickerId: { type: 'string', description: 'Optional sticker ObjectId.' },
+  frameworkCategories: {
+    type: 'string',
+    description: 'JSON array of framework category ObjectIds.',
+  },
+  cuisines: { type: 'string', description: 'JSON array of cuisine ObjectIds.' },
+  sponsorId: { type: 'string', description: 'Optional sponsor ObjectId.' },
+  fridgeKeepTime: { type: 'string', description: 'Fridge keep-time label.' },
+  freezeKeepTime: { type: 'string', description: 'Freezer keep-time label.' },
+  hackOrTipIds: {
+    type: 'string',
+    description: 'JSON array of hack-or-tip ObjectIds.',
+  },
+  chefIds: { type: 'string', description: 'JSON array of chef ObjectIds.' },
+  useLeftoversIn: {
+    type: 'string',
+    description: 'JSON array of leftover-recipe ObjectIds.',
+  },
+  components: {
+    type: 'string',
+    description: 'JSON array of recipe component wrappers (ingredients and steps).',
+  },
+  order: { type: 'string', description: 'Display order (integer).' },
+  isActive: { type: 'string', description: 'Whether the recipe is published (`true`/`false`).' },
+  countries: {
+    type: 'string',
+    description: 'JSON array of country codes this recipe is available in.',
+  },
+  heroImage: {
+    type: 'string',
+    format: 'binary',
+    description: 'Hero image file. Uploaded to storage and stored as heroImageUrl.',
+  },
+};
+
+@ApiTags('Recipes')
+@ApiExtraModels(CreateRecipeDto, UpdateRecipeDto, ScaleServingsDto)
 @Controller('api/recipe')
 export class RecipeController {
   private readonly logger = new Logger(RecipeController.name);
@@ -46,6 +106,17 @@ export class RecipeController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN, UserRole.CHEF)
   @UseInterceptors(FileInterceptor('heroImage'))
+  @ApiJwtRoles('Requires admin or chef role.')
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({
+    summary: 'Create a recipe',
+    description:
+      'Creates a recipe with components, categories, and an optional hero image. Array fields (`components`, `frameworkCategories`, `cuisines`, `hackOrTipIds`, `chefIds`, `useLeftoversIn`, `countries`) may be sent as JSON strings. Live path is `POST /api/api/recipe` because this controller is mounted at `api/recipe` under the global `api` prefix.',
+  })
+  @ApiBody({
+    schema: { type: 'object', properties: RECIPE_MULTIPART_PROPERTIES },
+  })
+  @ApiCreatedResponse({ description: 'Recipe created.' })
   async create(
     @Body() body: any,
     @UploadedFile() heroImage?: Express.Multer.File,
@@ -166,11 +237,39 @@ export class RecipeController {
   }
 
   @Get()
+  @ApiOperation({
+    summary: 'List recipes',
+    description:
+      'Returns the full recipe catalogue. Optionally filter by country code. Live path is `GET /api/api/recipe`.',
+  })
+  @ApiQuery({
+    name: 'country',
+    required: false,
+    description: 'ISO country code to filter recipes (e.g. AU, IN).',
+  })
+  @ApiOkResponse({ description: 'Array of recipes.' })
   async findAll(@Query('country') country?: string) {
     return this.recipeService.findAll(country);
   }
 
   @Get('summaries')
+  @ApiOperation({
+    summary: 'List recipe summaries',
+    description:
+      'Lightweight recipe cards for list UIs (id, title, hero image, categories, cuisines, sticker). Supports a data-version pin via `v` and returns `ETag` / `X-Data-Version` for client cache invalidation. Live path is `GET /api/api/recipe/summaries`.',
+  })
+  @ApiQuery({
+    name: 'country',
+    required: false,
+    description: 'ISO country code to filter summaries (e.g. AU, IN).',
+  })
+  @ApiQuery({
+    name: 'v',
+    required: false,
+    description:
+      'Client data-version pin for the recipes collection. When it matches the current version the response is cacheable as immutable; otherwise caches must revalidate.',
+  })
+  @ApiOkResponse({ description: 'Array of recipe summaries.' })
   async findSummaries(
     @Req() req: Request,
     @Res() res: Response,
@@ -188,6 +287,18 @@ export class RecipeController {
   }
 
   @Get('category/:categoryId')
+  @ApiOperation({
+    summary: 'List recipes by framework category',
+    description:
+      'Returns recipes assigned to the given framework category. Live path is `GET /api/api/recipe/category/:categoryId`.',
+  })
+  @ApiParam({ name: 'categoryId', description: 'Framework category ObjectId.' })
+  @ApiQuery({
+    name: 'country',
+    required: false,
+    description: 'ISO country code to filter recipes (e.g. AU, IN).',
+  })
+  @ApiOkResponse({ description: 'Array of recipes in the category.' })
   async findByCategory(
     @Param('categoryId') categoryId: string,
     @Query('country') country?: string,
@@ -196,6 +307,18 @@ export class RecipeController {
   }
 
   @Get('ingredient/:ingredientId')
+  @ApiOperation({
+    summary: 'List recipes by ingredient',
+    description:
+      'Returns recipes that use the given ingredient. Live path is `GET /api/api/recipe/ingredient/:ingredientId`.',
+  })
+  @ApiParam({ name: 'ingredientId', description: 'Ingredient ObjectId.' })
+  @ApiQuery({
+    name: 'country',
+    required: false,
+    description: 'ISO country code to filter recipes (e.g. AU, IN).',
+  })
+  @ApiOkResponse({ description: 'Array of recipes that use the ingredient.' })
   async findByIngredient(
     @Param('ingredientId') ingredientId: string,
     @Query('country') country?: string,
@@ -204,6 +327,13 @@ export class RecipeController {
   }
 
   @Post('scale-servings')
+  @ApiOperation({
+    summary: 'Scale recipe servings',
+    description:
+      'Scales a list of ingredient quantities from `originalServings` to `desiredServings` (1–20). Public; no auth required. Live path is `POST /api/api/recipe/scale-servings`.',
+  })
+  @ApiBody({ type: ScaleServingsDto })
+  @ApiOkResponse({ description: 'Scaled ingredient quantities and optional cooking notes.' })
   async scaleServings(@Body() body: ScaleServingsDto) {
     this.logger.log(
       `Scaling servings: ${body.originalServings} → ${body.desiredServings} (${body.ingredients?.length || 0} ingredients)`,
@@ -228,12 +358,56 @@ export class RecipeController {
   }
 
   @Get('by-slug/:slug')
+  @ApiOperation({
+    summary: 'Get recipe by slug',
+    description:
+      'Looks up a single recipe by its URL slug. Live path is `GET /api/api/recipe/by-slug/:slug`.',
+  })
+  @ApiParam({ name: 'slug', description: 'Recipe URL slug.' })
+  @ApiOkResponse({ description: 'Full recipe document.' })
   async findBySlug(@Param('slug') slug: string) {
     return this.recipeService.findBySlug(slug);
   }
 
   @Get('dietary-recommendations')
   @UseGuards(JwtAuthGuard)
+  @ApiJwtAuth()
+  @ApiOperation({
+    summary: 'Get dietary recipe recommendations',
+    description:
+      'Returns recipes that match the caller’s dietary profile. Query params override the stored profile (`vegType`, `dairyFree`, `nutFree`, `glutenFree`, `hasDiabetes`, `country`). Requires a JWT. Live path is `GET /api/api/recipe/dietary-recommendations`.',
+  })
+  @ApiQuery({
+    name: 'vegType',
+    required: false,
+    description: 'Override vegetarian type: `VEGAN` or `VEGETARIAN`. Defaults to the user dietary profile.',
+  })
+  @ApiQuery({
+    name: 'dairyFree',
+    required: false,
+    description: '`true`/`false`. Defaults to the user dietary profile.',
+  })
+  @ApiQuery({
+    name: 'nutFree',
+    required: false,
+    description: '`true`/`false`. Defaults to the user dietary profile.',
+  })
+  @ApiQuery({
+    name: 'glutenFree',
+    required: false,
+    description: '`true`/`false`. Defaults to the user dietary profile.',
+  })
+  @ApiQuery({
+    name: 'hasDiabetes',
+    required: false,
+    description: '`true`/`false`. Defaults to the user dietary profile.',
+  })
+  @ApiQuery({
+    name: 'country',
+    required: false,
+    description: 'ISO country code. Defaults to the authenticated user’s country.',
+  })
+  @ApiOkResponse({ description: 'Recommended recipes for the dietary filters.' })
   async getDietaryRecommendations(
     @GetUser() user: any,
     @Query('vegType') vegType?: string,
@@ -255,6 +429,13 @@ export class RecipeController {
   }
 
   @Get(':id')
+  @ApiOperation({
+    summary: 'Get recipe by id',
+    description:
+      'Returns a full recipe document by Mongo ObjectId. Live path is `GET /api/api/recipe/:id`.',
+  })
+  @ApiParam({ name: 'id', description: 'Recipe ObjectId.' })
+  @ApiOkResponse({ description: 'Full recipe document.' })
   async findOne(@Param('id') id: string) {
     return this.recipeService.findOne(id);
   }
@@ -263,6 +444,18 @@ export class RecipeController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN, UserRole.CHEF)
   @UseInterceptors(FileInterceptor('heroImage'))
+  @ApiJwtRoles('Requires admin or chef role.')
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({
+    summary: 'Update a recipe',
+    description:
+      'Partial update of a recipe. Send only fields to change. Array fields may be JSON strings. Optional new `heroImage` replaces the stored hero. Live path is `PUT /api/api/recipe/:id`.',
+  })
+  @ApiParam({ name: 'id', description: 'Recipe ObjectId.' })
+  @ApiBody({
+    schema: { type: 'object', properties: RECIPE_MULTIPART_PROPERTIES },
+  })
+  @ApiOkResponse({ description: 'Updated recipe.' })
   async update(
     @Param('id') id: string,
     @Body() body: any,
@@ -350,6 +543,14 @@ export class RecipeController {
   @Delete(':id')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN, UserRole.CHEF)
+  @ApiJwtRoles('Requires admin or chef role.')
+  @ApiOperation({
+    summary: 'Delete a recipe',
+    description:
+      'Permanently deletes a recipe by id. Live path is `DELETE /api/api/recipe/:id`.',
+  })
+  @ApiParam({ name: 'id', description: 'Recipe ObjectId.' })
+  @ApiOkResponse({ description: 'Recipe deleted successfully.' })
   async remove(@Param('id') id: string) {
     await this.recipeService.remove(id);
     return { message: 'Recipe deleted successfully' };
