@@ -37,7 +37,9 @@
     "reset:legacy-perks": "ts-node -r tsconfig-paths/register scripts/reset-legacy-perks-memberships.ts",
     "dedupe:device-tokens": "ts-node -r tsconfig-paths/register scripts/dedupe-device-tokens.ts",
     "diagnose:perks-member": "ts-node -r tsconfig-paths/register scripts/diagnose-perks-member.ts",
-    "recover:perks-member": "ts-node -r tsconfig-paths/register scripts/recover-perks-member.ts"
+    "recover:perks-member": "ts-node -r tsconfig-paths/register scripts/recover-perks-member.ts",
+    "create:demo-account": "ts-node -r tsconfig-paths/register scripts/create-demo-account.ts",
+    "delete:demo-account": "ts-node -r tsconfig-paths/register scripts/delete-demo-account.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.958.0",
