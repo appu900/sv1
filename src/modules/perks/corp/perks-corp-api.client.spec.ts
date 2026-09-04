@@ -27,42 +27,56 @@ describe('PerksCorpApiClient', () => {
   });
 
   describe('pagination', () => {
+    /** WeMAD's real envelope, confirmed by them 2026-09-04. */
     const ordersPage = (rows: number[], lastPage: number) => ({
       success: true,
       data: {
-        orders: { data: rows.map((id) => ({ id })), last_page: lastPage },
+        orders: {
+          data: rows.map((id) => ({ id })),
+          current_page: 1,
+          last_page: lastPage,
+          per_page: 10,
+          total: 6,
+        },
+        totalOrders: 6,
+        totalAmount: '524.76',
+        pendingOrders: 0,
+        completedOrders: 2,
       },
     });
 
-    it('walks every page of orders rather than stopping at the first 10', async () => {
-      const pages = [
-        ordersPage([1, 2, 3], 3),
-        ordersPage([4, 5, 6], 3),
-        ordersPage([7], 3),
-      ];
-      let call = 0;
+    it('fetches one page and keeps WeMAD\'s paging envelope', async () => {
+      // We used to discard everything but the rows, walk every page and slice.
+      // That was up to twenty sequential requests each time a member opened
+      // their history; `total` and `per_page` are what let us stop at one.
       const fetchMock = jest.fn().mockImplementation(async () => ({
         status: 200,
-        text: async () => JSON.stringify(pages[call++]),
+        text: async () => JSON.stringify(ordersPage([1, 2, 3], 3)),
       }));
       global.fetch = fetchMock as never;
 
-      const orders = await createClient().listOrders('access-1');
+      const page = await createClient().listOrdersPage('access-1', 2);
 
-      expect(orders).toHaveLength(7);
-      expect(fetchMock).toHaveBeenCalledTimes(3);
-      expect(String(fetchMock.mock.calls[1][0])).toContain('page=2');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(String(fetchMock.mock.calls[0][0])).toContain('page=2');
+      expect(page.rows).toHaveLength(3);
+      expect(page).toMatchObject({ perPage: 10, total: 6, lastPage: 3 });
+      expect(page.summary).toMatchObject({
+        totalOrders: 6,
+        totalAmount: 524.76,
+        completedOrders: 2,
+      });
     });
 
-    it('stops on an empty page even when last_page over-reports', async () => {
-      const pages = [ordersPage([1], 99), ordersPage([], 99)];
-      let call = 0;
+    it('survives a response with no pagination block', async () => {
       global.fetch = jest.fn().mockImplementation(async () => ({
         status: 200,
-        text: async () => JSON.stringify(pages[Math.min(call++, 1)]),
+        text: async () => JSON.stringify({ success: true, data: {} }),
       })) as never;
 
-      await expect(createClient().listOrders('access-1')).resolves.toHaveLength(1);
+      const page = await createClient().listOrdersPage('access-1');
+      expect(page.rows).toEqual([]);
+      expect(page.total).toBe(0);
     });
 
     it('walks the whole catalogue, not just the first page', async () => {

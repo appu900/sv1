@@ -328,94 +328,145 @@ export function mapGiftTemplates(detail: Record<string, unknown>) {
 
 
 /**
- * Order states that mean the customer never actually bought anything: the
- * checkout was abandoned, the payment never landed, or it was declined.
+ * WeMAD's three status vocabularies, supplied 2026-09-04. Everything below is
+ * their list, not ours.
  *
- * WeMAD have never published their status enum, so this is the set we can name
- * with confidence. Anything outside it is treated as a real order — see
- * `isOrderVisible`.
+ * Until that message arrived we had no enum and had reverse-engineered four
+ * values from live payloads. Anything unrecognised fell through to
+ * "Processing" — which is exactly the bug they reported, and the reason this
+ * file no longer relabels a state it does not recognise.
+ *
+ *   order.status
+ *     awaiting_payment  payment is pending
+ *     processing        payment done, gift card send pending
+ *     completed         payment and gift card send done
+ *     hold              payment done, verification of the payment pending
+ *     cancelled         order cancelled but money NOT refunded
+ *     refunded          order cancelled and money refunded
+ *
+ *   order_item[].status
+ *     pending           payment done, gift card send pending
+ *     sent              payment and gift card send done
+ *     cancelled         order cancelled
+ *     failed            order failed
+ *
+ *   payment_status
+ *     unpaid | partial | paid | refunded
  */
-const UNPAID_ORDER_STATES = new Set([
-  'unpaid',
-  'incomplete',
-  'pending_payment',
-  'payment_pending',
+
+/** No money reached WeMAD. The only payment state that hides an order. */
+const UNPAID_PAYMENT_STATES = new Set(['unpaid']);
+
+/**
+ * The single order state WeMAD asked us to hide (2026-09-03, confirmed with the
+ * enum 2026-09-04): the member reached the payment page and never completed.
+ *
+ * They asked for only `processing` and `completed` to be shown, which would
+ * also bury `hold`, `cancelled` and `refunded`. We deliberately keep those
+ * visible: all three mean money was taken, and `cancelled` means it has NOT
+ * been given back. A member charged for a cancelled order must not find that
+ * the order has silently vanished.
+ */
+const HIDDEN_ORDER_STATES = new Set(['awaiting_payment']);
+
+/** Order states that will never produce a gift card, whatever the line says. */
+const TERMINAL_ORDER_STATES = new Set([
   'awaiting_payment',
-  'payment_failed',
-  'failed',
-  'declined',
-  'error',
-  'abandoned',
-  'draft',
-  'expired',
-  'void',
-  'voided',
+  'cancelled',
+  'refunded',
 ]);
 
 /**
  * Whether an order belongs in the customer's history at all.
  *
- * WeMAD asked (2026-09-03) for pending-payment, incomplete and failed orders to
- * stop appearing. They are right that we showed them: we rendered every order
- * their API returned.
- *
- * Two rules keep that from going too far:
- *
- * 1. **Money paid always wins.** If any amount was taken, the order shows
- *    whatever its state says. Several of Mike's cards are paid but still
- *    unfulfilled upstream; hiding those would erase the only record a customer
- *    has that they were charged, which is a far worse bug than the one being
- *    fixed.
- * 2. **Only hide what we can positively name.** An unrecognised status stays
- *    visible. We are guessing at their vocabulary — the observed values are
- *    `processing`, `pending`, `sent` and `completed`, and no unpaid order has
- *    ever appeared in a captured payload — so an unknown string is far more
- *    likely to be a state we have not seen than one we should hide.
- *
- * `pending` is deliberately absent from the unpaid set: on their data it means
- * paid-but-not-yet-issued, which the customer must see.
+ * Money paid always wins. If any amount was taken the order shows, whatever its
+ * state — hiding it would erase the only record a member has that they were
+ * charged, which is a worse bug than the one being fixed.
  */
 export function isOrderVisible(order: Record<string, unknown>): boolean {
+  const payment = str(order.payment_status).toLowerCase().trim();
+
   const paid =
     (num(order.paid_amount) ?? 0) > 0 ||
     (num(order.total_paid) ?? 0) > 0 ||
-    str(order.payment_status).toLowerCase().trim() === 'paid';
+    payment === 'paid' ||
+    payment === 'partial';
   if (paid) return true;
 
-  const payment = str(order.payment_status).toLowerCase().trim();
-  if (payment && UNPAID_ORDER_STATES.has(payment)) return false;
+  if (payment && UNPAID_PAYMENT_STATES.has(payment)) return false;
 
-  return !UNPAID_ORDER_STATES.has(str(order.status).toLowerCase().trim());
+  return !HIDDEN_ORDER_STATES.has(str(order.status).toLowerCase().trim());
 }
 
+/**
+ * Order-level state — the aggregate for one order in the history list.
+ *
+ * `cancelled` and `refunded` are separate outcomes and only one of them means
+ * the member has their money back. We previously mapped both to `refunded`,
+ * telling people they had been repaid when they had not.
+ */
 export function mapOrderStatus(value: unknown): string {
   const raw = str(value).toLowerCase().trim();
-  if (!raw) return 'processing';
+  if (!raw) return 'unknown';
   switch (raw) {
-    case 'completed':
-    case 'complete':
-    case 'sent':
-    case 'delivered':
-    case 'success':
-    case 'paid':
-      return 'completed';
+    case 'awaiting_payment':
     case 'processing':
-    case 'pending':
-    case 'in_progress':
-    case 'awaiting':
-      return 'processing';
-    case 'refunded':
+    case 'completed':
+    case 'hold':
     case 'cancelled':
-    case 'canceled':
-    case 'reversed':
-      return 'refunded';
+    case 'refunded':
+      return raw;
+    default:
+      // Pass it through verbatim so the UI can render the real state. Guessing
+      // "Processing" over an unknown value is what started this.
+      return raw;
+  }
+}
+
+/**
+ * Item-level state — the per-card status shown in the wallet.
+ *
+ * Mapped onto the order-level vocabulary so one set of labels covers both:
+ * their `pending` and `processing` mean the same thing, as do `sent` and
+ * `completed`.
+ */
+export function mapOrderItemStatus(value: unknown): string {
+  const raw = str(value).toLowerCase().trim();
+  if (!raw) return 'unknown';
+  switch (raw) {
+    case 'pending':
+      return 'processing';
+    case 'sent':
+      return 'completed';
+    case 'cancelled':
+      return 'cancelled';
     case 'failed':
-    case 'declined':
-    case 'error':
       return 'failed';
     default:
-      return 'processing';
+      return raw;
   }
+}
+
+/** Payment state, normalised. `partial` means part of the money was taken. */
+export function mapPaymentStatus(value: unknown): string | null {
+  const raw = str(value).toLowerCase().trim();
+  return raw || null;
+}
+
+/**
+ * The status one wallet card should show.
+ *
+ * The line carries its own state, but a terminal order state overrides it: an
+ * order that was cancelled or refunded will never issue its card, however the
+ * line still reads. `order_status` is merged onto each row by
+ * `perks.service.fetchWalletCards`, where it had been dead weight until now.
+ */
+export function resolveWalletCardStatus(
+  entry: Record<string, unknown>,
+): string {
+  const order = mapOrderStatus(entry.order_status);
+  if (TERMINAL_ORDER_STATES.has(order)) return order;
+  return mapOrderItemStatus(entry.status);
 }
 
 const toCents = (value: unknown): number =>
@@ -472,7 +523,7 @@ export function mapOrder(
       deliveryFee: deliveryFeeCents / 100,
       total: totalCents / 100,
       cashback: num(item.cashback) ?? 0,
-      status: mapOrderStatus(item.status),
+      status: mapOrderItemStatus(item.status),
       orderReference: str(order.order_reference),
       orderNumber: nullableStr(order.order_number),
       cardUrl: nullableStr(item.card_url ?? item.cardurl),
@@ -514,7 +565,7 @@ export function mapOrder(
     createdAt: nullableStr(order.created_at),
     completedAt: null as string | null,
     payment: {
-      status: nullableStr(order.payment_status),
+      status: mapPaymentStatus(order.payment_status),
       method: nullableStr(order.payment_method),
       surcharge: num(order.payment_surcharge) ?? 0,
       paid: num(order.paid_amount) ?? 0,
@@ -649,7 +700,7 @@ export function mapWalletCard(
     expiresIn: nullableStr(entry.expiry ?? entry.expires_at ?? entry.expiry_date),
     orderReference: nullableStr(entry.order_reference),
     orderNumber: nullableStr(entry.order_number ?? entry.order_id),
-    orderStatus: mapOrderStatus(entry.status),
+    orderStatus: resolveWalletCardStatus(entry),
     // `gift_card_stock.url` is the member's card, added by WeMAD 2026-09-02
     // and verified to return 200:
     //   https://perks.saveful.app/giftcard/access/<token>

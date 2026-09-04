@@ -81,6 +81,21 @@ export class PerksCorpApiError extends Error {
   }
 }
 
+/** One page of WeMAD's `/orders` response, envelope intact. */
+export interface PerksOrdersPage {
+  rows: Record<string, unknown>[];
+  perPage: number;
+  currentPage: number;
+  lastPage: number;
+  total: number;
+  summary: {
+    totalOrders: number | null;
+    totalAmount: number | null;
+    pendingOrders: number | null;
+    completedOrders: number | null;
+  };
+}
+
 @Injectable()
 export class PerksCorpApiClient {
   private readonly logger = new Logger(PerksCorpApiClient.name);
@@ -343,16 +358,60 @@ export class PerksCorpApiClient {
     );
   }
 
-  async listOrders(accessToken: string): Promise<Record<string, unknown>[]> {
-    return this.collectPages(accessToken, '/orders', (payload) => {
-      const orders = payload?.orders as Record<string, unknown> | undefined;
-      return {
-        rows: orders && Array.isArray(orders.data) ? orders.data : [],
-        lastPage: num(orders?.last_page),
-      };
-    });
+  /**
+   * One page of `/orders`, with WeMAD's envelope preserved.
+   *
+   * Shape confirmed by WeMAD 2026-09-04:
+   *   data.orders.{ data, current_page, last_page, per_page, total }
+   *   data.{ totalOrders, totalAmount, pendingOrders, completedOrders }
+   *
+   * `total` and `per_page` are what make real paging possible. We used to throw
+   * both away, walk every page and slice the result, which meant up to twenty
+   * sequential requests to WeMAD each time a member opened their order history.
+   */
+  async listOrdersPage(
+    accessToken: string,
+    page = 1,
+  ): Promise<PerksOrdersPage> {
+    const payload = await this.request<Record<string, unknown>>(
+      `/orders?page=${page}`,
+      { method: 'GET' },
+      accessToken,
+    );
+
+    const orders = (payload?.orders ?? {}) as Record<string, unknown>;
+    const rows = Array.isArray(orders.data)
+      ? (orders.data as Record<string, unknown>[])
+      : [];
+
+    return {
+      rows,
+      // Their per_page has been 10 on every response seen; fall back to the
+      // page length rather than a guess, so a change on their side is absorbed.
+      perPage: num(orders.per_page) ?? rows.length ?? 0,
+      currentPage: num(orders.current_page) ?? page,
+      lastPage: num(orders.last_page) ?? page,
+      total: num(orders.total) ?? num(payload?.totalOrders) ?? rows.length,
+      summary: {
+        totalOrders: num(payload?.totalOrders),
+        totalAmount: num(payload?.totalAmount),
+        pendingOrders: num(payload?.pendingOrders),
+        completedOrders: num(payload?.completedOrders),
+      },
+    };
   }
 
+  /**
+   * One order by its numeric **Order ID** — `order.id`, not `order_number`.
+   *
+   * Passing the order number here returns a 500. WeMAD confirmed on 2026-09-04
+   * that the two are different fields: `order_number` is the customer-facing
+   * reference (`WMDAU3-2026...`), `id` is the integer key this route expects.
+   *
+   * Nothing calls this today: `perks.service.getOrder` resolves the order from
+   * the list response, which already carries every `order_item`. Kept, and
+   * documented, so the next person does not rediscover the 500 the hard way.
+   */
   async getOrder(
     accessToken: string,
     orderId: string,

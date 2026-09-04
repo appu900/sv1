@@ -5,7 +5,9 @@ import {
   resolveCategories,
   mapGiftTemplates,
   mapOrder,
+  mapOrderItemStatus,
   mapOrderStatus,
+  resolveWalletCardStatus,
   mapWalletCard,
   resolveAvailableValues,
   resolveCategory,
@@ -370,21 +372,78 @@ describe('perks corp mapper', () => {
     });
   });
 
+  /**
+   * WeMAD supplied these three enums on 2026-09-04. Every case below is one of
+   * their documented values, so a failure here means either they changed the
+   * vocabulary again or we drifted from it.
+   */
   describe('mapOrderStatus', () => {
     it.each([
-      ['completed', 'completed'],
-      ['sent', 'completed'],
+      ['awaiting_payment', 'awaiting_payment'],
       ['processing', 'processing'],
-      ['pending', 'processing'],
+      ['completed', 'completed'],
+      ['hold', 'hold'],
+      ['cancelled', 'cancelled'],
       ['refunded', 'refunded'],
-      ['cancelled', 'refunded'],
-      ['failed', 'failed'],
-      ['delivered', 'completed'],
-      ['declined', 'failed'],
-      ['something-else', 'processing'],
-      ['', 'processing'],
-    ])('maps %s → %s', (input, expected) => {
+    ])('maps the documented order state %s → %s', (input, expected) => {
       expect(mapOrderStatus(input)).toBe(expected);
+    });
+
+    it('never reports a cancelled order as refunded', () => {
+      // WeMAD: cancelled = "order is cancelled but not refund the money".
+      // We used to map both to 'refunded', which told a member their money was
+      // back when it was not. This is the regression that motivated the rewrite.
+      expect(mapOrderStatus('cancelled')).not.toBe('refunded');
+      expect(mapOrderStatus('refunded')).toBe('refunded');
+    });
+
+    it('passes an unrecognised state through instead of calling it Processing', () => {
+      // Silently relabelling unknown values as "Processing" is the bug WeMAD
+      // reported. An honest literal beats a confident wrong answer.
+      expect(mapOrderStatus('awaiting_stock')).toBe('awaiting_stock');
+      expect(mapOrderStatus('SOMETHING-NEW')).toBe('something-new');
+      expect(mapOrderStatus('')).toBe('unknown');
+    });
+  });
+
+  describe('mapOrderItemStatus', () => {
+    it.each([
+      ['pending', 'processing'],
+      ['sent', 'completed'],
+      ['cancelled', 'cancelled'],
+      ['failed', 'failed'],
+    ])('maps the documented item state %s → %s', (input, expected) => {
+      expect(mapOrderItemStatus(input)).toBe(expected);
+    });
+
+    it('does not invent a state for an empty or unknown value', () => {
+      expect(mapOrderItemStatus('')).toBe('unknown');
+      expect(mapOrderItemStatus('queued')).toBe('queued');
+    });
+  });
+
+  describe('resolveWalletCardStatus', () => {
+    it('uses the line status while the order is still running', () => {
+      expect(
+        resolveWalletCardStatus({ status: 'sent', order_status: 'completed' }),
+      ).toBe('completed');
+      expect(
+        resolveWalletCardStatus({ status: 'pending', order_status: 'processing' }),
+      ).toBe('processing');
+    });
+
+    it('lets a terminal order override a line still claiming pending', () => {
+      // The card is never coming, whatever the line says.
+      expect(
+        resolveWalletCardStatus({ status: 'pending', order_status: 'cancelled' }),
+      ).toBe('cancelled');
+      expect(
+        resolveWalletCardStatus({ status: 'pending', order_status: 'refunded' }),
+      ).toBe('refunded');
+    });
+
+    it('falls back to the line when no order status was merged in', () => {
+      expect(resolveWalletCardStatus({ status: 'sent' })).toBe('completed');
     });
   });
 
@@ -739,19 +798,24 @@ describe('perks corp mapper', () => {
  * record of being charged — so these tests pin both directions.
  */
 describe('isOrderVisible', () => {
-  it('hides an order whose payment never completed', () => {
-    for (const status of [
-      'unpaid',
-      'incomplete',
-      'pending_payment',
-      'awaiting_payment',
-      'failed',
-      'abandoned',
-      'expired',
-    ]) {
-      expect(isOrderVisible({ status })).toBe(false);
-      expect(isOrderVisible({ payment_status: status })).toBe(false);
-    }
+  it('hides the one state WeMAD asked us to hide', () => {
+    // Their enum, 2026-09-04: awaiting_payment = the member reached the payment
+    // page and never completed. No money was taken, so there is nothing to show.
+    expect(isOrderVisible({ status: 'awaiting_payment' })).toBe(false);
+    expect(isOrderVisible({ payment_status: 'unpaid' })).toBe(false);
+  });
+
+  it('keeps states that mean money was taken, even though WeMAD asked to hide them', () => {
+    // They asked for only processing and completed. `hold` is paid awaiting
+    // verification and `cancelled` is paid with NO refund - burying either
+    // leaves a charged member with no record of the charge.
+    expect(isOrderVisible({ status: 'hold' })).toBe(true);
+    expect(isOrderVisible({ status: 'cancelled' })).toBe(true);
+    expect(isOrderVisible({ status: 'refunded' })).toBe(true);
+  });
+
+  it('treats a partial payment as money taken', () => {
+    expect(isOrderVisible({ payment_status: 'partial' })).toBe(true);
   });
 
   it('keeps a paid order however its fulfilment is going', () => {

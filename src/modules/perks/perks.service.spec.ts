@@ -147,7 +147,7 @@ function createService(overrides: Record<string, unknown> = {}) {
     removeFromCart: jest.fn(async (_t: string, id: number | string) => {
       upstreamCart = upstreamCart.filter((row) => row.id !== id);
     }),
-    listOrders: jest.fn().mockResolvedValue([]),
+    listOrdersPage: jest.fn().mockResolvedValue(ordersPageOf([])),
     listMyGiftCards: jest.fn().mockResolvedValue([]),
     buildCheckoutUrl: jest.fn(
       (token: string) => `https://frontend.test/sso/login?token=${token}`,
@@ -231,6 +231,24 @@ function createService(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/**
+ * WeMAD's `/orders` page envelope, as the client now returns it. Confirmed with
+ * them on 2026-09-04; before that we walked every page and sliced.
+ */
+const ordersPageOf = (rows: Record<string, unknown>[]) => ({
+  rows,
+  perPage: 10,
+  currentPage: 1,
+  lastPage: 1,
+  total: rows.length,
+  summary: {
+    totalOrders: rows.length,
+    totalAmount: null,
+    pendingOrders: null,
+    completedOrders: null,
+  },
+});
+
 describe('PerksService (corp)', () => {
   describe('catalogue', () => {
     it('maps and caches the corp listing', async () => {
@@ -246,6 +264,57 @@ describe('PerksService (corp)', () => {
 
       await service.getCatalogue({});
       expect(api.listAllGiftCards).toHaveBeenCalledTimes(1);
+    });
+
+    it('recovers categories from WeMAD\'s category endpoints when the card carries none', async () => {
+      // Production returns `categories: []` on every card, which is why the app
+      // ended up guessing from retailer names. WeMAD (2026-09-04): "it is
+      // available in the API" - and it is, in the other direction. You cannot
+      // ask a card for its categories, but you can ask a category for its cards.
+      const bare = { ...CARD, categories: [] };
+      const listGiftCards = jest
+        .fn()
+        .mockImplementation(async ({ category }: { category: string }) =>
+          category === '14' ? [{ id: 1 }] : [],
+        );
+
+      const { service } = createService({
+        api: {
+          listAllGiftCards: jest.fn().mockResolvedValue([bare]),
+          getCategories: jest.fn().mockResolvedValue([
+            {
+              id: 10,
+              slug: 'food-drink',
+              name: 'Food & Drink',
+              children: [{ id: 14, slug: 'groceries', name: 'Groceries' }],
+            },
+          ]),
+          listGiftCards,
+        },
+      });
+
+      const [card] = await service.getCatalogue({});
+
+      expect(card).toMatchObject({
+        category: 'groceries',
+        categoryName: 'Groceries',
+        categoryGroup: 'food-drink',
+      });
+      expect(listGiftCards).toHaveBeenCalledWith({
+        category: '14',
+        paginate: 100,
+      });
+    });
+
+    it('does not query the category endpoints when the cards already carry categories', async () => {
+      // The index costs one request per category. It must cost nothing on the
+      // day WeMAD populate the per-card field.
+      const listGiftCards = jest.fn().mockResolvedValue([]);
+      const { service } = createService({ api: { listGiftCards } });
+
+      await service.getCatalogue({});
+
+      expect(listGiftCards).not.toHaveBeenCalled();
     });
 
     it('filters by category and search without re-fetching', async () => {
@@ -1211,7 +1280,7 @@ describe('PerksService (corp)', () => {
     it('maps and paginates the upstream order list', async () => {
       const { service } = createService({
         api: {
-          listOrders: jest.fn().mockResolvedValue([
+          listOrdersPage: jest.fn().mockResolvedValue(ordersPageOf([
             {
               id: 1,
               order_number: '0001',
@@ -1221,7 +1290,7 @@ describe('PerksService (corp)', () => {
               grand_total: '46.00',
               order_item: [],
             },
-          ]),
+          ])),
         },
       });
 
@@ -1236,7 +1305,7 @@ describe('PerksService (corp)', () => {
       // rendered as "Gift card" with no image.
       const { service } = createService({
         api: {
-          listOrders: jest.fn().mockResolvedValue([
+          listOrdersPage: jest.fn().mockResolvedValue(ordersPageOf([
             {
               id: 1,
               order_number: '0001',
@@ -1245,7 +1314,7 @@ describe('PerksService (corp)', () => {
                 { id: 9, gift_card_id: '1', amount: '50.00', status: 'processing' },
               ],
             },
-          ]),
+          ])),
         },
       });
 
@@ -1259,13 +1328,13 @@ describe('PerksService (corp)', () => {
     it('still lists the order when a card cannot be resolved', async () => {
       const { service } = createService({
         api: {
-          listOrders: jest.fn().mockResolvedValue([
+          listOrdersPage: jest.fn().mockResolvedValue(ordersPageOf([
             {
               id: 1,
               order_number: '0001',
               order_item: [{ id: 9, gift_card_id: '999', amount: '50.00' }],
             },
-          ]),
+          ])),
           getGiftCard: jest.fn().mockRejectedValue(new Error('not found')),
         },
       });
@@ -1274,16 +1343,78 @@ describe('PerksService (corp)', () => {
       expect(result.items[0].lines[0].ecardName).toBe('Gift card');
     });
 
+    it('stops fetching once the requested window is full', async () => {
+      // The complaint that started this: we walked every upstream page and then
+      // sliced, so a member with hundreds of orders triggered up to twenty
+      // sequential requests to WeMAD on every open.
+      const page = (ids: number[], lastPage: number) => ({
+        rows: ids.map((id) => ({
+          id,
+          order_number: `000${id}`,
+          status: 'processing',
+          order_item: [],
+        })),
+        perPage: 2,
+        currentPage: 1,
+        lastPage,
+        total: 20,
+        summary: {
+          totalOrders: 20,
+          totalAmount: 100,
+          pendingOrders: 1,
+          completedOrders: 9,
+        },
+      });
+
+      const listOrdersPage = jest
+        .fn()
+        .mockImplementation(async (_token: string, p: number) =>
+          page([p * 2 - 1, p * 2], 10),
+        );
+      const { service } = createService({ api: { listOrdersPage } });
+
+      const result = await service.listOrders(userId, { limit: 2, offset: 0 });
+
+      expect(result.items).toHaveLength(2);
+      // Two rows per page, two wanted: one request, not ten.
+      expect(listOrdersPage).toHaveBeenCalledTimes(1);
+      expect(result.hasMore).toBe(true);
+      expect(result.summary).toMatchObject({ totalOrders: 20 });
+    });
+
+    it('hides awaiting-payment orders but still reports what remains', async () => {
+      const { service } = createService({
+        api: {
+          listOrdersPage: jest.fn().mockResolvedValue(
+            ordersPageOf([
+              { id: 1, order_number: '0001', status: 'processing', order_item: [] },
+              {
+                id: 2,
+                order_number: '0002',
+                status: 'awaiting_payment',
+                payment_status: 'unpaid',
+                order_item: [],
+              },
+            ]),
+          ),
+        },
+      });
+
+      const result = await service.listOrders(userId, { limit: 20, offset: 0 });
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0].orderNumber).toBe('0001');
+    });
+
     it('finds a single order by number or reference', async () => {
       const orders = {
-        listOrders: jest.fn().mockResolvedValue([
+        listOrdersPage: jest.fn().mockResolvedValue(ordersPageOf([
           {
             id: 1,
             order_number: '0001',
             order_reference: 'REF-1',
             order_item: [],
           },
-        ]),
+        ])),
       };
       const { service } = createService({ api: orders });
 
@@ -1300,7 +1431,7 @@ describe('PerksService (corp)', () => {
   });
 
   describe('expired upstream token', () => {
-    const expiredThenOk = (method: 'listOrders' | 'listMyGiftCards', ok: unknown) => {
+    const expiredThenOk = (method: 'listOrdersPage' | 'listMyGiftCards', ok: unknown) => {
       let calls = 0;
       return jest.fn(async () => {
         calls += 1;
@@ -1330,18 +1461,18 @@ describe('PerksService (corp)', () => {
     });
 
     it('refreshes the token and retries orders', async () => {
-      const listOrders = expiredThenOk('listOrders', { orders: { data: [] } });
+      const listOrdersPage = expiredThenOk('listOrdersPage', ordersPageOf([]));
       const { service } = createService({
-        api: { listOrders },
+        api: { listOrdersPage },
         session: retryingSession(),
       });
 
       await expect(
         service.listOrders(userId, { limit: 20, offset: 0 } as never),
       ).resolves.toMatchObject({ total: 0 });
-      expect(listOrders).toHaveBeenCalledTimes(2);
-      expect(listOrders).toHaveBeenNthCalledWith(1, 'stale-token');
-      expect(listOrders).toHaveBeenNthCalledWith(2, 'fresh-token');
+      expect(listOrdersPage).toHaveBeenCalledTimes(2);
+      expect(listOrdersPage).toHaveBeenNthCalledWith(1, 'stale-token', 1);
+      expect(listOrdersPage).toHaveBeenNthCalledWith(2, 'fresh-token', 1);
     });
 
     it('refreshes the token and retries the wallet', async () => {
@@ -1360,7 +1491,7 @@ describe('PerksService (corp)', () => {
         throw new PerksCorpApiError('Unauthenticated', 401, 'INVALID_TOKEN', false, false);
       });
       const { service } = createService({
-        api: { listOrders: alwaysExpired },
+        api: { listOrdersPage: alwaysExpired },
         session: retryingSession(),
       });
 
@@ -1576,14 +1707,14 @@ describe('PerksService (corp)', () => {
     it('returns the invoice link as soon as the order carries one', async () => {
       const { service } = createService({
         api: {
-          listOrders: jest.fn().mockResolvedValue([
+          listOrdersPage: jest.fn().mockResolvedValue(ordersPageOf([
             {
               id: 1,
               order_number: '0001',
               invoice_url: 'https://sandbox.wemad.com.au/invoice/1.pdf',
               order_item: [],
             },
-          ]),
+          ])),
         },
       });
       await expect(service.getTaxReceipt(userId, '0001')).resolves.toMatchObject({

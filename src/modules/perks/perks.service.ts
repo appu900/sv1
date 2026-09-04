@@ -58,6 +58,7 @@ import {
 } from './corp/perks-corp-api.client';
 import { PerksBillingService } from './billing/perks-billing.service';
 import { PerksCorpSessionService } from './corp/perks-corp-session.service';
+import type { PerksOrdersPage } from './corp/perks-corp-api.client';
 import {
   CatalogueCard,
   buildCategoryParentIndex,
@@ -87,6 +88,24 @@ import {
 export type { CatalogueCard } from './corp/perks-corp.mapper';
 
 const CATALOGUE_CACHE_VERSION = 'v6';
+
+/**
+ * Safety stop when walking order history. WeMAD page ten orders at a time, so
+ * this is 200 orders — far past what any window asks for, and it only exists so
+ * a broken `last_page` cannot spin us forever.
+ */
+const ORDER_PAGE_CAP = 20;
+
+/** How many category listings to request at once when inverting their tree. */
+const CATEGORY_INDEX_BATCH = 6;
+
+/** A card's place in WeMAD's category tree, as stored in the inverted index. */
+type CardCategory = {
+  category: string;
+  categoryName: string;
+  categoryGroup: string;
+  categoryGroupName: string;
+};
 
 export const PERKS_CATEGORIES = [
   { key: 'groceries', name: 'Groceries', discountBps: 450 },
@@ -853,27 +872,56 @@ export class PerksService {
   }
 
 
+  /**
+   * A page of order history.
+   *
+   * We used to walk every upstream page (up to twenty sequential requests to
+   * WeMAD) and then slice, which is what made a long history slow to open.
+   * WeMAD confirmed the envelope carries `total` and `per_page` on 2026-09-04,
+   * so we now pull only the pages the window needs.
+   *
+   * Pages are still walked from the first one rather than jumped to, because
+   * hidden orders mean upstream offsets and ours do not line up. Order history
+   * is read from the top, so in practice this is two or three requests.
+   */
   async listOrders(userId: string, query: PerksOrderListQueryDto) {
-    const orders = await this.fetchOrders(userId);
     const offset = query.offset ?? 0;
     const limit = query.limit ?? 20;
+
+    const { rows, total, summary, exhausted } = await this.collectVisibleOrders(
+      userId,
+      (visible) => visible.length >= offset + limit,
+    );
+
+    const window = rows.slice(offset, offset + limit);
     return {
-      items: orders.slice(offset, offset + limit),
-      total: orders.length,
+      items: await this.mapOrderRows(window),
+      // Their count includes the awaiting-payment orders we hide, so it can
+      // overstate. `hasMore` is the honest signal for the app to page on.
+      total,
       limit,
       offset,
+      hasMore: rows.length > offset + limit || !exhausted,
+      summary,
     };
   }
 
 
   async getOrder(userId: string, orderNumber: string) {
-    const orders = await this.fetchOrders(userId);
-    const order = orders.find(
-      (candidate) =>
-        candidate.orderNumber === orderNumber ||
-        candidate.orderReference === orderNumber,
+    const matches = (order: Record<string, unknown>) =>
+      str(order.order_number) === orderNumber ||
+      str(order.order_reference) === orderNumber ||
+      str(order.id) === orderNumber;
+
+    // Stop at the page the order is on rather than reading the whole history.
+    const { rows } = await this.collectVisibleOrders(userId, (visible) =>
+      visible.some(matches),
     );
-    if (!order) throw new NotFoundException('Perks order not found');
+
+    const found = rows.find(matches);
+    if (!found) throw new NotFoundException('Perks order not found');
+
+    const [order] = await this.mapOrderRows([found]);
     return { ...order, upstream: { cardUrl: order.cardUrl } };
   }
 
@@ -905,36 +953,96 @@ export class PerksService {
     }
   }
 
-  private async fetchOrders(userId: string) {
+  /**
+   * Walk `/orders` a page at a time, stopping as soon as `enough` is satisfied.
+   *
+   * Returns the rows that survive `isOrderVisible` in upstream order, plus
+   * WeMAD's own totals. `exhausted` says whether we reached the end of their
+   * pages, which is the only reliable way to know there is nothing more to load
+   * — their `total` counts orders we deliberately hide.
+   */
+  private async collectVisibleOrders(
+    userId: string,
+    enough: (visible: Record<string, unknown>[]) => boolean,
+  ) {
     const { user, membership } = await this.requireActiveMembership(userId);
-    const payload = await this.callUpstream(() =>
-      this.session.withAccessToken(
-        userId,
-        user,
-        (token) => this.api.listOrders(token),
-        { credentialVersion: membership.credentialVersion ?? 1 },
-      ),
-    );
 
-    // Drop orders that never completed payment. WeMAD return them alongside
-    // real ones and asked (2026-09-03) for them not to be shown. `isOrderVisible`
-    // keeps anything that was actually paid for, however it is progressing.
-    const list = (Array.isArray(payload) ? payload : []).filter((order) =>
-      isOrderVisible(order as Record<string, unknown>),
-    );
-    if (!list.length) return [];
-    // Only the cards these orders actually reference.
+    const visible: Record<string, unknown>[] = [];
+    let total = 0;
+    let summary: PerksOrdersPage['summary'] = {
+      totalOrders: null,
+      totalAmount: null,
+      pendingOrders: null,
+      completedOrders: null,
+    };
+    let lastPage = 1;
+    let page = 1;
+    let exhausted = false;
+
+    while (page <= Math.min(lastPage, ORDER_PAGE_CAP)) {
+      const result = await this.callUpstream(() =>
+        this.session.withAccessToken(
+          userId,
+          user,
+          (token) => this.api.listOrdersPage(token, page),
+          { credentialVersion: membership.credentialVersion ?? 1 },
+        ),
+      );
+
+      if (page === 1) {
+        total = result.total;
+        summary = result.summary;
+        lastPage = result.lastPage || 1;
+      }
+
+      // Drop orders that never took payment. WeMAD return them alongside real
+      // ones and asked (2026-09-03) for them not to be shown.
+      visible.push(...result.rows.filter(isOrderVisible));
+
+      if (!result.rows.length || page >= lastPage) {
+        exhausted = true;
+        break;
+      }
+      if (enough(visible)) break;
+      page += 1;
+    }
+
+    if (!exhausted && page > ORDER_PAGE_CAP) {
+      this.logger.warn(
+        `Perks order history hit the ${ORDER_PAGE_CAP}-page cap for user ${userId}`,
+      );
+    }
+
+    return { rows: visible, total, summary, exhausted };
+  }
+
+  /**
+   * Every visible order, for the dashboard's lifetime savings total.
+   *
+   * Order history itself is paged now; this stays a full walk because the
+   * savings figure is a sum over all of them. It is capped by `ORDER_PAGE_CAP`
+   * and only runs for the dashboard, not on every list open.
+   */
+  private async fetchAllOrders(userId: string) {
+    const { rows } = await this.collectVisibleOrders(userId, () => false);
+    return this.mapOrderRows(rows);
+  }
+
+  /** Resolve artwork and names for just these orders, then map them. */
+  private async mapOrderRows(rows: Record<string, unknown>[]) {
+    if (!rows.length) return [];
+
     const cards = await this.cardLookup(
-      list.flatMap((order) =>
+      rows.flatMap((order) =>
         (Array.isArray((order as { order_item?: unknown[] }).order_item)
-          ? ((order as { order_item: Record<string, unknown>[] }).order_item)
+          ? (order as { order_item: Record<string, unknown>[] }).order_item
           : []
         ).map((item) => str(item.gift_card_id)),
       ),
       'orders',
     );
 
-    return list.map((order) => mapOrder(order as Record<string, unknown>, cards));
+    return rows.map((order) => mapOrder(order, cards));
   }
 
 
@@ -1172,10 +1280,10 @@ export class PerksService {
  
     // Orders live upstream now; the dashboard must still render if WeMAD is
     // slow or down, so a failure here degrades to empty totals.
-    let allOrders: Awaited<ReturnType<PerksService['fetchOrders']>> = [];
+    let allOrders: Awaited<ReturnType<PerksService['fetchAllOrders']>> = [];
     if (activeMember) {
       try {
-        allOrders = await this.fetchOrders(userId);
+        allOrders = await this.fetchAllOrders(userId);
       } catch (error) {
         this.logger.warn(
           `Perks dashboard could not load orders: ${(error as Error).message}`,
@@ -1277,13 +1385,22 @@ export class PerksService {
   }
 
   private summariseSavings(
-    orders: Awaited<ReturnType<PerksService['fetchOrders']>>,
+    orders: Awaited<ReturnType<PerksService['fetchAllOrders']>>,
   ) {
     let giftCardSavingsCents = 0;
     let cashbackBalanceCents = 0;
 
     for (const order of orders) {
-      if (order.status === 'refunded' || order.status === 'failed') continue;
+      // No card was delivered, so none of these count as a saving. `cancelled`
+      // joins the list under WeMAD's enum (2026-09-04): the order was cancelled
+      // and, unlike `refunded`, the member's money was not returned.
+      if (
+        order.status === 'refunded' ||
+        order.status === 'failed' ||
+        order.status === 'cancelled'
+      ) {
+        continue;
+      }
       const faceCents = Math.round((order.totals.faceValue ?? 0) * 100);
       const paidCents = Math.round((order.totals.purchasePrice ?? 0) * 100);
       giftCardSavingsCents += Math.max(0, faceCents - paidCents);
@@ -1375,6 +1492,98 @@ export class PerksService {
     );
   }
 
+  /**
+   * Category membership changes almost never, and rebuilding the index costs
+   * one request per category, so it is cached far longer than prices.
+   */
+  private categoryIndexTtl() {
+    return this.positiveConfigNumber(
+      'PERKS_CATEGORY_INDEX_TTL_SECONDS',
+      6 * 60 * 60,
+    );
+  }
+
+  /**
+   * card id → the category WeMAD file it under.
+   *
+   * Their catalogue returns an empty `categories` array against every card on
+   * production, which is why we ended up guessing categories from retailer
+   * names. WeMAD's answer on 2026-09-04 was that the data "is available in the
+   * API" — and it is, just in the other direction: you cannot ask a card for
+   * its categories, but you can ask a category for its cards.
+   *
+   * So we walk the tree once and invert it. If they populate the per-card field
+   * later this index simply stops being consulted, because `mapCatalogueCard`
+   * is tried first.
+   */
+  private async getCardCategoryIndex(): Promise<Map<string, CardCategory>> {
+    const cacheKey = `perks:corp:cardcats:${CATALOGUE_CACHE_VERSION}`;
+    const cached = await cacheAttempt(() =>
+      this.redis.get<[string, CardCategory][]>(cacheKey),
+    );
+    if (cached) return new Map(cached);
+
+    const tree = await this.getCategories();
+    const leaves = tree.flatMap((group) =>
+      group.children.map((child) => ({
+        id: child.id,
+        slug: child.slug,
+        name: child.name,
+        groupSlug: group.slug,
+        groupName: group.name,
+      })),
+    );
+
+    const index = new Map<string, CardCategory>();
+
+    // Batched so one slow category cannot stall the rest, and so we never open
+    // 30-odd connections to them at once.
+    for (let i = 0; i < leaves.length; i += CATEGORY_INDEX_BATCH) {
+      const batch = leaves.slice(i, i + CATEGORY_INDEX_BATCH);
+      const results = await Promise.all(
+        batch.map(async (leaf) => {
+          try {
+            return await this.api.listGiftCards({
+              category: leaf.id,
+              paginate: 100,
+            });
+          } catch (error) {
+            // One unreadable category must not cost us the whole index.
+            this.logger.warn(
+              `Perks category ${leaf.slug} could not be listed: ${
+                (error as Error).message
+              }`,
+            );
+            return [];
+          }
+        }),
+      );
+
+      results.forEach((rows, offset) => {
+        const leaf = batch[offset];
+        for (const row of rows) {
+          const id = str((row as { id?: unknown }).id);
+          // First category wins, so a card in several keeps a stable home.
+          if (id && !index.has(id)) {
+            index.set(id, {
+              category: leaf.slug,
+              categoryName: leaf.name,
+              categoryGroup: leaf.groupSlug,
+              categoryGroupName: leaf.groupName,
+            });
+          }
+        }
+      });
+    }
+
+    if (index.size) {
+      await cacheAttempt(() =>
+        this.redis.set(cacheKey, [...index], this.categoryIndexTtl()),
+      );
+    }
+    return index;
+  }
+
   private catalogueTtl() {
     return this.positiveConfigNumber('PERKS_CATALOGUE_CACHE_TTL_SECONDS', 300);
   }
@@ -1461,8 +1670,51 @@ export class PerksService {
       .map((card) => mapCatalogueCard(card, parentIndex))
       .filter((card) => Boolean(card.id && card.name));
 
+    await this.backfillCategories(cards);
+
     await cacheAttempt(() => this.redis.set(cacheKey, cards, this.catalogueTtl()));
     return cards;
+  }
+
+  /**
+   * Fill in categories for cards WeMAD returned without any.
+   *
+   * Only runs when their per-card data is actually missing, so the day they fix
+   * it this costs nothing. Failure is survivable: the app still has its
+   * retailer-name fallback for anything left uncategorised.
+   */
+  private async backfillCategories(cards: CatalogueCard[]) {
+    const missing = cards.filter((card) => !card.category);
+    if (!missing.length) return;
+
+    this.logger.log(
+      `Perks catalogue: ${missing.length}/${cards.length} cards arrived with no category; building the index from WeMAD's category endpoints`,
+    );
+
+    let index: Map<string, CardCategory>;
+    try {
+      index = await this.getCardCategoryIndex();
+    } catch (error) {
+      this.logger.warn(
+        `Perks category index could not be built: ${(error as Error).message}`,
+      );
+      return;
+    }
+
+    let filled = 0;
+    for (const card of missing) {
+      const found = index.get(String(card.id));
+      if (!found) continue;
+      card.category = found.category;
+      card.categoryName = found.categoryName;
+      card.categoryGroup = found.categoryGroup;
+      card.categoryGroupName = found.categoryGroupName;
+      filled += 1;
+    }
+
+    this.logger.log(
+      `Perks catalogue: recovered a category for ${filled}/${missing.length} cards`,
+    );
   }
 
   private positiveConfigNumber(key: string, fallback: number): number {
