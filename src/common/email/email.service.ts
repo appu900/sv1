@@ -7,6 +7,7 @@ import {
   passwordResetTemplate,
   accountDeletionTemplate,
 } from './email-templates';
+import { EmailJobData, EmailJobType } from './email.constants';
 
 @Injectable()
 export class EmailService implements OnModuleInit {
@@ -38,14 +39,61 @@ export class EmailService implements OnModuleInit {
   }
 
   async onModuleInit() {
+    // Nodemailer accepts an undefined host/user without complaint and only
+    // fails per-send, which reads as "email silently stopped working". Name the
+    // missing variables up front instead.
+    const missing = ['SMTP_HOST', 'SMTP_USER', 'SMTP_PASS'].filter(
+      (key) => !this.configService.get<string>(key),
+    );
+    if (missing.length) {
+      this.logger.error(
+        `Email is NOT configured — missing ${missing.join(', ')}. ` +
+          'Every send will fail until these are set in this environment.',
+      );
+      return;
+    }
+
     try {
       await this.transporter.verify();
-      this.logger.log('SMTP server is ready to send emails');
+      this.logger.log(
+        `SMTP server is ready to send emails (from: ${this.fromEmail})`,
+      );
     } catch (error) {
       this.logger.error('SMTP verification failed', error);
     }
   }
 
+
+  /**
+   * Single dispatch point for a queued email payload.
+   *
+   * Both the BullMQ worker and the inline fallback in EmailQueueService route
+   * through here, so the two delivery paths can never drift apart.
+   */
+  async send(data: EmailJobData): Promise<void> {
+    switch (data.type) {
+      case EmailJobType.OTP:
+        return this.sendOTPEmail(data.email, data.otpCode, data.expiryMinutes);
+
+      case EmailJobType.WELCOME:
+        return this.sendWelcomeEmail(data.email, data.userName);
+
+      case EmailJobType.PASSWORD_RESET:
+        return this.sendPasswordResetOTPEmail(
+          data.email,
+          data.otpCode,
+          data.expiryMinutes,
+        );
+
+      case EmailJobType.ACCOUNT_DELETION:
+        return this.sendAccountDeletionEmail(data.email, data.userName);
+
+      default:
+        this.logger.error(
+          `Unknown email job type: ${(data as EmailJobData).type}`,
+        );
+    }
+  }
 
   async sendOTPEmail(
     email: string,

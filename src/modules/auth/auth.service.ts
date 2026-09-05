@@ -110,13 +110,12 @@ export class AuthService {
     }
 
     const otp = this.generateOTP();
-    const otpExpiry = 10; 
-    this.logger.log(`Generated OTP: ${otp} (expires in ${otpExpiry} min)`);
+    const otpExpiry = 10;
+    this.logger.log(
+      `Generated OTP for ${dto.email} (expires in ${otpExpiry} min)`,
+    );
 
-    this.logger.log('Storing OTP in Redis...');
-    await this.redis.setOTP(dto.email, otp, otpExpiry * 60);
-
-    this.logger.log('Storing pending signup data...');
+    this.logger.log('Preparing pending signup data...');
     const pendingData = {
       email: dto.email,
       name: dto.name,
@@ -133,10 +132,26 @@ export class AuthService {
       noOfChildren: dto.noOfChildren,
       tastePreference: dto.tastePreference,
     };
-    await this.redis.setPendingSignup(dto.email, pendingData, 15 * 60); 
+    // Deliver before storing: when the send is rate-limited we must leave any
+    // previously issued code and its pending signup intact, otherwise the code
+    // already sitting in the user's inbox is invalidated and no replacement
+    // ever arrives.
+    this.logger.log('Sending OTP email...');
+    const otpSent = await this.emailQueue.queueOTPEmail(
+      dto.email,
+      otp,
+      otpExpiry,
+    );
+    if (!otpSent) {
+      this.logger.warn(`OTP email rate-limited for ${dto.email}`);
+      throw new BadRequestException(
+        'A code was sent moments ago. Please check your inbox, or wait a minute before requesting another.',
+      );
+    }
 
-    this.logger.log('Queuing OTP email...');
-    await this.emailQueue.queueOTPEmail(dto.email, otp, otpExpiry);
+    this.logger.log('Storing OTP and pending signup data...');
+    await this.redis.setOTP(dto.email, otp, otpExpiry * 60);
+    await this.redis.setPendingSignup(dto.email, pendingData, 15 * 60);
 
     this.logger.log('=== REQUEST OTP END ===');
     return {
@@ -445,9 +460,24 @@ export class AuthService {
 
     const otp = this.generateOTP();
     const expiryMinutes = 15;
-    await this.redis.set(`auth:reset-otp:${dto.email}`, otp, expiryMinutes * 60);
 
-    await this.emailQueue.queuePasswordResetEmail(dto.email, otp, expiryMinutes);
+    // Deliver before storing: when the send is rate-limited we must leave the
+    // previously issued code intact, otherwise the code already sitting in the
+    // user's inbox is invalidated and no replacement ever arrives — locking
+    // them out for the full expiry window.
+    const resetSent = await this.emailQueue.queuePasswordResetEmail(
+      dto.email,
+      otp,
+      expiryMinutes,
+    );
+    if (!resetSent) {
+      this.logger.warn(`[ForgotPassword] Rate-limited for: ${dto.email}`);
+      throw new BadRequestException(
+        'A reset code was sent moments ago. Please check your inbox, or wait a minute before requesting another.',
+      );
+    }
+
+    await this.redis.set(`auth:reset-otp:${dto.email}`, otp, expiryMinutes * 60);
 
     return { success: true, message: 'If this email is registered, a reset code has been sent.' };
   }
