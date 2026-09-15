@@ -1,15 +1,14 @@
-import { ErrorDocument$ } from '@aws-sdk/client-s3';
 import {
   DeleteMessageCommand,
   Message,
   ReceiveMessageCommand,
   SQSClient,
 } from '@aws-sdk/client-sqs';
-import { Inject, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { WINSTON_MODULE_PROVIDER } from 'nest-winston';
 import { RedisService } from 'src/redis/redis.service';
 import { Logger } from 'winston';
-import { Injectable } from '@nestjs/common';
+import { createSqsClient } from './create-sqs-client';
 
 @Injectable()
 export class CacheInvalidationWorkerService
@@ -28,21 +27,14 @@ export class CacheInvalidationWorkerService
     if (!process.env.SQS_URL) {
       throw new Error('SQS_URL environment variable is required');
     }
-    if (!process.env.AWS_REGION) {
-      throw new Error('AWS_REGION environment variable is required');
-    }
 
     this.queueUrl = process.env.SQS_URL;
-    this.client = new SQSClient({
-      region: process.env.AWS_REGION,
-      maxAttempts: 3,
-    });
+    this.client = createSqsClient(this.queueUrl);
   }
 
   async onModuleInit() {
     this.logger.info('CacheInvalidationWorkerService initializing', {
       queueUrl: this.queueUrl,
-      region: process.env.AWS_REGION,
     });
   }
 

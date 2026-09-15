@@ -1,7 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document, Types } from 'mongoose';
 
-
 export enum NotificationStatus {
   QUEUED = 'queued',
   PROCESSING = 'processing',
@@ -39,7 +38,11 @@ export class Notification {
   @Prop({ type: Object })
   data?: Record<string, string>;
 
-  @Prop({ enum: NotificationChannel, default: NotificationChannel.PUSH, index: true })
+  @Prop({
+    enum: NotificationChannel,
+    default: NotificationChannel.PUSH,
+    index: true,
+  })
   channel?: NotificationChannel;
 
   @Prop()
@@ -88,6 +91,18 @@ export class Notification {
   @Prop({ default: 0 })
   failureCount: number;
 
+  @Prop({ type: Date })
+  enqueuedAt?: Date;
+
+  @Prop()
+  processingJobId?: string;
+
+  @Prop({ type: Date })
+  processingStartedAt?: Date;
+
+  @Prop({ type: [String], default: [] })
+  completedDeliveryKeys: string[];
+
   @Prop({ default: 0 })
   retryCount: number;
 
@@ -118,5 +133,6 @@ export const NotificationSchema = SchemaFactory.createForClass(Notification);
 
 NotificationSchema.index({ status: 1, nextRetryAt: 1 });
 NotificationSchema.index({ status: 1, scheduledAt: 1 });
+NotificationSchema.index({ channel: 1, status: 1, enqueuedAt: 1, createdAt: 1 });
 NotificationSchema.index({ createdAt: -1 });
 NotificationSchema.index({ createdBy: 1, createdAt: -1 });

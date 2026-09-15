@@ -87,5 +87,3 @@ export class RecipeNutrition {
 export type RecipeNutritionDocument = RecipeNutrition & Document;
 export const RecipeNutritionSchema =
   SchemaFactory.createForClass(RecipeNutrition);
-
-RecipeNutritionSchema.index({ recipeId: 1 }, { unique: true });

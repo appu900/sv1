@@ -3,40 +3,45 @@ import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import { WINSTON_MODULE_PROVIDER } from 'nest-winston';
 import { Logger } from 'winston';
 import { CacheInvalidationEvent } from 'src/contracts/cache-invalidation.event';
+import {
+  createSqsClient,
+  regionFromSqsQueueUrl,
+} from './create-sqs-client';
 
 @Injectable()
 export class SqsService implements OnModuleInit {
   private readonly client: SQSClient;
   private readonly queueURL: string;
+  private readonly region: string;
   constructor(
     @Inject(WINSTON_MODULE_PROVIDER) private readonly logger: Logger,
   ) {
-    if (!process.env.AWS_REGION) {
-      throw new Error('AWS_REGION environment variable is required');
-    }
     if (!process.env.SQS_URL) {
       throw new Error('SQS_URL environment variable is required');
     }
     this.queueURL = process.env.SQS_URL;
-    this.client = new SQSClient({
-      region: process.env.AWS_REGION,
-      maxAttempts: 3,
-    });
+    this.region =
+      regionFromSqsQueueUrl(this.queueURL) ?? process.env.AWS_REGION ?? '';
+    if (!this.region) {
+      throw new Error(
+        'Could not resolve SQS region from SQS_URL or AWS_REGION',
+      );
+    }
+    this.client = createSqsClient(this.queueURL);
   }
 
   onModuleInit() {
     this.logger.info('SqsService init', {
-      region: process.env.AWS_REGION,
+      region: this.region,
       queueURL: this.queueURL,
     });
   }
 
-
-  getQueueInfo():{queueURL:string,region:string}{
+  getQueueInfo(): { queueURL: string; region: string } {
     return {
-        queueURL:this.queueURL,
-        region:process.env.AWS_REGION!
-    }
+      queueURL: this.queueURL,
+      region: this.region,
+    };
   }
 
   async publishCacheInvalidation(event: CacheInvalidationEvent): Promise<void> {

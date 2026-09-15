@@ -262,7 +262,6 @@ export class NotificationService {
       status: NotificationStatus.QUEUED,
     });
 
-
     const delayMs = input.scheduledAt
       ? Math.max(0, new Date(input.scheduledAt).getTime() - Date.now())
       : 0;
@@ -279,6 +278,22 @@ export class NotificationService {
         $set: { lastError: `Failed to enqueue: ${message}` },
       });
       throw error;
+    }
+
+    try {
+      await this.notifModel.findByIdAndUpdate(notif._id, {
+        $set: { enqueuedAt: new Date() },
+        $unset: { lastError: 1 },
+      });
+    } catch (error) {
+      this.logger.warn(
+        'Notification enqueued but enqueuedAt was not recorded',
+        {
+          service: 'NotificationService',
+          notificationId: String(notif._id),
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
     }
 
     this.logger.info('Notification queued to BullMQ', {
@@ -329,19 +344,26 @@ export class NotificationService {
       throw new NotFoundException('Notification not found');
     }
 
+    if (notif.status !== NotificationStatus.QUEUED) {
+      throw new ConflictException(
+        `Notification is already ${notif.status}; create a new notification instead`,
+      );
+    }
+
     const delayMs = notif.scheduledAt
       ? Math.max(0, new Date(notif.scheduledAt).getTime() - Date.now())
       : 0;
-
-    await this.notifModel.findByIdAndUpdate(id, {
-      $set: { status: NotificationStatus.QUEUED },
-    });
 
     await this.producer.enqueueNotification(
       id,
       notif.priority || 'normal',
       delayMs > 0 ? delayMs : undefined,
     );
+
+    await this.notifModel.findByIdAndUpdate(id, {
+      $set: { enqueuedAt: new Date() },
+      $unset: { lastError: 1 },
+    });
 
     this.logger.info('Existing notification dispatched to BullMQ', {
       service: 'NotificationService',
@@ -365,8 +387,10 @@ export class NotificationService {
     const recentEnough = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const orphans = await this.notifModel
       .find({
+        channel: { $in: [NotificationChannel.PUSH, null] },
         status: NotificationStatus.QUEUED,
         createdAt: { $lte: cutoff, $gte: recentEnough },
+        enqueuedAt: { $exists: false },
         $or: [
           { scheduledAt: { $exists: false } },
           { scheduledAt: null },
@@ -384,6 +408,10 @@ export class NotificationService {
           String(orphan._id),
           (orphan.priority || 'normal') as 'high' | 'normal' | 'low',
         );
+        await this.notifModel.findByIdAndUpdate(orphan._id, {
+          $set: { enqueuedAt: new Date() },
+          $unset: { lastError: 1 },
+        });
         requeued++;
       } catch (error) {
         this.logger.error('Failed to requeue orphaned notification', {
@@ -402,6 +430,106 @@ export class NotificationService {
     }
 
     return requeued;
+  }
+
+  async repairImpossibleCounters(limit = 1000): Promise<number> {
+    const rows = await this.notifModel
+      .find({
+        channel: { $in: [NotificationChannel.PUSH, null] },
+        totalTargets: { $gt: 0 },
+        status: {
+          $in: [
+            NotificationStatus.SENT,
+            NotificationStatus.PARTIALLY_SENT,
+            NotificationStatus.FAILED,
+          ],
+        },
+        $expr: {
+          $or: [
+            { $gt: ['$successCount', '$totalTargets'] },
+            {
+              $gt: [
+                { $add: ['$successCount', '$failureCount'] },
+                '$totalTargets',
+              ],
+            },
+          ],
+        },
+      })
+      .select('_id totalTargets successCount failureCount')
+      .limit(limit)
+      .lean();
+
+    let repaired = 0;
+    for (const row of rows) {
+      const total = Math.max(0, Number(row.totalTargets) || 0);
+      const success = Math.min(
+        total,
+        Math.max(0, Number(row.successCount) || 0),
+      );
+      const failure = Math.min(
+        total - success,
+        Math.max(0, Number(row.failureCount) || 0),
+      );
+
+      const result = await this.notifModel.updateOne(
+        { _id: row._id },
+        { $set: { successCount: success, failureCount: failure } },
+      );
+      repaired += result.modifiedCount;
+    }
+
+    return repaired;
+  }
+
+  /**
+   * Old workers could leave rows in PROCESSING forever when one batch disappeared.
+   * Once no result can reasonably still arrive, close the row with the missing
+   * device outcomes counted as failures.
+   */
+  async finalizeStaleProcessing(limit = 500): Promise<number> {
+    const cutoff = new Date(Date.now() - 30 * 60 * 1000);
+    const rows = await this.notifModel
+      .find({
+        channel: { $in: [NotificationChannel.PUSH, null] },
+        status: NotificationStatus.PROCESSING,
+        totalTargets: { $gt: 0 },
+        createdAt: { $lte: cutoff },
+      })
+      .select('_id totalTargets successCount failureCount')
+      .limit(limit)
+      .lean();
+
+    let finalized = 0;
+    for (const row of rows) {
+      const total = Math.max(0, Number(row.totalTargets) || 0);
+      const success = Math.min(
+        total,
+        Math.max(0, Number(row.successCount) || 0),
+      );
+      const failure = total - success;
+      const status =
+        success === 0
+          ? NotificationStatus.FAILED
+          : failure > 0
+            ? NotificationStatus.PARTIALLY_SENT
+            : NotificationStatus.SENT;
+
+      const result = await this.notifModel.updateOne(
+        { _id: row._id, status: NotificationStatus.PROCESSING },
+        {
+          $set: {
+            successCount: success,
+            failureCount: failure,
+            status,
+            completedAt: new Date(),
+          },
+        },
+      );
+      finalized += result.modifiedCount;
+    }
+
+    return finalized;
   }
 
   async sendToUser(

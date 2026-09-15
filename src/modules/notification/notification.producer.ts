@@ -1,6 +1,7 @@
 import { InjectQueue } from '@nestjs/bullmq';
 import { Inject, Injectable } from '@nestjs/common';
 import { Queue } from 'bullmq';
+import { createHash } from 'crypto';
 import { WINSTON_MODULE_PROVIDER } from 'nest-winston';
 import { Logger } from 'winston';
 import {
@@ -28,6 +29,28 @@ export class NotificationProducer {
     @Inject(WINSTON_MODULE_PROVIDER) private readonly logger: Logger,
   ) {}
 
+  private fanOutJobId(notificationId: string): string {
+    // BullMQ rejects custom IDs containing ":".
+    return `fanout-${notificationId}`;
+  }
+
+  private batchJobId(
+    notificationId: string,
+    tokens: TokenWithType[],
+    retryDepth: number,
+  ): string {
+    const tokenHash = createHash('sha256')
+      .update(
+        tokens
+          .map(({ token }) => token)
+          .sort()
+          .join('\0'),
+      )
+      .digest('hex')
+      .slice(0, 20);
+    return `batch-${notificationId}-${retryDepth}-${tokenHash}`;
+  }
+
   async enqueueNotification(
     notificationId: string,
     priority: 'high' | 'normal' | 'low' = 'normal',
@@ -38,37 +61,26 @@ export class NotificationProducer {
       notificationId,
     };
 
-    try {
-      const job = await this.queue.add('fan-out', jobData, {
-        jobId: `fan-out:${notificationId}`,
-        priority: BULLMQ_PRIORITY[priority],
-        attempts: JOB_ATTEMPTS,
-        backoff: {
-          type: JOB_BACKOFF_TYPE,
-          delay: JOB_BACKOFF_DELAY,
-        },
-        removeOnComplete: JOB_REMOVE_ON_COMPLETE,
-        removeOnFail: JOB_REMOVE_ON_FAIL,
-        ...(delayMs ? { delay: delayMs } : {}),
-      });
+    const job = await this.queue.add('fan-out', jobData, {
+      // Redis atomically ignores another add with the same custom ID.
+      jobId: this.fanOutJobId(notificationId),
+      priority: BULLMQ_PRIORITY[priority],
+      attempts: JOB_ATTEMPTS,
+      backoff: {
+        type: JOB_BACKOFF_TYPE,
+        delay: JOB_BACKOFF_DELAY,
+      },
+      removeOnComplete: JOB_REMOVE_ON_COMPLETE,
+      removeOnFail: JOB_REMOVE_ON_FAIL,
+      ...(delayMs ? { delay: delayMs } : {}),
+    });
 
-      this.logger.info('Notification job enqueued', {
-        service: 'NotificationProducer',
-        jobId: job.id,
-        notificationId,
-        priority,
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (/already exists/i.test(message)) {
-        this.logger.info('Fan-out job already in queue', {
-          service: 'NotificationProducer',
-          notificationId,
-        });
-        return;
-      }
-      throw error;
-    }
+    this.logger.info('Notification job enqueued or already present', {
+      service: 'NotificationProducer',
+      jobId: job.id,
+      notificationId,
+      priority,
+    });
   }
 
   async enqueueBatches(
@@ -78,8 +90,11 @@ export class NotificationProducer {
     retryDepth = 0,
   ): Promise<number> {
     const chunks: TokenWithType[][] = [];
-    for (let i = 0; i < tokens.length; i += FAN_OUT_BATCH_SIZE) {
-      chunks.push(tokens.slice(i, i + FAN_OUT_BATCH_SIZE));
+    const orderedTokens = [...tokens].sort((a, b) =>
+      a.token.localeCompare(b.token),
+    );
+    for (let i = 0; i < orderedTokens.length; i += FAN_OUT_BATCH_SIZE) {
+      chunks.push(orderedTokens.slice(i, i + FAN_OUT_BATCH_SIZE));
     }
 
     const totalBatches = chunks.length;
@@ -95,6 +110,7 @@ export class NotificationProducer {
         retryDepth,
       } satisfies SendBatchJobData,
       opts: {
+        jobId: this.batchJobId(notificationId, tokenChunk, retryDepth),
         priority: BULLMQ_PRIORITY[priority],
         attempts: JOB_ATTEMPTS,
         backoff: {
@@ -153,7 +169,6 @@ export class NotificationProducer {
     }
     return retried;
   }
-
 
   async drain(): Promise<void> {
     await this.queue.drain();

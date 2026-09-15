@@ -3,10 +3,12 @@ import { Inject } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { Job } from 'bullmq';
+import { createHash } from 'crypto';
 import { WINSTON_MODULE_PROVIDER } from 'nest-winston';
 import { Logger } from 'winston';
 import {
   Notification,
+  NotificationChannel,
   NotificationDocument,
   NotificationStatus,
 } from 'src/database/schemas/notification.schema';
@@ -17,6 +19,7 @@ import {
 import { FirebaseGateway } from './firebase.gateway';
 import { ExpoGateway } from './expo.gateway';
 import { NotificationProducer } from './notification.producer';
+import { RedisService } from '../../redis/redis.service';
 import {
   NotificationJobData,
   FanOutJobData,
@@ -31,6 +34,7 @@ import {
   TOKEN_FAILURE_THRESHOLD,
   FAN_OUT_BATCH_SIZE,
   MAX_BATCH_REQUEUE_DEPTH,
+  DELIVERY_LOCK_TTL_SECONDS,
 } from './constants';
 
 @Processor(NOTIFICATION_QUEUE_NAME, {
@@ -45,6 +49,7 @@ export class NotificationWorker extends WorkerHost {
     private readonly firebase: FirebaseGateway,
     private readonly expo: ExpoGateway,
     private readonly producer: NotificationProducer,
+    private readonly redis: RedisService,
     @Inject(WINSTON_MODULE_PROVIDER) private readonly logger: Logger,
   ) {
     super();
@@ -84,10 +89,7 @@ export class NotificationWorker extends WorkerHost {
   }
 
   @OnWorkerEvent('failed')
-  async onFailed(
-    job: Job<NotificationJobData> | undefined,
-    error: Error,
-  ) {
+  async onFailed(job: Job<NotificationJobData> | undefined, error: Error) {
     if (!job) return;
 
     this.logger.error('Job failed', {
@@ -102,43 +104,122 @@ export class NotificationWorker extends WorkerHost {
 
     if (job.attemptsMade >= (job.opts.attempts ?? 3)) {
       try {
-        await this.notifModel.findByIdAndUpdate(job.data.notificationId, {
-          $set: {
-            status: NotificationStatus.FAILED,
-            lastError: `Job permanently failed after ${job.attemptsMade} attempts: ${error.message}`,
-            completedAt: new Date(),
-          },
-        });
-        this.logger.warn('Notification marked as FAILED after max retries', {
-          service: 'NotificationWorker',
-          notificationId: job.data.notificationId,
-          attempts: job.attemptsMade,
-        });
+        const lastError = `Job permanently failed after ${job.attemptsMade} attempts: ${error.message}`;
+
+        if (job.data.type === 'fan-out') {
+          const failed = await this.notifModel.findOneAndUpdate(
+            {
+              _id: job.data.notificationId,
+              channel: { $in: [NotificationChannel.PUSH, null] },
+              $or: [
+                { status: NotificationStatus.QUEUED },
+                {
+                  status: NotificationStatus.PROCESSING,
+                  processingJobId: String(job.id),
+                },
+              ],
+            },
+            {
+              $set: {
+                status: NotificationStatus.FAILED,
+                lastError,
+                completedAt: new Date(),
+              },
+            },
+          );
+          if (failed) {
+            this.logger.warn(
+              'Notification marked as FAILED after max retries',
+              {
+                service: 'NotificationWorker',
+                notificationId: job.data.notificationId,
+                attempts: job.attemptsMade,
+              },
+            );
+          }
+        } else {
+          const tokens = this.dedupeTokens(job.data.tokens);
+          const deliveryKey = this.deliveryKey(
+            tokens,
+            job.data.retryDepth ?? 0,
+          );
+          const tokenValues = tokens.map(({ token }) => token);
+          await this.notifModel.findOneAndUpdate(
+            {
+              _id: job.data.notificationId,
+              channel: { $in: [NotificationChannel.PUSH, null] },
+              status: NotificationStatus.PROCESSING,
+              completedDeliveryKeys: { $ne: deliveryKey },
+            },
+            {
+              $inc: { failureCount: tokenValues.length },
+              $addToSet: {
+                completedDeliveryKeys: deliveryKey,
+                failedTokens: { $each: tokenValues },
+              },
+              $set: { lastError },
+            },
+          );
+          await this.finalizeIfComplete(job.data.notificationId);
+        }
       } catch (dbErr) {
-        this.logger.error('Failed to update notification status on final failure', {
-          service: 'NotificationWorker',
-          error: dbErr instanceof Error ? dbErr.message : String(dbErr),
-        });
+        this.logger.error(
+          'Failed to update notification status on final failure',
+          {
+            service: 'NotificationWorker',
+            error: dbErr instanceof Error ? dbErr.message : String(dbErr),
+          },
+        );
       }
     }
   }
 
   private async handleFanOut(job: Job<FanOutJobData>): Promise<void> {
     const { notificationId } = job.data;
+    const jobId = String(job.id);
 
-    const notif = await this.notifModel.findById(notificationId);
+    const notif = await this.notifModel.findOneAndUpdate(
+      {
+        _id: notificationId,
+        channel: { $in: [NotificationChannel.PUSH, null] },
+        $or: [
+          { status: NotificationStatus.QUEUED },
+          {
+            status: NotificationStatus.PROCESSING,
+            processingJobId: jobId,
+          },
+        ],
+      },
+      {
+        $set: {
+          status: NotificationStatus.PROCESSING,
+          processingJobId: jobId,
+          processingStartedAt: new Date(),
+        },
+        $unset: { lastError: 1 },
+      },
+      { new: true },
+    );
+
     if (!notif) {
-      this.logger.error('Notification not found — skipping', {
+      this.logger.info('Fan-out already claimed or completed — skipping', {
         service: 'NotificationWorker',
         notificationId,
+        jobId,
       });
       return;
     }
 
-    notif.status = NotificationStatus.PROCESSING;
-    await notif.save();
+    if (notif.channel && notif.channel !== NotificationChannel.PUSH) {
+      this.logger.warn('Non-push notification reached push worker — skipping', {
+        service: 'NotificationWorker',
+        notificationId,
+        channel: notif.channel,
+      });
+      return;
+    }
 
-    const tokens = await this.resolveTokens(notif);
+    const tokens = this.dedupeTokens(await this.resolveTokens(notif));
 
     if (tokens.length === 0) {
       notif.status = NotificationStatus.FAILED;
@@ -152,7 +233,7 @@ export class NotificationWorker extends WorkerHost {
     await notif.save();
 
     if (tokens.length <= FAN_OUT_BATCH_SIZE) {
-      await this.sendTokens(notif, tokens);
+      await this.sendTokens(notif, tokens, 0, jobId);
       return;
     }
 
@@ -171,7 +252,6 @@ export class NotificationWorker extends WorkerHost {
     });
   }
 
-
   private async handleSendBatch(job: Job<SendBatchJobData>): Promise<void> {
     const { notificationId, tokens, batchIndex, retryDepth } = job.data;
 
@@ -185,13 +265,33 @@ export class NotificationWorker extends WorkerHost {
       return;
     }
 
-    await this.sendTokens(notif, tokens, retryDepth ?? 0);
+    if (notif.channel && notif.channel !== NotificationChannel.PUSH) {
+      this.logger.warn('Non-push notification reached push worker — skipping', {
+        service: 'NotificationWorker',
+        notificationId,
+        channel: notif.channel,
+      });
+      return;
+    }
+
+    if (this.isTerminalStatus(notif.status)) {
+      this.logger.info('Notification already complete — skipping batch', {
+        service: 'NotificationWorker',
+        notificationId,
+        batchIndex,
+        status: notif.status,
+      });
+      return;
+    }
+
+    await this.sendTokens(notif, tokens, retryDepth ?? 0, String(job.id));
   }
 
   private async sendTokens(
     notif: NotificationDocument,
     tokens: TokenWithType[],
     retryDepth = 0,
+    jobId: string,
   ): Promise<void> {
     const payload: FirebaseMessagePayload = {
       title: notif.title,
@@ -208,54 +308,147 @@ export class NotificationWorker extends WorkerHost {
     // with the same token twice (a re-queue overlapping the original fan-out). Sending
     // the list as-is would put the same banner on the phone twice.
     const uniqueTokens = this.dedupeTokens(tokens);
+    const deliveryKey = this.deliveryKey(uniqueTokens, retryDepth);
 
-    const expoTokens = uniqueTokens
-      .filter((t) => this.gatewayFor(t) === 'expo')
-      .map((t) => t.token);
-    const fcmTokens = uniqueTokens
-      .filter((t) => this.gatewayFor(t) === 'fcm')
-      .map((t) => t.token);
-    const unsupportedTokens = uniqueTokens.filter(
-      (t) => this.gatewayFor(t) === 'none',
+    if (notif.completedDeliveryKeys?.includes(deliveryKey)) {
+      this.logger.info('Delivery batch already recorded — skipping', {
+        service: 'NotificationWorker',
+        notificationId: String(notif._id),
+        deliveryKey,
+      });
+      return;
+    }
+
+    const lockKey = `lock:notification-delivery:${String(notif._id)}:${deliveryKey}`;
+    const acquired = await this.redis.setIfAbsent(
+      lockKey,
+      jobId,
+      DELIVERY_LOCK_TTL_SECONDS,
     );
-
-    if (unsupportedTokens.length > 0) {
-      // Neither gateway can deliver these. Counting them keeps totalProcessed in step
-      // with totalTargets so the notification can still finalize.
-      this.logger.warn('Skipping tokens with no delivery gateway', {
-        service: 'NotificationWorker',
-        notificationId: String(notif._id),
-        count: unsupportedTokens.length,
-        tokenTypes: [...new Set(unsupportedTokens.map((t) => t.tokenType))],
-      });
+    if (!acquired) {
+      const owner = await this.redis.getRaw(lockKey);
+      if (owner !== jobId) {
+        this.logger.info('Delivery batch owned by another job — skipping', {
+          service: 'NotificationWorker',
+          notificationId: String(notif._id),
+          deliveryKey,
+          jobId,
+        });
+        return;
+      }
     }
 
-    const [expoResult, firebaseResult] = await Promise.all([
-      expoTokens.length > 0
-        ? this.expo.sendToTokens(expoTokens, payload)
-        : Promise.resolve<BatchSendResult>({ successTokens: [], retryableTokens: [], invalidTokens: [] }),
-      fcmTokens.length > 0
-        ? this.firebase.sendToTokens(fcmTokens, payload)
-        : Promise.resolve<BatchSendResult>({ successTokens: [], retryableTokens: [], invalidTokens: [] }),
-    ]);
-
-    const result: BatchSendResult = {
-      successTokens: [...expoResult.successTokens, ...firebaseResult.successTokens],
-      retryableTokens: [...expoResult.retryableTokens, ...firebaseResult.retryableTokens],
-      invalidTokens: [...expoResult.invalidTokens, ...firebaseResult.invalidTokens],
-    };
-
-    // Everything from here on is bookkeeping. The pushes have already left, so an error
-    // must not bubble up: BullMQ would retry the job and deliver the whole batch again.
     try {
-      await this.recordSendResult(notif, result, unsupportedTokens, retryDepth);
-    } catch (error) {
-      this.logger.error('Post-send bookkeeping failed — not retrying the delivery', {
-        service: 'NotificationWorker',
-        notificationId: String(notif._id),
-        error: error instanceof Error ? error.message : String(error),
+      const latest = await this.notifModel.findById(notif._id);
+      if (
+        !latest ||
+        this.isTerminalStatus(latest.status) ||
+        latest.completedDeliveryKeys?.includes(deliveryKey)
+      ) {
+        return;
+      }
+
+      const expoTokens = uniqueTokens
+        .filter((t) => this.gatewayFor(t) === 'expo')
+        .map((t) => t.token);
+      const fcmTokens = uniqueTokens
+        .filter((t) => this.gatewayFor(t) === 'fcm')
+        .map((t) => t.token);
+      const unsupportedTokens = uniqueTokens.filter(
+        (t) => this.gatewayFor(t) === 'none',
+      );
+
+      if (unsupportedTokens.length > 0) {
+        this.logger.warn('Skipping tokens with no delivery gateway', {
+          service: 'NotificationWorker',
+          notificationId: String(notif._id),
+          count: unsupportedTokens.length,
+          tokenTypes: Array.from(
+            new Set(unsupportedTokens.map((t) => t.tokenType)),
+          ),
+        });
+      }
+
+      const [expoResult, firebaseResult] = await Promise.all([
+        expoTokens.length > 0
+          ? this.expo.sendToTokens(expoTokens, payload)
+          : Promise.resolve<BatchSendResult>({
+              successTokens: [],
+              retryableTokens: [],
+              invalidTokens: [],
+            }),
+        fcmTokens.length > 0
+          ? this.firebase.sendToTokens(fcmTokens, payload)
+          : Promise.resolve<BatchSendResult>({
+              successTokens: [],
+              retryableTokens: [],
+              invalidTokens: [],
+            }),
+      ]);
+
+      const result: BatchSendResult = {
+        successTokens: [
+          ...expoResult.successTokens,
+          ...firebaseResult.successTokens,
+        ],
+        retryableTokens: [
+          ...expoResult.retryableTokens,
+          ...firebaseResult.retryableTokens,
+        ],
+        invalidTokens: [
+          ...expoResult.invalidTokens,
+          ...firebaseResult.invalidTokens,
+        ],
+      };
+      try {
+        await this.recordSendResult(
+          latest,
+          result,
+          unsupportedTokens,
+          retryDepth,
+          deliveryKey,
+        );
+      } catch (error) {
+        this.logger.error(
+          'Post-send bookkeeping failed — not retrying the delivery',
+          {
+            service: 'NotificationWorker',
+            notificationId: String(notif._id),
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
+      }
+    } finally {
+      await this.redis.releaseLock(lockKey, jobId).catch((error) => {
+        this.logger.warn('Failed to release notification delivery lock', {
+          service: 'NotificationWorker',
+          notificationId: String(notif._id),
+          deliveryKey,
+          error: error instanceof Error ? error.message : String(error),
+        });
       });
     }
+  }
+
+  private isTerminalStatus(status: NotificationStatus): boolean {
+    return [
+      NotificationStatus.SENT,
+      NotificationStatus.PARTIALLY_SENT,
+      NotificationStatus.FAILED,
+    ].includes(status);
+  }
+
+  private deliveryKey(tokens: TokenWithType[], retryDepth: number): string {
+    const hash = createHash('sha256')
+      .update(
+        tokens
+          .map(({ token }) => token)
+          .sort()
+          .join('\0'),
+      )
+      .digest('hex')
+      .slice(0, 24);
+    return `${retryDepth}-${hash}`;
   }
 
   private gatewayFor(token: TokenWithType): 'expo' | 'fcm' | 'none' {
@@ -270,9 +463,7 @@ export class NotificationWorker extends WorkerHost {
     return 'none';
   }
 
-  private stringifyData(
-    data: Record<string, unknown>,
-  ): Record<string, string> {
+  private stringifyData(data: Record<string, unknown>): Record<string, string> {
     const next: Record<string, string> = {};
     for (const [key, value] of Object.entries(data)) {
       if (value == null) continue;
@@ -295,33 +486,89 @@ export class NotificationWorker extends WorkerHost {
     result: BatchSendResult,
     unsupportedTokens: TokenWithType[],
     retryDepth: number,
+    deliveryKey: string,
   ): Promise<void> {
-    await this.updateTokenHealth(result.successTokens, result.invalidTokens);
+    const successTokens = [...new Set(result.successTokens)];
+    const invalidTokens = [...new Set(result.invalidTokens)];
+    const retryableTokens = [...new Set(result.retryableTokens)];
 
-    if (result.invalidTokens.length > 0) {
+    await this.updateTokenHealth(successTokens, invalidTokens);
+
+    if (invalidTokens.length > 0) {
       await this.tokenModel.updateMany(
-        { token: { $in: result.invalidTokens } },
-        { $set: { isActive: false, deactivationReason: 'unregistered', lastFailureAt: new Date() } },
+        { token: { $in: invalidTokens } },
+        {
+          $set: {
+            isActive: false,
+            deactivationReason: 'unregistered',
+            lastFailureAt: new Date(),
+          },
+        },
       );
     }
 
-    const failedCount =
-      result.invalidTokens.length +
-      result.retryableTokens.length +
-      unsupportedTokens.length;
-
-    await this.notifModel.findOneAndUpdate(
-      { _id: notif._id },
-      { $inc: { successCount: result.successTokens.length, failureCount: failedCount } },
+    const requeuedTokens =
+      retryableTokens.length > 0
+        ? await this.requeueRetryableTokens(notif, retryableTokens, retryDepth)
+        : [];
+    const requeuedSet = new Set(requeuedTokens);
+    const exhaustedTokens = retryableTokens.filter(
+      (token) => !requeuedSet.has(token),
     );
+    const permanentFailedTokens = [
+      ...new Set([
+        ...invalidTokens,
+        ...unsupportedTokens.map(({ token }) => token),
+        ...exhaustedTokens,
+      ]),
+    ];
 
-    if (result.retryableTokens.length > 0) {
-      await this.notifModel.findOneAndUpdate(
-        { _id: notif._id },
-        { $addToSet: { failedTokens: { $each: result.retryableTokens } } },
+    const addToSet: Record<string, unknown> = {
+      completedDeliveryKeys: deliveryKey,
+    };
+    if (permanentFailedTokens.length > 0) {
+      addToSet.failedTokens = { $each: permanentFailedTokens };
+    }
+
+    const update: Record<string, unknown> = {
+      $inc: {
+        successCount: successTokens.length,
+        // A transient result is pending, not a failure. It is counted only if
+        // no retry can be queued or the retry limit is exhausted.
+        failureCount: permanentFailedTokens.length,
+      },
+      $addToSet: addToSet,
+    };
+    if (requeuedTokens.length > 0) {
+      update.$max = { retryCount: retryDepth + 1 };
+    }
+
+    const recorded = await this.notifModel.findOneAndUpdate(
+      {
+        _id: notif._id,
+        status: NotificationStatus.PROCESSING,
+        completedDeliveryKeys: { $ne: deliveryKey },
+      },
+      update,
+      { new: true },
+    );
+    if (!recorded) {
+      this.logger.info(
+        'Delivery result already recorded — ignoring duplicate',
+        {
+          service: 'NotificationWorker',
+          notificationId: String(notif._id),
+          deliveryKey,
+        },
       );
+      return;
+    }
 
-      await this.requeueRetryableTokens(notif, result.retryableTokens, retryDepth);
+    if (successTokens.length > 0) {
+      await this.notifModel.updateOne(
+        { _id: notif._id },
+        { $pull: { failedTokens: { $in: successTokens } } },
+      );
     }
 
     await this.finalizeIfComplete(notif._id);
@@ -336,7 +583,7 @@ export class NotificationWorker extends WorkerHost {
     notif: NotificationDocument,
     retryableTokens: string[],
     retryDepth: number,
-  ): Promise<void> {
+  ): Promise<string[]> {
     const nextDepth = retryDepth + 1;
 
     if (nextDepth > MAX_BATCH_REQUEUE_DEPTH) {
@@ -347,7 +594,7 @@ export class NotificationWorker extends WorkerHost {
         retryDepth,
         maxDepth: MAX_BATCH_REQUEUE_DEPTH,
       });
-      return;
+      return [];
     }
 
     const retryDocs = await this.tokenModel
@@ -355,19 +602,30 @@ export class NotificationWorker extends WorkerHost {
       .select('token tokenType')
       .lean();
 
-    if (retryDocs.length === 0) return;
+    if (retryDocs.length === 0) return [];
 
     const retryTokens: TokenWithType[] = retryDocs.map((d) => ({
       token: d.token,
       tokenType: d.tokenType,
     }));
 
-    await this.producer.enqueueBatches(
-      String(notif._id),
-      retryTokens,
-      'low',
-      nextDepth,
-    );
+    try {
+      await this.producer.enqueueBatches(
+        String(notif._id),
+        retryTokens,
+        'low',
+        nextDepth,
+      );
+    } catch (error) {
+      this.logger.error('Failed to enqueue retryable notification tokens', {
+        service: 'NotificationWorker',
+        notificationId: String(notif._id),
+        retryCount: retryTokens.length,
+        retryDepth: nextDepth,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return [];
+    }
 
     this.logger.info('Retryable tokens requeued', {
       service: 'NotificationWorker',
@@ -375,50 +633,81 @@ export class NotificationWorker extends WorkerHost {
       retryCount: retryTokens.length,
       retryDepth: nextDepth,
     });
+    return retryTokens.map(({ token }) => token);
   }
 
   private async finalizeIfComplete(notificationId: any): Promise<void> {
     const latest = await this.notifModel.findById(notificationId);
     if (!latest) return;
 
-    const totalProcessed = (latest.successCount || 0) + (latest.failureCount || 0);
-    const totalTargets = latest.totalTargets || 0;
+    const totalTargets = Math.max(0, Number(latest.totalTargets) || 0);
+    if (totalTargets === 0) return;
 
-    if (totalProcessed < totalTargets && totalTargets > 0) {      const createdAt = (latest as any).createdAt ?? latest['_id'].getTimestamp();
+    // Clamp legacy/duplicate increments so persisted counts always obey
+    // success + failure <= totalTargets.
+    const successCount = Math.min(
+      totalTargets,
+      Math.max(0, Number(latest.successCount) || 0),
+    );
+    let failureCount = Math.min(
+      totalTargets - successCount,
+      Math.max(0, Number(latest.failureCount) || 0),
+    );
+    const totalProcessed = successCount + failureCount;
+
+    if (totalProcessed < totalTargets) {
+      const createdAt =
+        (latest as any).createdAt ?? latest['_id'].getTimestamp();
       const ageMs = Date.now() - new Date(createdAt).getTime();
       if (ageMs < 30 * 60 * 1000) return;
 
-      this.logger.warn('Notification timed out — finalizing with partial results', {
-        service: 'NotificationWorker',
-        notificationId: String(notificationId),
-        totalProcessed,
-        totalTargets,
-        ageMs,
-      });
+      // No more result can arrive after the timeout. Account for missing tokens
+      // as failures rather than reporting a misleading fully-sent status.
+      failureCount += totalTargets - totalProcessed;
+      this.logger.warn(
+        'Notification timed out — finalizing with partial results',
+        {
+          service: 'NotificationWorker',
+          notificationId: String(notificationId),
+          totalProcessed,
+          totalTargets,
+          ageMs,
+        },
+      );
     }
 
-    if (totalTargets === 0) return;
-
-    if (latest.successCount === 0) {
-      latest.status = NotificationStatus.FAILED;
-    } else if (latest.failureCount > 0) {
-      latest.status = NotificationStatus.PARTIALLY_SENT;
-    } else {
-      latest.status = NotificationStatus.SENT;
-    }
-    latest.completedAt = new Date();
-    await latest.save();
+    const status =
+      successCount === 0
+        ? NotificationStatus.FAILED
+        : failureCount > 0
+          ? NotificationStatus.PARTIALLY_SENT
+          : NotificationStatus.SENT;
+    const finalized = await this.notifModel.findOneAndUpdate(
+      { _id: notificationId, status: NotificationStatus.PROCESSING },
+      {
+        $set: {
+          successCount,
+          failureCount,
+          status,
+          completedAt: new Date(),
+        },
+      },
+      { new: true },
+    );
+    if (!finalized) return;
 
     this.logger.info('Notification fully complete', {
       service: 'NotificationWorker',
       notificationId: String(notificationId),
-      status: latest.status,
-      successCount: latest.successCount,
-      failureCount: latest.failureCount,
+      status,
+      successCount,
+      failureCount,
     });
   }
 
-  private async resolveTokens(notif: NotificationDocument): Promise<TokenWithType[]> {
+  private async resolveTokens(
+    notif: NotificationDocument,
+  ): Promise<TokenWithType[]> {
     const filter: any = { isActive: true };
 
     if (!notif.isBroadcast && notif.targetUserIds?.length > 0) {
@@ -464,8 +753,13 @@ export class NotificationWorker extends WorkerHost {
       );
 
       await this.tokenModel.updateMany(
-        { token: { $in: failedTokens }, failureCount: { $gte: TOKEN_FAILURE_THRESHOLD } },
-        { $set: { isActive: false, deactivationReason: 'consecutive_failures' } },
+        {
+          token: { $in: failedTokens },
+          failureCount: { $gte: TOKEN_FAILURE_THRESHOLD },
+        },
+        {
+          $set: { isActive: false, deactivationReason: 'consecutive_failures' },
+        },
       );
     }
   }
