@@ -29,6 +29,7 @@ import { NotificationProducer } from './notification.producer';
 import {
   BROADCAST_COOLDOWN_SECONDS,
   BROADCAST_RATE_KEY,
+  ORPHAN_MIN_AGE_MS,
 } from './constants';
 
 export interface RegisterTokenInput {
@@ -360,7 +361,7 @@ export class NotificationService {
    * job (Redis blip). Those rows sit in `queued` forever and never reach FCM.
    */
   async requeueOrphaned(limit = 20): Promise<number> {
-    const cutoff = new Date(Date.now() - 60_000);
+    const cutoff = new Date(Date.now() - ORPHAN_MIN_AGE_MS);
     const recentEnough = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const orphans = await this.notifModel
       .find({

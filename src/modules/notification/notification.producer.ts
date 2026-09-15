@@ -38,24 +38,37 @@ export class NotificationProducer {
       notificationId,
     };
 
-    const job = await this.queue.add('fan-out', jobData, {
-      priority: BULLMQ_PRIORITY[priority],
-      attempts: JOB_ATTEMPTS,
-      backoff: {
-        type: JOB_BACKOFF_TYPE,
-        delay: JOB_BACKOFF_DELAY,
-      },
-      removeOnComplete: JOB_REMOVE_ON_COMPLETE,
-      removeOnFail: JOB_REMOVE_ON_FAIL,
-      ...(delayMs ? { delay: delayMs } : {}),
-    });
+    try {
+      const job = await this.queue.add('fan-out', jobData, {
+        jobId: `fan-out:${notificationId}`,
+        priority: BULLMQ_PRIORITY[priority],
+        attempts: JOB_ATTEMPTS,
+        backoff: {
+          type: JOB_BACKOFF_TYPE,
+          delay: JOB_BACKOFF_DELAY,
+        },
+        removeOnComplete: JOB_REMOVE_ON_COMPLETE,
+        removeOnFail: JOB_REMOVE_ON_FAIL,
+        ...(delayMs ? { delay: delayMs } : {}),
+      });
 
-    this.logger.info('Notification job enqueued', {
-      service: 'NotificationProducer',
-      jobId: job.id,
-      notificationId,
-      priority,
-    });
+      this.logger.info('Notification job enqueued', {
+        service: 'NotificationProducer',
+        jobId: job.id,
+        notificationId,
+        priority,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/already exists/i.test(message)) {
+        this.logger.info('Fan-out job already in queue', {
+          service: 'NotificationProducer',
+          notificationId,
+        });
+        return;
+      }
+      throw error;
+    }
   }
 
   async enqueueBatches(

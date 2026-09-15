@@ -7,7 +7,10 @@ export const FAN_OUT_BATCH_SIZE = 1000;
 export const WORKER_CONCURRENCY = 10;
 export const JOB_ATTEMPTS = 3;
 export const JOB_BACKOFF_TYPE = 'exponential' as const;
-export const JOB_BACKOFF_DELAY = 60_000;
+/** First retry after 3s, then 6s. A 60s delay made every startup miss feel like the push was broken. */
+export const JOB_BACKOFF_DELAY = 3_000;
+export const ORPHAN_REQUEUE_INTERVAL_MS = 15_000;
+export const ORPHAN_MIN_AGE_MS = 15_000;
 export const JOB_REMOVE_ON_COMPLETE = 1000;
 export const JOB_REMOVE_ON_FAIL = 5000;
 
