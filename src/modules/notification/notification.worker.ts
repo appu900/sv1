@@ -488,9 +488,9 @@ export class NotificationWorker extends WorkerHost {
     retryDepth: number,
     deliveryKey: string,
   ): Promise<void> {
-    const successTokens = [...new Set(result.successTokens)];
-    const invalidTokens = [...new Set(result.invalidTokens)];
-    const retryableTokens = [...new Set(result.retryableTokens)];
+    const successTokens = Array.from(new Set(result.successTokens));
+    const invalidTokens = Array.from(new Set(result.invalidTokens));
+    const retryableTokens = Array.from(new Set(result.retryableTokens));
 
     await this.updateTokenHealth(successTokens, invalidTokens);
 
@@ -515,13 +515,13 @@ export class NotificationWorker extends WorkerHost {
     const exhaustedTokens = retryableTokens.filter(
       (token) => !requeuedSet.has(token),
     );
-    const permanentFailedTokens = [
-      ...new Set([
+    const permanentFailedTokens = Array.from(
+      new Set([
         ...invalidTokens,
         ...unsupportedTokens.map(({ token }) => token),
         ...exhaustedTokens,
       ]),
-    ];
+    );
 
     const addToSet: Record<string, unknown> = {
       completedDeliveryKeys: deliveryKey,
