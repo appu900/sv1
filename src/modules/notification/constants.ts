@@ -33,8 +33,6 @@ export const BROADCAST_COOLDOWN_SECONDS = 300;
 export const UNREGISTERED_ERROR_CODES = new Set([
   'messaging/registration-token-not-registered',
   'messaging/invalid-registration-token',
-  'messaging/invalid-argument',
-  'messaging/mismatched-credential',
 ]);
 
 export const TRANSIENT_ERROR_CODES = new Set([

@@ -113,7 +113,7 @@ describe('InventoryExpiryCronService', () => {
 
       await service.handleExpiryCron();
 
-      const [filter, update] = inventoryModel.updateMany.mock.calls[0];
+      const [filter, update, options] = inventoryModel.updateMany.mock.calls[0];
       expect(filter.isDiscarded).toBe(false);
       expect(filter.expiresAt.$type).toBe('date');
 
@@ -129,6 +129,22 @@ describe('InventoryExpiryCronService', () => {
           discardedQuantity: '$quantity',
         }),
       );
+      expect(options).toEqual({ updatePipeline: true });
+    });
+
+    it('still sends reminders if auto-clear throws', async () => {
+      const { service, inventoryModel, notificationService } = buildService({
+        expired: [{ _id: new Types.ObjectId(userId), count: 2 }],
+      });
+      inventoryModel.updateMany.mockRejectedValueOnce(
+        new Error(
+          'Cannot pass an array to query updates unless the `updatePipeline` option is set.',
+        ),
+      );
+
+      await service.handleExpiryCron();
+
+      expect(notificationService.sendToUser).toHaveBeenCalledTimes(1);
     });
 
     it('leaves items inside the 30 day window alone', async () => {

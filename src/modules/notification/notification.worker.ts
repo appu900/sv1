@@ -196,11 +196,11 @@ export class NotificationWorker extends WorkerHost {
     const payload: FirebaseMessagePayload = {
       title: notif.title,
       body: notif.body,
-      data: {
+      data: this.stringifyData({
         ...(notif.data ?? {}),
         ...(notif.deepLink ? { deepLink: notif.deepLink } : {}),
         notificationId: String(notif._id),
-      },
+      }),
       imageUrl: notif.imageUrl,
     };
 
@@ -209,10 +209,14 @@ export class NotificationWorker extends WorkerHost {
     // the list as-is would put the same banner on the phone twice.
     const uniqueTokens = this.dedupeTokens(tokens);
 
-    const expoTokens = uniqueTokens.filter((t) => t.tokenType === 'expo').map((t) => t.token);
-    const fcmTokens = uniqueTokens.filter((t) => t.tokenType === 'fcm').map((t) => t.token);
+    const expoTokens = uniqueTokens
+      .filter((t) => this.gatewayFor(t) === 'expo')
+      .map((t) => t.token);
+    const fcmTokens = uniqueTokens
+      .filter((t) => this.gatewayFor(t) === 'fcm')
+      .map((t) => t.token);
     const unsupportedTokens = uniqueTokens.filter(
-      (t) => t.tokenType !== 'expo' && t.tokenType !== 'fcm',
+      (t) => this.gatewayFor(t) === 'none',
     );
 
     if (unsupportedTokens.length > 0) {
@@ -252,6 +256,29 @@ export class NotificationWorker extends WorkerHost {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  private gatewayFor(token: TokenWithType): 'expo' | 'fcm' | 'none' {
+    if (
+      token.token.startsWith('ExponentPushToken[') ||
+      token.token.startsWith('ExpoPushToken[') ||
+      token.tokenType === 'expo'
+    ) {
+      return 'expo';
+    }
+    if (token.tokenType === 'fcm') return 'fcm';
+    return 'none';
+  }
+
+  private stringifyData(
+    data: Record<string, unknown>,
+  ): Record<string, string> {
+    const next: Record<string, string> = {};
+    for (const [key, value] of Object.entries(data)) {
+      if (value == null) continue;
+      next[key] = typeof value === 'string' ? value : String(value);
+    }
+    return next;
   }
 
   private dedupeTokens(tokens: TokenWithType[]): TokenWithType[] {

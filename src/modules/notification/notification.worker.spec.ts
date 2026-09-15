@@ -137,6 +137,20 @@ describe('NotificationWorker', () => {
     expect(producer.enqueueBatches).not.toHaveBeenCalled();
   });
 
+  it('sends Expo-shaped tokens through Expo even if they were stored as fcm', async () => {
+    const { worker, expo, firebase } = buildWorker();
+
+    await worker.process(
+      batchJob([{ token: 'ExponentPushToken[mislabelled]', tokenType: 'fcm' }]),
+    );
+
+    expect(expo.sendToTokens).toHaveBeenCalledWith(
+      ['ExponentPushToken[mislabelled]'],
+      expect.any(Object),
+    );
+    expect(firebase.sendToTokens).not.toHaveBeenCalled();
+  });
+
   it('counts tokens no gateway can deliver so the notification can finalize', async () => {
     const { worker, notifModel, expo, firebase } = buildWorker();
 

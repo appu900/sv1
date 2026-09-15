@@ -266,11 +266,19 @@ export class NotificationService {
       ? Math.max(0, new Date(input.scheduledAt).getTime() - Date.now())
       : 0;
 
-    await this.producer.enqueueNotification(
-      String(notif._id),
-      priority,
-      delayMs > 0 ? delayMs : undefined,
-    );
+    try {
+      await this.producer.enqueueNotification(
+        String(notif._id),
+        priority,
+        delayMs > 0 ? delayMs : undefined,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await this.notifModel.findByIdAndUpdate(notif._id, {
+        $set: { lastError: `Failed to enqueue: ${message}` },
+      });
+      throw error;
+    }
 
     this.logger.info('Notification queued to BullMQ', {
       service: 'NotificationService',
@@ -345,6 +353,54 @@ export class NotificationService {
         ? `Notification scheduled for ${notif.scheduledAt.toISOString()}`
         : 'Notification queued for delivery',
     };
+  }
+
+  /**
+   * Admin sends sometimes persist the Mongo row and then fail to add the BullMQ
+   * job (Redis blip). Those rows sit in `queued` forever and never reach FCM.
+   */
+  async requeueOrphaned(limit = 20): Promise<number> {
+    const cutoff = new Date(Date.now() - 60_000);
+    const recentEnough = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const orphans = await this.notifModel
+      .find({
+        status: NotificationStatus.QUEUED,
+        createdAt: { $lte: cutoff, $gte: recentEnough },
+        $or: [
+          { scheduledAt: { $exists: false } },
+          { scheduledAt: null },
+          { scheduledAt: { $lte: new Date() } },
+        ],
+      })
+      .sort({ createdAt: 1 })
+      .limit(limit)
+      .exec();
+
+    let requeued = 0;
+    for (const orphan of orphans) {
+      try {
+        await this.producer.enqueueNotification(
+          String(orphan._id),
+          (orphan.priority || 'normal') as 'high' | 'normal' | 'low',
+        );
+        requeued++;
+      } catch (error) {
+        this.logger.error('Failed to requeue orphaned notification', {
+          service: 'NotificationService',
+          notificationId: String(orphan._id),
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    if (requeued > 0) {
+      this.logger.warn('Requeued orphaned notifications', {
+        service: 'NotificationService',
+        requeued,
+      });
+    }
+
+    return requeued;
   }
 
   async sendToUser(

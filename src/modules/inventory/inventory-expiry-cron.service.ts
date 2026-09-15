@@ -214,6 +214,9 @@ export class InventoryExpiryCronService {
           },
         },
       ],
+      // Mongoose 9 treats an array as an update pipeline only with this flag.
+      // Without it updateMany throws and the nightly reminder never reaches FCM/Expo.
+      { updatePipeline: true },
     );
 
     return result.modifiedCount;
@@ -238,11 +241,18 @@ export class InventoryExpiryCronService {
 
     try {
       // Runs before the counts below so cleared items do not show up in tonight's
-      // reminder as still-expired.
-      const clearedCount = await this.clearLongExpiredItems(now);
-      this.logger.log(
-        `Auto-cleared ${clearedCount} items expired more than ${EXPIRED_ITEM_RETENTION_DAYS} days ago`,
-      );
+      // reminder as still-expired. Isolated so a cleanup failure cannot skip pushes.
+      try {
+        const clearedCount = await this.clearLongExpiredItems(now);
+        this.logger.log(
+          `Auto-cleared ${clearedCount} items expired more than ${EXPIRED_ITEM_RETENTION_DAYS} days ago`,
+        );
+      } catch (clearError: any) {
+        this.logger.error(
+          `Auto-clear of long-expired items failed — continuing with reminders: ${clearError?.message}`,
+          clearError?.stack,
+        );
+      }
 
       const expiredResult = await this.inventoryModel.updateMany(
         {
@@ -333,14 +343,14 @@ export class InventoryExpiryCronService {
       }
 
       const notifiedUserIds = new Set<string>([
-        ...expiringByUser.keys(),
-        ...expiredByUser.keys(),
+        ...Array.from(expiringByUser.keys()),
+        ...Array.from(expiredByUser.keys()),
       ]);
 
       let sent = 0;
       let alreadySent = 0;
 
-      for (const userId of notifiedUserIds) {
+      for (const userId of Array.from(notifiedUserIds)) {
         const expiring = expiringByUser.get(userId);
         const expiringCount = expiring?.count ?? 0;
         const expiredCount = expiredByUser.get(userId) ?? 0;
@@ -348,9 +358,6 @@ export class InventoryExpiryCronService {
         if (expiringCount === 0 && expiredCount === 0) {
           continue;
         }
-
-        // Second line of defence behind the cron lock: even a manual re-trigger or a
-        // job retry cannot put a second copy of today's reminder on the device.
         const slot = await this.claimReminderSlot(
           'inventory-expiry',
           userId,
@@ -377,7 +384,6 @@ export class InventoryExpiryCronService {
           );
           sent++;
         } catch (err: any) {
-          // Hand the slot back so a later run can still reach this user today.
           await this.redis.releaseLock(slot.key, slot.token).catch(() => {});
           this.logger.warn(
             `Failed to send inventory reminder to user ${userId}: ${err?.message}`,
@@ -415,8 +421,6 @@ export class InventoryExpiryCronService {
         {
           $match: {
             isDiscarded: true,
-            // Auto-cleared items are not something the user did this week, and
-            // counting them would spike the summary the first time cleanup runs.
             autoDiscarded: { $ne: true },
             discardedAt: { $gte: oneWeekAgo },
           },

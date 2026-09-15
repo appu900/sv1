@@ -133,7 +133,8 @@ export class FirebaseGateway implements OnModuleInit {
         body: payload.body,
         ...(payload.imageUrl ? { imageUrl: payload.imageUrl } : {}),
       },
-      data: payload.data ?? {},
+      // FCM rejects the whole batch if any data value is not a string.
+      data: this.stringifyData(payload.data),
       android: {
         priority: payload.android?.priority === 'normal' ? 'normal' : 'high',
         notification: {
@@ -174,7 +175,7 @@ export class FirebaseGateway implements OnModuleInit {
           } else if (TRANSIENT_ERROR_CODES.has(errorCode)) {
             result.retryableTokens.push(token);
           } else {
-            this.logger.warn('Unknown FCM error — treating as retryable', {
+            this.logger.warn('FCM token error — treating as retryable', {
               service: 'FirebaseGateway',
               token: token.slice(0, 12) + '…',
               errorCode,
@@ -194,6 +195,18 @@ export class FirebaseGateway implements OnModuleInit {
     }
 
     return result;
+  }
+
+  private stringifyData(
+    data?: Record<string, string>,
+  ): Record<string, string> | undefined {
+    if (!data) return undefined;
+    const next: Record<string, string> = {};
+    for (const [key, value] of Object.entries(data)) {
+      if (value == null) continue;
+      next[key] = typeof value === 'string' ? value : String(value);
+    }
+    return next;
   }
 
   private chunkArray<T>(arr: T[], size: number): T[][] {
