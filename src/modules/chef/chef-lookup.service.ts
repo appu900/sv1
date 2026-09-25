@@ -12,9 +12,18 @@ import {
 import { RedisService } from '../../redis/redis.service';
 import {
   CHEF_CACHE_KEYS,
+  CHEF_CACHE_TTL,
   CHEF_RECIPE_CHEFS_TTL,
   PUBLIC_CHEF_FILTER,
 } from './chef.constants';
+
+/** Chef attribution attached to public single-recipe payloads. */
+export interface PublicRecipeChef {
+  id: string;
+  slug: string;
+  displayName: string;
+  avatarImageUrl: string | null;
+}
 
 function toObjectId(
   value: string | Types.ObjectId | { _id?: unknown; id?: unknown } | null | undefined,
@@ -155,6 +164,62 @@ export class ChefLookupService {
     }
 
     return userIds;
+  }
+
+  /**
+   * First published chef attributed to a recipe, in attribution order.
+   * Null for Saveful recipes and when no attributed chef is published.
+   */
+  async getPublicChefForRecipe(
+    chefIds?: Array<string | Types.ObjectId | { _id?: unknown; id?: unknown }> | null,
+  ): Promise<PublicRecipeChef | null> {
+    const userIds = (chefIds ?? [])
+      .map((v) => toObjectId(v))
+      .filter((v): v is Types.ObjectId => v !== null);
+
+    for (const userId of userIds) {
+      const chef = await this.getPublicChefForUser(userId);
+      if (chef) return chef;
+    }
+    return null;
+  }
+
+  private async getPublicChefForUser(
+    userId: Types.ObjectId,
+  ): Promise<PublicRecipeChef | null> {
+    const cacheKey = CHEF_CACHE_KEYS.publicCardByUser(String(userId));
+    try {
+      // Wrapped so a cached "no published profile" is distinguishable from a miss.
+      const cached = await this.redisService.get<{
+        chef: PublicRecipeChef | null;
+      }>(cacheKey);
+      if (cached) return cached.chef;
+    } catch (err: any) {
+      this.logger.warn(`public chef cache read failed: ${err?.message}`);
+    }
+
+    const profile = await this.chefProfileModel
+      .findOne({ userId, ...PUBLIC_CHEF_FILTER })
+      .select({ slug: 1, displayName: 1, avatarImageUrl: 1, heroImageUrl: 1 })
+      .lean()
+      .exec();
+
+    const chef: PublicRecipeChef | null = profile
+      ? {
+          id: String(profile._id),
+          slug: profile.slug,
+          displayName: profile.displayName,
+          avatarImageUrl: profile.avatarImageUrl ?? profile.heroImageUrl ?? null,
+        }
+      : null;
+
+    try {
+      await this.redisService.set(cacheKey, { chef }, CHEF_CACHE_TTL);
+    } catch {
+      // non-fatal
+    }
+
+    return chef;
   }
 
   async isRecipePubliclyVisible(

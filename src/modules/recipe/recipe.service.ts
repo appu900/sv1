@@ -22,7 +22,10 @@ import {
 } from '../image-upload/image-upload.service';
 import { normalizeCountry } from '../../utils/countries.util';
 import { ChefProfileSyncService } from '../chef/chef-profile-sync.service';
-import { ChefLookupService } from '../chef/chef-lookup.service';
+import {
+  ChefLookupService,
+  PublicRecipeChef,
+} from '../chef/chef-lookup.service';
 import { DataVersionService } from '../data-version/data-version.service';
 
 export interface SummaryHeroImage {
@@ -550,6 +553,26 @@ export class RecipeService implements OnModuleInit {
     }
   }
 
+  /**
+   * Adds the attributed chef's public card. Resolved per request rather than
+   * stored in the recipe cache so chef profile edits show up immediately.
+   */
+  private async withPublicChef(
+    recipe: Recipe,
+  ): Promise<Recipe & { chef: PublicRecipeChef | null }> {
+    let chef: PublicRecipeChef | null = null;
+    if (this.chefLookup) {
+      try {
+        chef = await this.chefLookup.getPublicChefForRecipe(
+          (recipe as any).chefIds,
+        );
+      } catch (error: any) {
+        console.error('Error resolving recipe chef:', error?.message);
+      }
+    }
+    return { ...(recipe as any), chef };
+  }
+
   private async returnCachedIfPublic(
     cacheKey: string,
     cached: Recipe | null | undefined,
@@ -707,7 +730,7 @@ export class RecipeService implements OnModuleInit {
   }
 
   
-  async findOne(id: string): Promise<Recipe> {
+  async findOne(id: string): Promise<Recipe & { chef: PublicRecipeChef | null }> {
     if (!Types.ObjectId.isValid(id)) {
       throw new BadRequestException('Invalid recipe ID format');
     }
@@ -717,7 +740,7 @@ export class RecipeService implements OnModuleInit {
       const cached = await this.redisService.get<Recipe>(cacheKey);
       const visibleCached = await this.returnCachedIfPublic(cacheKey, cached);
       if (visibleCached) {
-        return visibleCached;
+        return this.withPublicChef(visibleCached);
       }
     } catch (error) {
       if (error instanceof NotFoundException) throw error;
@@ -772,11 +795,13 @@ export class RecipeService implements OnModuleInit {
 
     await this.setRecipeCacheIfCurrent(cacheKey, recipe, generationAtStart);
 
-    return recipe;
+    return this.withPublicChef(recipe);
   }
 
 
-  async findBySlug(slug: string): Promise<Recipe> {
+  async findBySlug(
+    slug: string,
+  ): Promise<Recipe & { chef: PublicRecipeChef | null }> {
     if (!slug || typeof slug !== 'string') {
       throw new BadRequestException('Slug is required');
     }
@@ -786,7 +811,7 @@ export class RecipeService implements OnModuleInit {
       const cached = await this.redisService.get<Recipe>(cacheKey);
       const visibleCached = await this.returnCachedIfPublic(cacheKey, cached);
       if (visibleCached) {
-        return visibleCached;
+        return this.withPublicChef(visibleCached);
       }
     } catch (error) {
       if (error instanceof NotFoundException) throw error;
@@ -850,7 +875,7 @@ export class RecipeService implements OnModuleInit {
 
     await this.setRecipeCacheIfCurrent(cacheKey, recipe, generationAtStart);
 
-    return recipe;
+    return this.withPublicChef(recipe);
   }
 
   async findByFrameworkCategory(categoryId: string, country?: string): Promise<Recipe[]> {

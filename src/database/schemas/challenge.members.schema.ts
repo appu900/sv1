@@ -1,6 +1,7 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Types } from 'mongoose';
 @Schema({ timestamps: true })
+
 export class CommunityChallengeParticipant {
   @Prop({
     type: Types.ObjectId,
@@ -19,7 +20,6 @@ export class CommunityChallengeParticipant {
   @Prop({default:0})
   foodSaved:number;
 
-  // Total meals completed by participant in this challenge
   @Prop({default:0})
   totalMealsCompleted:number;
 

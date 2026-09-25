@@ -18,6 +18,8 @@ export const CHEF_CACHE_KEYS = {
   favLoaded: (userId: string) => `chef:fav:loaded:${userId}`,
   favCount: (chefId: string) => `chef:favcount:${chefId}`,
   userToProfile: (userId: string) => `chef:user-profile:${userId}`,
+  /** Under `chefs:*` so profile edits/publish toggles clear it via invalidateCaches. */
+  publicCardByUser: (userId: string) => `chefs:public-card:v1:${userId}`,
   patternAll: 'chefs:*',
   patternRecipeChefs: 'chef:recipe-chefs:*',
 } as const;
