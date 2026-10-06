@@ -500,6 +500,7 @@ export class PerksCorpApiClient {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
 
+    const startedAt = Date.now();
     let httpStatus: number;
     let raw: string;
     try {
@@ -512,6 +513,18 @@ export class PerksCorpApiClient {
       raw = await response.text();
     } catch (error) {
       const timedOut = error instanceof Error && error.name === 'AbortError';
+      // Logged, because this is the one upstream failure that used to leave no
+      // trace. A member saw "our partner is not responding" and the logs held
+      // nothing to confirm it with — WeMAD rejections are logged below, but a
+      // timeout or a dropped connection threw silently.
+      this.logger.error(
+        `WeMAD ${timedOut ? 'timed out' : 'could not be reached'} ` +
+          `path=${path} method=${init.method ?? 'GET'} ` +
+          `after=${Date.now() - startedAt}ms limit=${this.timeoutMs}ms` +
+          (timedOut
+            ? ''
+            : `: ${error instanceof Error ? error.message : String(error)}`),
+      );
       throw new PerksCorpApiError(
         timedOut ? 'WeMAD request timed out' : 'WeMAD request failed',
         503,
