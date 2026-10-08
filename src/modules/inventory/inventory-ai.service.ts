@@ -15,6 +15,7 @@ import {
 import { Recipe, RecipeDocument } from '../../database/schemas/recipe.schema';
 import { RedisService } from '../../redis/redis.service';
 import { AIInteractionService } from '../ai-interaction/ai-interaction.service';
+import { isOpenAiServiceError, toAiUnavailable } from '../../common/utils/openai-error.util';
 import {
   AIFeatureKey,
   AIResultType,
@@ -253,6 +254,9 @@ Return JSON:
           voiceResponse,
         );
       }
+      if (isOpenAiServiceError(error)) {
+        throw toAiUnavailable(this.logger, `parseVoiceTranscript user=${userId ?? 'anon'}`, error);
+      }
       throw error;
     }
   }
@@ -349,7 +353,9 @@ Return JSON EXACTLY in this shape:
           },
         ],
         temperature: 0.1,
-        max_tokens: 2500,
+        // Up to 40 items at ~100 tokens each; 2500 cut long receipts off mid-JSON.
+        max_tokens: 6000,
+        response_format: { type: 'json_object' },
       });
       aiResponse = response;
 

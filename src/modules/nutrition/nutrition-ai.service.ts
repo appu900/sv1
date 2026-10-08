@@ -1,6 +1,7 @@
 import { BadRequestException, Inject, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import OpenAI from 'openai';
 import { getCuisineContext } from '../../common/utils/country-cuisine.util';
+import { isOpenAiServiceError, toAiUnavailable } from '../../common/utils/openai-error.util';
 
 export interface NutritionValues {
   kcal: number;
@@ -63,6 +64,23 @@ export class NutritionAiService {
     }
   }
 
+  /** Runs a chat completion; OpenAI-side failures become a clear 503 with the real cause logged. */
+  private async createCompletion(
+    params: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
+    context: string,
+  ): Promise<OpenAI.Chat.Completions.ChatCompletion> {
+    try {
+      const response = await this.openai!.chat.completions.create(params);
+      if (response.choices[0]?.finish_reason === 'length') {
+        this.logger.warn(`AI response for ${context} hit max_tokens (${params.max_tokens}) and was cut off`);
+      }
+      return response;
+    } catch (error) {
+      if (isOpenAiServiceError(error)) throw toAiUnavailable(this.logger, context, error);
+      throw error;
+    }
+  }
+
   async estimateNutrition(
     foodDescription: string,
     servingLabel?: string,
@@ -81,7 +99,7 @@ export class NutritionAiService {
 
     const ctx = getCuisineContext(country);
 
-    const response = await this.openai.chat.completions.create({
+    const response = await this.createCompletion({
       model: 'gpt-4.1',
       messages: [
         {
@@ -125,7 +143,8 @@ Return JSON:
       ],
       temperature: 0.1,
       max_tokens: 500,
-    });
+      response_format: { type: 'json_object' },
+    }, 'estimateNutrition');
 
     const content = response.choices[0]?.message?.content;
     if (!content) {
@@ -179,7 +198,7 @@ Return JSON:
     this.logger.log('Identifying food from image with AI Vision...');
     const ctx = getCuisineContext(country);
 
-    const response = await this.openai.chat.completions.create({
+    const response = await this.createCompletion({
       model: 'gpt-4.1',
       messages: [
         {
@@ -225,7 +244,8 @@ Return JSON:
       ],
       temperature: 0.1,
       max_tokens: 300,
-    });
+      response_format: { type: 'json_object' },
+    }, 'identifyFoodFromImage');
 
     const content = response.choices[0]?.message?.content;
     if (!content) {
@@ -282,7 +302,7 @@ Return JSON:
 
     const ctx = getCuisineContext(country);
 
-    const response = await this.openai.chat.completions.create({
+    const response = await this.createCompletion({
       model: 'gpt-4.1',
       messages: [
         {
@@ -304,7 +324,7 @@ Respond ONLY with a valid JSON array, no markdown, no explanation. The array mus
       ],
       temperature: 0.1,
       max_tokens: 1500,
-    });
+    }, 'estimateIngredientBreakdown');
 
     const content = response.choices[0]?.message?.content;
     if (!content) throw new ServiceUnavailableException('AI returned empty response');
@@ -371,7 +391,7 @@ Respond ONLY with a valid JSON array, no markdown, no explanation. The array mus
       ? `\n\nADDITIONAL CONTEXT FROM USER:\n${userHints.join('\n')}`
       : '';
 
-    const response = await this.openai.chat.completions.create({
+    const response = await this.createCompletion({
       model: 'gpt-4.1',
       messages: [
         {
@@ -434,8 +454,10 @@ Return JSON:
         },
       ],
       temperature: 0.1,
-      max_tokens: 1200,
-    });
+      // Busy plates list many items; 1200 cut the JSON off mid-object.
+      max_tokens: 4000,
+      response_format: { type: 'json_object' },
+    }, 'analyzeAndEstimateFoodFromPhoto');
 
     const content = response.choices[0]?.message?.content;
     if (!content) {

@@ -52,6 +52,7 @@ import { UserRole } from '../../database/schemas/user.auth.schema';
 import { InventoryItemSource } from '../../database/schemas/user-inventory.schema';
 import { SubscriptionService } from '../subscription/subscription.service';
 import { ApiJwtAuth, ApiJwtRoles } from '../../common/swagger/api-auth.decorators';
+import { isOpenAiServiceError, toAiUnavailable } from '../../common/utils/openai-error.util';
 
 @ApiTags('Inventory')
 @ApiJwtAuth()
@@ -438,6 +439,10 @@ export class InventoryController {
     } catch (error: any) {
       // AI failed — refund the slot so the user's quota isn't burnt.
       await this.kitchenScanUsage.rollback(userId);
+      if (isOpenAiServiceError(error)) {
+        // Key/credits/rate-limit/network problem — not the user's photos.
+        throw toAiUnavailable(this.logger, `scanShoppingListPhotos user=${userId}`, error);
+      }
       this.logger.error(
         `scanShoppingListPhotos failed for user ${userId}: ${error?.message}`,
       );
