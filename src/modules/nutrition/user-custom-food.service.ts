@@ -209,8 +209,10 @@ export class UserCustomFoodService {
 
   /**
    * Create a custom food from photo-based AI analysis.
-   * If a food with the same name already exists for the user,
-   * appends a timestamp suffix to avoid conflicts.
+   * The (userId, normalizedName) index is unique across soft-deleted rows
+   * too, so a deleted food with the same name is revived in place; a name
+   * held by an active food gets a date suffix ("Toast (20 Oct)", then
+   * "Toast (20 Oct 2)", ...).
    */
   async createFromPhotoAnalysis(
     userId: string,
@@ -218,25 +220,27 @@ export class UserCustomFoodService {
   ): Promise<UserCustomFoodDocument> {
     this.assertUserId(userId);
 
+    const userObjectId = new Types.ObjectId(userId);
     const trimmedName = input.name.trim().slice(0, 120) || 'Photo food';
-    let normalizedName = trimmedName.toLowerCase();
+    const dateLabel = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
 
-    // Resolve name conflict by appending a short timestamp suffix
-    const existing = await this.customFoodModel
-      .findOne({
-        userId: new Types.ObjectId(userId),
-        normalizedName,
-        isActive: true,
-      })
-      .lean()
-      .exec();
-
-    const displayName = existing
-      ? `${trimmedName} (${new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })})`
-      : trimmedName;
-    if (existing) {
-      normalizedName = displayName.toLowerCase();
+    let displayName = trimmedName;
+    let inactive: UserCustomFoodDocument | null = null;
+    for (let attempt = 1; attempt <= 50; attempt++) {
+      const holder = await this.customFoodModel
+        .findOne({ userId: userObjectId, normalizedName: displayName.toLowerCase() })
+        .exec();
+      if (!holder) break;
+      if (!holder.isActive) {
+        inactive = holder;
+        break;
+      }
+      displayName =
+        attempt === 50
+          ? `${trimmedName} (${Date.now()})`
+          : `${trimmedName} (${dateLabel}${attempt === 1 ? '' : ` ${attempt}`})`;
     }
+    const normalizedName = displayName.toLowerCase();
 
     const perServing: CustomFoodNutrition = {
       kcal: input.perServing.kcal,
@@ -261,6 +265,12 @@ export class UserCustomFoodService {
       imageUrl: input.imageUrl ?? null,
       isActive: true,
     };
+
+    if (inactive) {
+      inactive.set(payload);
+      await inactive.save();
+      return inactive.toObject() as UserCustomFoodDocument;
+    }
 
     const created = await this.customFoodModel.create(payload);
     return created.toObject() as UserCustomFoodDocument;

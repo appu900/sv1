@@ -1,6 +1,9 @@
 /// <reference types="jest" />
 
-import { FoodSource } from '../../database/schemas/nutrition/food-item.schema';
+import {
+  FoodItemSchema,
+  FoodSource,
+} from '../../database/schemas/nutrition/food-item.schema';
 import { FoodItemService } from './food-item.service';
 
 function mockQueryResult<T>(value: T) {
@@ -46,6 +49,11 @@ describe('FoodItemService', () => {
     });
     expect(update.$set).not.toHaveProperty('barcode');
     expect(update.$set.displayName).toBe('Blueberry Bread Pudding');
+  });
+
+  // With a null default, upsert's setDefaultsOnInsert put the null back.
+  it('gives barcode no schema default', () => {
+    expect((FoodItemSchema.path('barcode') as any).defaultValue).toBeUndefined();
   });
 
   it('keeps a real barcode', async () => {

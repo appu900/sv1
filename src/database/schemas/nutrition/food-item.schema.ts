@@ -85,8 +85,12 @@ export class FoodItem {
   @Prop({ type: String, trim: true, default: null })
   brand?: string | null;
 
-  /** EAN/UPC barcode when available. Unique when present. */
-  @Prop({ type: String, trim: true, default: null })
+  /**
+   * EAN/UPC barcode when available. Unique when present. No `null` default:
+   * the sparse unique index still indexes an explicit null, so every
+   * barcode-less insert after the first would fail with E11000.
+   */
+  @Prop({ type: String, trim: true })
   barcode?: string | null;
 
   /** S3 URL of the product image (photo of packaging/label). */
@@ -154,7 +158,8 @@ FoodItemSchema.index(
 // Fast prefix lookups for autocomplete (case-insensitive via lowercase prop).
 FoodItemSchema.index({ canonicalName: 1 });
 
-// Barcode lookups. Sparse so many null barcodes are allowed; unique when set.
+// Barcode lookups. Sparse so documents without a barcode field are allowed
+// (an explicit null is still indexed); unique when set.
 FoodItemSchema.index(
   { barcode: 1 },
   { unique: true, sparse: true, name: 'food_item_barcode_unique' },
