@@ -537,6 +537,9 @@ export class CommunityGroupsService implements OnModuleInit {
     await group.save();
     const cacheKey = `${this.SINGLE_COMMUNITY_CACHE_KEY}:${group._id.toString()}`;
     await this.redisService.del(cacheKey);
+    // The owner's created-groups list (findAllCommunityGroupByUserId) also
+    // caches name and photo.
+    await this.redisService.del(`community:Groups:${userId}`);
     return group;
   }
 
