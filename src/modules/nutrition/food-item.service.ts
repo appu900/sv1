@@ -145,11 +145,22 @@ export class FoodItemService {
     return this.foodModel
       .findOneAndUpdate(
         filter,
-        { $set: partial },
+        { $set: this.withoutEmptyBarcode(partial) },
         { new: true, upsert: true, setDefaultsOnInsert: true },
       )
       .lean<FoodItemDocument>()
       .exec();
+  }
+
+  /**
+   * The barcode index is unique + sparse. Sparse skips documents without the
+   * field but still indexes an explicit null, so a second `barcode: null`
+   * write fails with E11000. Leave the field out instead.
+   */
+  private withoutEmptyBarcode(partial: Partial<FoodItem>): Partial<FoodItem> {
+    if (partial.barcode) return partial;
+    const { barcode: _dropBarcode, ...rest } = partial;
+    return rest;
   }
 
   async bulkUpsert(items: Partial<FoodItem>[]): Promise<FoodItemDocument[]> {
@@ -167,7 +178,7 @@ export class FoodItemService {
       return {
         updateOne: {
           filter,
-          update: { $set: partial },
+          update: { $set: this.withoutEmptyBarcode(partial) },
           upsert: true,
         },
       };
