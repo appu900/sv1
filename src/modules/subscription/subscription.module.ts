@@ -12,6 +12,7 @@ import { SubscriptionService } from './subscription.service';
 import { SubscriptionController } from './subscription.controller';
 import { RevenueCatWebhookController } from './revenuecat-webhook.controller';
 import { SubscriptionGuard } from './subscription.guard';
+import { ReferralModule } from '../referral/referral.module';
 
 @Global()
 @Module({
@@ -20,6 +21,7 @@ import { SubscriptionGuard } from './subscription.guard';
       { name: Subscription.name, schema: SubscriptionSchema },
       { name: SubscriptionUsage.name, schema: SubscriptionUsageSchema },
     ]),
+    ReferralModule,
   ],
   controllers: [SubscriptionController, RevenueCatWebhookController],
   providers: [SubscriptionService, SubscriptionGuard],

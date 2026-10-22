@@ -7,6 +7,7 @@ import {
   EMAIL_QUEUE_NAME,
   EmailJobType,
   EmailJobData,
+  ChefReferralStatementEmailJobData,
 } from './email.constants';
 
 
@@ -155,5 +156,11 @@ export class EmailQueueService {
       email,
       userName,
     });
+  }
+
+  async queueChefReferralStatementEmail(
+    data: Omit<ChefReferralStatementEmailJobData, 'type'>,
+  ): Promise<void> {
+    await this.deliver({ type: EmailJobType.CHEF_REFERRAL_STATEMENT, ...data });
   }
 }

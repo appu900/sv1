@@ -235,3 +235,83 @@ ${FOOTER}
 </body>
 </html>`;
 }
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+export function chefReferralStatementTemplate(data: {
+  chefName: string;
+  quarter: string;
+  paidAmount: string;
+  paidAt: string;
+  paymentReference: string;
+  lines: Array<{ label: string; amount: string }>;
+  portalUrl: string;
+}): string {
+  const rows = data.lines
+    .map(
+      (line) =>
+        `<tr><td class="row-label">${escapeHtml(line.label)}</td><td class="row-amount">${escapeHtml(line.amount)}</td></tr>`,
+    )
+    .join('');
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+${LIGHT_MODE_META}
+<title>Your Saveful referral payout</title>
+<style>
+  :root { color-scheme: light; supported-color-schemes: light; }
+  body { margin:0; padding:0; background-color:#f6f3fb !important; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif; color:#2b1e44 !important; }
+  table, td { border-collapse:collapse; background-color:#f6f3fb !important; }
+  img { display:block; border:0; }
+  .container { max-width:600px; background-color:#ffffff !important; border-radius:16px; overflow:hidden; }
+  .content { padding:36px 32px 32px; background-color:#ffffff !important; }
+  h1 { font-size:22px; margin:0 0 14px; font-weight:700; color:#2b1e44 !important; }
+  p { font-size:15px; line-height:1.6; margin:0 0 16px; color:#3d3558 !important; }
+  .amount-box { background-color:#f3efff !important; border-radius:12px; padding:18px; text-align:center; font-size:28px; font-weight:700; color:#2b1e44 !important; margin:22px 0 8px; }
+  .meta { font-size:13px; color:#7a7391 !important; text-align:center; margin-bottom:22px; }
+  .lines { width:100%; margin:8px 0 22px; }
+  .lines td { background-color:#ffffff !important; padding:8px 0; border-bottom:1px solid #eeeaf7; font-size:14px; color:#3d3558 !important; }
+  .row-amount { text-align:right; font-weight:600; }
+  .cta { text-align:center; margin:26px 0 8px; }
+  .cta a { background-color:#7b5cff; color:#ffffff; text-decoration:none; padding:14px 26px; border-radius:12px; font-weight:600; font-size:15px; display:inline-block; }
+  .divider { height:1px; background-color:#eeeaf7 !important; margin:28px 0; }
+  .logo { margin:24px auto 0; width:110px; }
+  .logo-light { display:block; }
+  .logo-dark { display:none; }
+  .footer { padding:22px; font-size:13px; color:#7a7391 !important; background-color:#ffffff !important; text-align:center; }
+  ${DARK_LOGO_MEDIA}
+  @media (max-width:480px) { .content { padding:26px 18px; } h1 { font-size:20px; } .amount-box { font-size:24px; } }
+</style>
+</head>
+<body bgcolor="#f6f3fb" style="background-color:#f6f3fb;">
+<table width="100%" bgcolor="#f6f3fb" style="background-color:#f6f3fb;" role="presentation">
+<tr><td align="center" bgcolor="#f6f3fb" style="background-color:#f6f3fb; padding:16px;">
+<table class="container" width="100%" bgcolor="#ffffff" style="background-color:#ffffff;" role="presentation">
+<tr><td class="content" bgcolor="#ffffff" style="background-color:#ffffff;">
+<h1>Your referral payout for ${escapeHtml(data.quarter)}</h1>
+<p>Hi ${escapeHtml(data.chefName)},</p>
+<p>Thank you for sharing Saveful. Your referral commission for ${escapeHtml(data.quarter)} has been paid.</p>
+<div class="amount-box">${escapeHtml(data.paidAmount)}</div>
+<div class="meta">Paid ${escapeHtml(data.paidAt)}${data.paymentReference ? ` · Reference ${escapeHtml(data.paymentReference)}` : ''}</div>
+<p style="margin-bottom:4px;"><strong>Commission included</strong></p>
+<table class="lines" role="presentation">${rows}</table>
+<p>Commission is 10% of net subscription revenue from customers who joined with your link or code. Refunded payments are deducted from a later payout.</p>
+<div class="cta"><a href="${escapeHtml(data.portalUrl)}">View your referral dashboard</a></div>
+<div class="divider"></div>
+${LOGO_BLOCK}
+</td></tr>
+${FOOTER}
+</table>
+</td></tr>
+</table>
+</body>
+</html>`;
+}

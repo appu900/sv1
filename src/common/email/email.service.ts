@@ -6,6 +6,7 @@ import {
   welcomeTemplate,
   passwordResetTemplate,
   accountDeletionTemplate,
+  chefReferralStatementTemplate,
 } from './email-templates';
 import { EmailJobData, EmailJobType } from './email.constants';
 
@@ -87,6 +88,13 @@ export class EmailService implements OnModuleInit {
 
       case EmailJobType.ACCOUNT_DELETION:
         return this.sendAccountDeletionEmail(data.email, data.userName);
+
+      case EmailJobType.CHEF_REFERRAL_STATEMENT:
+        return this.sendWithRetry(
+          data.email,
+          `Your Saveful referral payout for ${data.quarter}`,
+          chefReferralStatementTemplate(data),
+        );
 
       default:
         this.logger.error(

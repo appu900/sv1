@@ -83,7 +83,7 @@ export class AuthController {
   @ApiOperation({
     summary: 'Register user (legacy)',
     description:
-      'Public. Creates a user immediately from RegisterUserDto (email, name, password, optional role/country/dietary fields) without OTP. Prefer request-otp + verify-otp for new clients. Returns accessToken, refreshToken, and user.',
+      'Public. Creates a user immediately from RegisterUserDto (email, name, password, optional country/dietary fields; always creates a USER) without OTP. Prefer request-otp + verify-otp for new clients. Returns accessToken, refreshToken, and user.',
   })
   @ApiCreatedResponse({
     description:

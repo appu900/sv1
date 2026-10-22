@@ -63,6 +63,13 @@ export class ChefPaymentDetails {
 
   @Prop({ type: String, default: null })
   currency?: string | null;
+
+  /** Admin note about how finance holds this chef's payout details. */
+  @Prop({ type: String, default: null })
+  note?: string | null;
+
+  @Prop({ type: Date, default: null })
+  verifiedAt?: Date | null;
 }
 
 @Schema({ timestamps: true })

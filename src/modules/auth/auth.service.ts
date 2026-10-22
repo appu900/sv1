@@ -29,6 +29,7 @@ import { SavefulPreferencesDto } from './dto/saveful-preferences.dto';
 
 import { UserEventService } from '../user-events/user-event.service';
 import { UserEventType } from '../../database/schemas/user-event.schema';
+import { ReferralAttributionService } from '../referral/referral-attribution.service';
 import {
   Gender,
   HealthProfile,
@@ -47,6 +48,7 @@ export class AuthService {
     @InjectModel(HealthProfile.name)
     private readonly healthProfileModel: Model<HealthProfileDocument>,
     private readonly userEventService: UserEventService,
+    private readonly referralAttributionService: ReferralAttributionService,
   ) {}
 
   private generateAccessToken(userId: string, role: string, sessionId: string) {
@@ -131,6 +133,8 @@ export class AuthService {
       noOfAdults: dto.noOfAdults,
       noOfChildren: dto.noOfChildren,
       tastePreference: dto.tastePreference,
+      referralCode: dto.referralCode,
+      referralSource: dto.referralSource,
     };
     // Deliver before storing: when the send is rate-limited we must leave any
     // previously issued code and its pending signup intact, otherwise the code
@@ -206,6 +210,15 @@ export class AuthService {
     // Create user food analytics profile
     const userFoodProfileId = await this.userService.createUserFoodAnalyticsProfile(user._id);
 
+    if (pendingData.referralCode) {
+      // Never throws: a bad referral code must not fail account creation.
+      await this.referralAttributionService.bindSafely(
+        user._id.toString(),
+        pendingData.referralCode,
+        pendingData.referralSource ?? 'signup',
+      );
+    }
+
     // Generate session and tokens for auto-login
     const sessionId = nanoid();
     await this.redis.setSession(sessionId, user._id.toString(), 60 * 60 * 24 * 7);
@@ -245,7 +258,6 @@ export class AuthService {
 
   async register(dto: RegisterUserDto) {
     const existing = await this.userService.findByEmail(dto.email);
-    const userRole = dto.role ? (dto.role.toUpperCase() as UserRole) : UserRole.USER;
     if (existing) throw new BadRequestException('email already registered');
     const passwordhash = await bcrypt.hash(dto.password, 10);
     
@@ -268,7 +280,8 @@ export class AuthService {
       email: dto.email,
       passwordHash: passwordhash,
       name: dto.name,
-      role: userRole,
+      // Public signup always creates a USER; chefs and admins are created by admins.
+      role: UserRole.USER,
       country: dto.country,
       stateCode: dto.stateCode,
       dietaryProfile,

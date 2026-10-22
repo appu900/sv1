@@ -18,10 +18,6 @@ export class RegisterUserDto {
 
   @IsString()
   @IsOptional()
-  role?: string;
-
-  @IsString()
-  @IsOptional()
   country?: string;
 
   @IsString()

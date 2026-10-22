@@ -18,6 +18,11 @@ import {
   ChefFavourite,
   ChefFavouriteDocument,
 } from 'src/database/schemas/chef-favourite.schema';
+import {
+  ReferralLedgerEntry,
+  ReferralLedgerEntryDocument,
+  ReferralLedgerStatus,
+} from 'src/database/schemas/referral-ledger-entry.schema';
 import { CreateChefDto } from './dto/create-chef.dto';
 import * as bcrypt from 'bcrypt';
 import { ChefProfileService } from '../chef/chef-profile.service';
@@ -39,6 +44,8 @@ export class AdminService {
     private readonly chefProfileModel: Model<ChefProfileDocument>,
     @InjectModel(ChefFavourite.name)
     private readonly chefFavouriteModel: Model<ChefFavouriteDocument>,
+    @InjectModel(ReferralLedgerEntry.name)
+    private readonly referralLedgerModel: Model<ReferralLedgerEntryDocument>,
     @Optional() private readonly chefProfileService?: ChefProfileService,
     @Optional() private readonly chefService?: ChefService,
   ) {}
@@ -179,6 +186,23 @@ export class AdminService {
 
     if (!chef) {
       throw new NotFoundException('Chef not found');
+    }
+
+    const unsettledReferralEntries = await this.referralLedgerModel.countDocuments({
+      chefUserId: chefObjectId,
+      environment: 'PRODUCTION',
+      status: {
+        $in: [
+          ReferralLedgerStatus.PENDING,
+          ReferralLedgerStatus.HELD,
+          ReferralLedgerStatus.IN_PAYOUT,
+        ],
+      },
+    });
+    if (unsettledReferralEntries > 0) {
+      throw new BadRequestException(
+        'This chef has unpaid referral commission. Settle or adjust it before deleting the chef.',
+      );
     }
 
     // Delete catalog recipes solely attributed to this chef

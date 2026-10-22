@@ -20,6 +20,7 @@ import {
 } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import { SubscriptionService } from './subscription.service';
+import { ReferralLedgerService } from '../referral/referral-ledger.service';
 
 @ApiTags('Webhooks')
 @Controller('webhook/revenuecat')
@@ -29,6 +30,7 @@ export class RevenueCatWebhookController {
   constructor(
     private readonly subscriptionService: SubscriptionService,
     private readonly configService: ConfigService,
+    private readonly referralLedger: ReferralLedgerService,
   ) {}
 
   @Post()
@@ -75,7 +77,21 @@ export class RevenueCatWebhookController {
       `RC webhook type=${event?.type} app_user_id=${event?.app_user_id} product=${event?.product_id} entitlement_ids=${JSON.stringify(event?.entitlement_ids ?? [])}`,
     );
 
+    // Log first so referral earnings can be rebuilt even if a later step fails.
+    // Referral problems must never block subscription access sync.
+    let loggedEvent: Awaited<ReturnType<ReferralLedgerService['recordEvent']>> = null;
+    try {
+      loggedEvent = await this.referralLedger.recordEvent(payload);
+    } catch (error: any) {
+      this.logger.error(`Failed to log RC event ${event?.id}: ${error.message}`);
+    }
+
     await this.subscriptionService.syncFromWebhook(payload);
+
+    if (loggedEvent) {
+      // Failures are recorded on the event and retried by ReferralCronService.
+      await this.referralLedger.processEvent(loggedEvent);
+    }
     return { received: true };
   }
 }

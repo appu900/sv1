@@ -11,6 +11,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { AdminModule } from '../admin/admin.module';
 import { EmailModule } from 'src/common/email';
 import { ThrottlerModule } from '@nestjs/throttler';
+import { ReferralModule } from '../referral/referral.module';
 import {
   HealthProfile,
   HealthProfileSchema,
@@ -47,6 +48,7 @@ import {
     RedisModule,
     AdminModule,
     EmailModule,
+    ReferralModule,
   ],
   providers: [AuthService, JwtStrategy],
   controllers: [AuthController],

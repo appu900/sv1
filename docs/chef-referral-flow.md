@@ -138,29 +138,66 @@ flowchart TD
 - Chef statements should be aggregate and must not expose subscriber personal
   information.
 
-## Existing anchors and required additions
+## Implementation
 
-Existing code already provides:
+### Backend (`src/modules/referral/`)
 
-- Chef identity, unique slugs, and payment-detail verification status in
-  [`chef-profile.schema.ts`](../src/database/schemas/chef-profile.schema.ts).
-- OTP signup with pending signup data in Redis in
-  [`auth.service.ts`](../src/modules/auth/auth.service.ts).
-- Direct in-app pending-link handling in
-  [`pendingDeepLink.ts`](../../src/modules/deep_linking/pendingDeepLink.ts).
-- RevenueCat subscription synchronization, webhook ordering, and event
-  deduplication in
-  [`subscription.service.ts`](../src/modules/subscription/subscription.service.ts).
-- Current subscription state in
-  [`subscription.schema.ts`](../src/database/schemas/subscription.schema.ts).
+| Piece | Where |
+|---|---|
+| Codes, links, public lookup | `referral-code.service.ts`, schema `referral-code.schema.ts` |
+| Subscriber binding and discount eligibility | `referral-attribution.service.ts`, schema `referral-attribution.schema.ts` |
+| RevenueCat event log and commission ledger | `referral-ledger.service.ts`, schemas `revenuecat-event.schema.ts`, `referral-ledger-entry.schema.ts` |
+| Quarterly payouts and statement email | `referral-payout.service.ts`, schema `referral-payout.schema.ts` |
+| Chef portal summary | `referral-chef.service.ts` |
+| Admin overview and payout details | `referral-admin.service.ts` |
+| Retry of failed ledger steps (every 10 min) | `referral.cron.ts` |
+| Money and event rules (pure, unit tested) | `referral-math.ts` |
 
-The referral program still requires:
+The RevenueCat webhook logs every event to `RevenueCatEvent` before syncing
+subscription access, then applies it to the ledger. The ledger does not use
+the subscription document's ordering filter, so late renewals still earn.
+Signup binds a code sent with `POST /api/auth/request-otp` (`referralCode`,
+`referralSource`) when the account is created in `verify-otp`.
 
-- A referral-token and subscriber-attribution data model and APIs.
-- A smart/deferred-link provider so attribution survives an app-store install.
-- Signup and login changes that carry the referral token until it is bound.
-- Store-specific Hero and Legend offers for the 5% first-period price, selected
-  by the mobile paywall through RevenueCat.
-- An idempotent transaction and commission ledger with reversal records.
-- Admin balance review, payment-detail verification, payout recording, and an
-  aggregate chef earnings view.
+### Endpoints
+
+- `GET /api/referrals/codes/:code`: public, rate-limited lookup.
+- `POST /api/referrals/bind`, `GET /api/referrals/me`: signed-in customer.
+- `GET /api/chef/referrals/summary`, `GET /api/chef/referrals/statements`: role CHEF.
+- `/api/admin/referrals/*`: role ADMIN. Covers chefs overview, payment
+  details, codes, attributions (void and reassign before the first payment),
+  ledger (resolve or void held entries, adjustments) and payouts (generate,
+  approve, mark paid, void, export).
+
+### Configuration
+
+| Variable | Service | Purpose |
+|---|---|---|
+| `REFERRAL_IOS_OFFER_CODES` | sv1 | JSON map of App Store product id to custom offer code, e.g. `{"saveful.hero.monthly":"CHEFHEROM"}` |
+| `REFERRAL_APPLE_APP_ID` | sv1 | Numeric App Store id, used for the offer-code redemption URL |
+| `REFERRAL_LINK_BASE_URL` | sv1 | Optional; defaults to `https://admin.saveful.app/r` |
+| `CHEF_PORTAL_URL` | sv1 | Optional; link in the statement email |
+| `NEXT_PUBLIC_IOS_APP_STORE_ID` | web | App Store listing for the landing page |
+| `REFERRAL_APP_LINKS_ENABLED` | web | `true` adds `/r/*` to the iOS universal links |
+
+### Store setup
+
+- **App Store Connect**, for each of `saveful.hero.monthly`,
+  `saveful.hero.yearly`, `saveful.legend.monthly`, `saveful.legend.yearly`:
+  an offer code for new subscribers, with "redeem introductory offer first"
+  set to Yes. Pricing is pay as you go for 1 period at the nearest price point
+  at or below 95%. Add one custom code (no end date) and list it in
+  `REFERRAL_IOS_OFFER_CODES`.
+- **Play Console**, on each base plan: offer `chef-referral-5`. Eligibility
+  is new customer acquisition, with phases of a 7-day free trial then 1
+  period at 5% off. Tags are `chef-referral` and `rc-ignore-offer`.
+
+### Rollout
+
+1. Deploy sv1. Events are logged from day one, before any codes are shared.
+2. Configure the store offers and test them in sandbox.
+3. Deploy web with `REFERRAL_APP_LINKS_ENABLED` unset.
+4. Ship the app release that handles `/r/<code>`, then set
+   `REFERRAL_APP_LINKS_ENABLED=true`. Older iOS builds would open the link
+   and drop the code.
+5. Pilot with a few chefs, then open referrals to all approved chefs.

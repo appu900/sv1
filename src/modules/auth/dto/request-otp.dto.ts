@@ -1,5 +1,6 @@
-import { IsEmail, IsNotEmpty, IsString, MinLength, IsOptional, IsArray, IsBoolean, IsNumber } from 'class-validator';
+import { IsEmail, IsNotEmpty, IsString, MinLength, IsOptional, IsArray, IsBoolean, IsNumber, IsIn, MaxLength } from 'class-validator';
 import { Transform } from 'class-transformer';
+import { REFERRAL_SOURCES } from '../../../database/schemas/referral-attribution.schema';
 
 export class RequestOtpDto {
   @IsEmail({}, { message: 'Please provide a valid email address' })
@@ -63,4 +64,14 @@ export class RequestOtpDto {
   @IsOptional()
   @IsArray()
   tastePreference?: string[];
+
+  /** Chef referral code captured from a link, install referrer or typed in. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  referralCode?: string;
+
+  @IsOptional()
+  @IsIn(REFERRAL_SOURCES)
+  referralSource?: string;
 }

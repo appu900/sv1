@@ -20,6 +20,10 @@ import {
   ChefFavouriteSchema,
 } from 'src/database/schemas/chef-favourite.schema';
 import { ChefModule } from '../chef/chef.module';
+import {
+  ReferralLedgerEntry,
+  ReferralLedgerEntrySchema,
+} from 'src/database/schemas/referral-ledger-entry.schema';
 
 @Module({
   imports: [
@@ -35,6 +39,7 @@ import { ChefModule } from '../chef/chef.module';
       { name: Recipe.name, schema: RecipeSchema },
       { name: ChefProfile.name, schema: ChefProfileSchema },
       { name: ChefFavourite.name, schema: ChefFavouriteSchema },
+      { name: ReferralLedgerEntry.name, schema: ReferralLedgerEntrySchema },
     ]),
     forwardRef(() => ChefModule),
   ],
