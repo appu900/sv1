@@ -15,6 +15,7 @@ import {
   ChefProfileDocument,
 } from '../../database/schemas/chef-profile.schema';
 import { ChefLookupService } from './chef-lookup.service';
+import { ChefAnalyticsCronService } from './chef-analytics.cron';
 import { currencyFromCountry, utcDayStart } from './chef.constants';
 
 export interface FoodSavedPersistedEvent {
@@ -42,6 +43,7 @@ export class ChefImpactListener {
     @InjectModel(ChefProfile.name)
     private readonly chefProfileModel: Model<ChefProfileDocument>,
     private readonly chefLookup: ChefLookupService,
+    private readonly analyticsCron: ChefAnalyticsCronService,
   ) {}
 
   @OnEvent('food.saved.persisted', { async: true })
@@ -127,6 +129,17 @@ export class ChefImpactListener {
     } catch (err: any) {
       this.logger.warn(
         `Chef impact rollup failed for log=${event?.logId}: ${err?.message}`,
+      );
+      return;
+    }
+
+    // The community screen reads snapshots; rebuild them now rather than
+    // leaving the cook invisible until the next hourly run.
+    try {
+      await this.analyticsCron.requestCommunityRefresh();
+    } catch (err: any) {
+      this.logger.warn(
+        `Community snapshot refresh failed after log=${event?.logId}: ${err?.message}`,
       );
     }
   }

@@ -31,6 +31,9 @@ export const CHEF_SNAPSHOT_KEYS = {
   awards: (period: 'month' | 'year' | 'all') => `awards:${period}`,
 } as const;
 
+/** Set when a live rollup lands; outside `chefs:*` so invalidateCaches can't drop it. */
+export const CHEF_COMMUNITY_DIRTY_KEY = 'chef:community-dirty';
+
 /** Rising-star eligibility and scoring knobs */
 export const RISING_STAR = {
   minMealsCurrent30d: 25,

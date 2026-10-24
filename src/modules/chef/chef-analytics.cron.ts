@@ -29,6 +29,7 @@ import { ChefService } from './chef.service';
 import { ChefFavouriteService } from './chef-favourite.service';
 import { ChefProfileSyncService } from './chef-profile-sync.service';
 import {
+  CHEF_COMMUNITY_DIRTY_KEY,
   CHEF_SNAPSHOT_KEYS,
   PUBLIC_CHEF_FILTER,
   RISING_STAR,
@@ -183,9 +184,27 @@ export class ChefAnalyticsCronService {
     });
   }
 
+  /**
+   * Called after a live chef rollup so the impact screen reflects a cook
+   * immediately. If another refresh holds the lock, the dirty flag stays set
+   * and the per-minute job below picks it up.
+   */
+  async requestCommunityRefresh() {
+    await this.redisService.set(CHEF_COMMUNITY_DIRTY_KEY, 1, 3600);
+    await this.refreshCommunityAndAwards();
+  }
+
+  @Cron(CronExpression.EVERY_MINUTE)
+  async refreshCommunityIfDirty() {
+    if (!(await this.redisService.exists(CHEF_COMMUNITY_DIRTY_KEY))) return;
+    await this.refreshCommunityAndAwards();
+  }
+
   @Cron(CronExpression.EVERY_HOUR)
   async refreshCommunityAndAwards() {
     await this.withLock('community-awards', 300, async () => {
+      // Clear before reading so a rollup landing mid-refresh re-flags it.
+      await this.redisService.del(CHEF_COMMUNITY_DIRTY_KEY);
       const published = await this.chefProfileModel
         .find({ ...PUBLIC_CHEF_FILTER })
         .select({
