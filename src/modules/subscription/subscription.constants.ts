@@ -51,7 +51,7 @@ export interface PlanDefinition {
 export const PLANS: Record<SubscriptionPlan, PlanDefinition> = {
   basic: {
     plan: 'basic',
-    label: 'Saveful Basic',
+    label: 'Saveful Free',
     isPaid: false,
     limits: {
       aiMealsPerMonth: 3,
