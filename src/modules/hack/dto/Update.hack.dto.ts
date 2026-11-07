@@ -3,6 +3,18 @@ import { Transform } from 'class-transformer';
 import { ArticleBlockDto } from './Create.article.block.dto';
 
 export class UpdateHackDto {
+  /** All categories (array, JSON array string or comma list). Primary categoryId is added first. */
+  @IsOptional()
+  categoryIds?: unknown;
+
+  /** Search keywords (array, JSON array string or comma list). */
+  @IsOptional()
+  keywords?: unknown;
+
+  /** Ingredient ids the tip is about (array, JSON array string or comma list). */
+  @IsOptional()
+  ingredientIds?: unknown;
+
   @IsOptional()
   @IsString()
   title?: string;

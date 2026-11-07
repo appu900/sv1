@@ -136,8 +136,21 @@ export class Hacks {
   @Prop({ type: Types.ObjectId, ref: 'Sponsers', index: true })
   sponsorId?: Types.ObjectId;
 
+  /** Primary category; kept equal to categoryIds[0] for older apps. */
   @Prop({ type: Types.ObjectId, required: true, index: true })
   categoryId: Types.ObjectId;
+
+  /** Every category the tip appears in (Kitchen Tips). */
+  @Prop({ type: [{ type: Types.ObjectId }], default: [], index: true })
+  categoryIds: Types.ObjectId[];
+
+  /** Extra search words for Kitchen Tips search. */
+  @Prop({ type: [String], default: [] })
+  keywords: string[];
+
+  /** Ingredients the tip is about, also used by search. */
+  @Prop({ type: [{ type: Types.ObjectId, ref: 'Ingredient' }], default: [] })
+  ingredientIds: Types.ObjectId[];
 
   // Article blocks stored as an array of mixed schema types
   @Prop({

@@ -11,6 +11,7 @@ import {
   Res,
   Put,
   Delete,
+  Query,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -20,6 +21,7 @@ import {
   ApiConsumes,
   ApiOkResponse,
   ApiCreatedResponse,
+  ApiQuery,
 } from '@nestjs/swagger';
 import { CreateHackCategoryDto } from './dto/Create.hack.category.dto';
 import { RolesGuard } from 'src/common/guards/roles.guard';
@@ -208,6 +210,35 @@ export class HackController {
     @UploadedFiles() files: Express.Multer.File[],
   ) {
     return this.hackService.createHack(dto, files);
+  }
+
+  @Get('')
+  @ApiOperation({
+    summary: 'List kitchen tips',
+    description:
+      'All tips (hacks), without article blocks, newest first. Optional `categoryId` (a tip in several categories appears in each), `page` (default 1) and `limit` (default 20, max 100). Returns `{ items, total, page, limit }`.',
+  })
+  @ApiQuery({ name: 'categoryId', required: false })
+  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'limit', required: false })
+  async listHacks(
+    @Query('categoryId') categoryId?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.hackService.listHacks({ categoryId, page: Number(page), limit: Number(limit) });
+  }
+
+  @Get('search')
+  @ApiOperation({
+    summary: 'Search kitchen tips',
+    description:
+      'Searches tip titles, key words, category names and ingredient names (case and accents ignored; every word must match). `q` needs 2+ characters; optional `categoryId` narrows to one category. Returns `{ query, results }`. Declared before `:id` so it is not read as an id.',
+  })
+  @ApiQuery({ name: 'q', required: true })
+  @ApiQuery({ name: 'categoryId', required: false })
+  async searchHacks(@Query('q') q: string, @Query('categoryId') categoryId?: string) {
+    return this.hackService.searchHacks(q, categoryId);
   }
 
   @Get(':id')
