@@ -95,11 +95,17 @@ export class AnalyticsController {
     description:
       'Returns the authenticated user’s food-saved, money-saved, and CO₂ impact totals used on the home and impact screens.',
   })
+  @ApiQuery({
+    name: 'period',
+    required: false,
+    enum: ['all', '30d'],
+    description: 'all (default) = lifetime totals; 30d = meals logged in the last 30 days.',
+  })
   @ApiOkResponse({ description: 'User impact statistics.' })
-  async getStats(@GetUser() user: any) {
+  async getStats(@GetUser() user: any, @Query('period') period?: string) {
     const userId = user.userId;
     if (!userId) throw new UnauthorizedException();
-    return this.analyticsService.getStats(userId);
+    return this.analyticsService.getStats(userId, period === '30d' ? '30d' : 'all');
   }
 
   @Get('trending')

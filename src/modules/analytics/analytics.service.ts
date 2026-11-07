@@ -558,6 +558,24 @@ async saveFood(
   }
 
   async getAllUsersStats() {
+    // A full-collection sum, so it is cached briefly instead of run per request.
+    const cacheKey = 'analytics:community-total:v1';
+    try {
+      const cached = await this.redisService.get<any>(cacheKey);
+      if (cached && typeof cached.food_savings_all_users === 'string') return cached;
+    } catch (err: any) {
+      this.logger.warn(`community total cache read failed: ${err?.message}`);
+    }
+    const payload = await this.computeAllUsersStats();
+    try {
+      await this.redisService.set(cacheKey, payload, 600);
+    } catch (err: any) {
+      this.logger.warn(`community total cache write failed: ${err?.message}`);
+    }
+    return payload;
+  }
+
+  private async computeAllUsersStats() {
     const result = await this.userFoodAnallyticsProfileModel.aggregate([
       {
         $group: {
@@ -577,15 +595,46 @@ async saveFood(
     };
   }
 
-  async getStats(userId: string) {
+  /**
+   * Personal impact plus the community total. `30d` sums the event log for
+   * the last 30 days; `all` (default) reads the cumulative profile as before.
+   */
+  async getStats(userId: string, period: 'all' | '30d' = 'all') {
     const [userStats, allUsersStats] = await Promise.all([
-      this.getUserStats(userId),
+      period === '30d' ? this.getUserStatsSince(userId, 30) : this.getUserStats(userId),
       this.getAllUsersStats(),
     ]);
 
     return {
       ...userStats,
+      period,
       food_savings_all_users: allUsersStats.food_savings_all_users,
+    };
+  }
+
+  /** Impact from meals logged in the last `days` days. Same shape as getUserStats. */
+  private async getUserStatsSince(userId: string, days: number) {
+    const from = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    const [row] = await this.foodSavedEventLogModel.aggregate([
+      { $match: { userId: new Types.ObjectId(userId), createdAt: { $gte: from } } },
+      {
+        $group: {
+          _id: null,
+          food: { $sum: '$foodSavedInGrams' },
+          money: { $sum: '$moneySaved' },
+          co2: { $sum: '$co2SavedInGrams' },
+          meals: { $sum: 1 },
+        },
+      },
+    ]);
+    return {
+      food_savings_user: ((row?.food ?? 0) / 1000).toFixed(2),
+      completed_meals_count: row?.meals ?? 0,
+      best_food_savings: null,
+      total_co2_savings: ((row?.co2 ?? 0) / 1000).toFixed(2),
+      total_cost_savings: Number(row?.money ?? 0).toFixed(2),
+      best_co2_savings: null,
+      best_cost_savings: null,
     };
   }
 
