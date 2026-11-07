@@ -28,6 +28,12 @@ import {
   ApiOkResponse,
   ApiCreatedResponse,
 } from '@nestjs/swagger';
+import { clientAtLeast } from '../../common/http/client-version';
+import {
+  NEW_WASTE_KEYS_MIN_VERSION,
+  parsePeriod,
+  toLegacyWasteType,
+} from './waste-types';
 import { InventoryService } from './inventory.service';
 import { InventoryAiService } from './inventory-ai.service';
 import {
@@ -207,11 +213,20 @@ export class InventoryController {
     description:
       'Returns the authenticated user’s waste / discard analytics (discarded items, waste type mix, and savings impact).',
   })
+  @ApiQuery({
+    name: 'period',
+    required: false,
+    enum: ['all', '90d', '30d', '7d'],
+    description: 'Rolling window on when items were discarded. Defaults to all time.',
+  })
   @ApiOkResponse({ description: 'Personal waste analytics.' })
-  async getWasteAnalytics(@Request() req) {
+  async getWasteAnalytics(@Request() req, @Query('period') period?: string) {
     const userId = req.user._id || req.user.userId;
     this.logger.log(`Fetching waste analytics for user ${userId}`);
-    return this.inventoryService.getWasteAnalytics(userId);
+    return this.inventoryService.getWasteAnalytics(userId, {
+      period: parsePeriod(period),
+      legacyKeys: !clientAtLeast(req.headers, NEW_WASTE_KEYS_MIN_VERSION),
+    });
   }
 
   @Get('staples/out-of-stock')
@@ -812,11 +827,16 @@ export class InventoryController {
   @ApiOkResponse({ description: 'Waste classification.' })
   async classifyWaste(@Request() req, @Body() dto: WasteClassifyDto) {
     const userId = req.user._id || req.user.userId;
-    return this.inventoryAiService.classifyWaste(
+    const result = await this.inventoryAiService.classifyWaste(
       dto.ingredientName,
       dto.packaging,
       userId,
     );
+    // Older apps only know the old bins.
+    if (!clientAtLeast(req.headers, NEW_WASTE_KEYS_MIN_VERSION)) {
+      return { ...result, wasteType: toLegacyWasteType(result.wasteType) ?? result.wasteType };
+    }
+    return result;
   }
 
   @Post('leftover/shelf-life')

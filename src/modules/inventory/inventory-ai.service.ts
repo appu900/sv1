@@ -12,6 +12,7 @@ import {
   StorageLocation,
   WasteType,
 } from '../../database/schemas/user-inventory.schema';
+import { normaliseWasteType } from './waste-types';
 import { Recipe, RecipeDocument } from '../../database/schemas/recipe.schema';
 import { RedisService } from '../../redis/redis.service';
 import { AIInteractionService } from '../ai-interaction/ai-interaction.service';
@@ -940,7 +941,27 @@ Return JSON array of reasons:
   }
 
 
+  /**
+   * Which bin an item belongs in. Always answers with one of the current
+   * bins (food organics, general waste, recycling); anything else the model
+   * returns falls back to general waste.
+   */
   async classifyWaste(
+    ingredientName: string,
+    packaging?: string,
+    userId?: string,
+  ): Promise<WasteClassification> {
+    const raw = await this.classifyWasteRaw(ingredientName, packaging, userId);
+    const wasteType = normaliseWasteType(raw?.wasteType) ?? WasteType.GENERAL_WASTE;
+    const confidence = Number(raw?.confidence);
+    return {
+      wasteType,
+      confidence: Number.isFinite(confidence) ? Math.min(1, Math.max(0, confidence)) : 0.5,
+      disposalTip: typeof raw?.disposalTip === 'string' ? raw.disposalTip : '',
+    };
+  }
+
+  private async classifyWasteRaw(
     ingredientName: string,
     packaging?: string,
     userId?: string,
@@ -957,10 +978,10 @@ Return JSON array of reasons:
           {
             role: 'system',
             content: `You are a waste segregation assistant for households.
-Classify kitchen waste into:
-- "wet_waste": Wet/Organic waste — biodegradable (vegetable peels, fruit scraps, leftover food, eggshells, tea leaves, coffee grounds)
-- "dry_waste": Dry waste — recyclable (plastic containers, foil, cardboard, glass jars, paper)
-- "hazardous": Hazardous — special disposal (cooking oil in bulk, batteries, medicines, chemical cleaners)
+Classify kitchen waste into one of these bins:
+- "food_organics": Food organics / green bin — food and garden scraps (vegetable peels, fruit scraps, leftover food, eggshells, tea leaves, coffee grounds); can usually be composted
+- "recycling": Recycling — clean packaging (plastic containers, foil, cardboard, glass jars, paper, cans)
+- "general_waste": General waste — everything else, including soft plastics and items needing special disposal (cooking oil in bulk, batteries, medicines, chemical cleaners)
 
 IMPORTANT:
 - For meat/fish scraps, always mention wrapping in paper before binning to reduce odours and keep critters out. Never recommend plastic wrapping.
@@ -1014,10 +1035,10 @@ Respond in JSON only: { "wasteType": "...", "confidence": 0.95, "disposalTip": "
         );
       }
       return {
-        wasteType: WasteType.WET,
+        wasteType: WasteType.FOOD_ORGANICS,
         confidence: 0.3,
         disposalTip:
-          'When unsure, food items generally go in wet/organic waste (green bin). Compost if possible!',
+          'When unsure, food scraps generally go in your food organics / green bin. Compost if possible!',
       };
     }
   }

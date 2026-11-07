@@ -207,7 +207,7 @@ export class InventoryExpiryCronService {
             autoDiscarded: true,
             freshnessStatus: FreshnessStatus.EXPIRED,
             discardReason: DiscardReason.EXPIRED,
-            wasteType: WasteType.WET,
+            wasteType: WasteType.FOOD_ORGANICS,
             discardedAt: now,
             discardedQuantity: '$quantity',
             discardNotes: `Automatically cleared ${EXPIRED_ITEM_RETENTION_DAYS} days after expiry`,

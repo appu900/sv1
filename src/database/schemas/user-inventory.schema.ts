@@ -16,6 +16,11 @@ export enum FreshnessStatus {
 }
 
 export enum WasteType {
+  /** Current bins (redesign). */
+  FOOD_ORGANICS = 'food_organics',
+  GENERAL_WASTE = 'general_waste',
+  RECYCLING = 'recycling',
+  /** Older values, still accepted from older apps and found in past records. */
   WET = 'wet_waste',
   DRY = 'dry_waste',
   HAZARDOUS = 'hazardous',
@@ -27,6 +32,8 @@ export enum DiscardReason {
   LEFTOVER = 'leftover',
   UNUSED = 'unused',
   COOKED = 'cooked',
+  /** Eaten in a recipe (Make it). Kept for history, never counted as waste. */
+  CONSUMED = 'consumed',
 }
 
 export enum InventoryItemSource {
@@ -135,4 +142,6 @@ UserInventoryItemSchema.index({ userId: 1, storageLocation: 1 });
 UserInventoryItemSchema.index({ userId: 1, expiresAt: 1 });
 UserInventoryItemSchema.index({ userId: 1, freshnessStatus: 1 });
 UserInventoryItemSchema.index({ userId: 1, ingredientId: 1 });
-UserInventoryItemSchema.index({ expiresAt: 1, isDiscarded: 1 }); 
+UserInventoryItemSchema.index({ expiresAt: 1, isDiscarded: 1 });
+// Kitchen Insights: discards per user within a time window.
+UserInventoryItemSchema.index({ userId: 1, isDiscarded: 1, discardedAt: -1 }); 

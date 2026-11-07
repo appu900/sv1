@@ -34,6 +34,14 @@ import { BatchAddInventoryItemsDto } from './dto/batch-add-inventory-items.dto';
 import { UpdateInventoryItemDto } from './dto/update-inventory-item.dto';
 import { DiscardInventoryItemDto } from './dto/discard-inventory-item.dto';
 import { ConsumeInventoryItemsDto } from './dto/consume-inventory-items.dto';
+import {
+  normaliseWasteType,
+  NOT_WASTE_REASONS,
+  periodStart,
+  rekeyCounts,
+  toLegacyWasteType,
+  WasteAnalyticsPeriod,
+} from './waste-types';
 import { GetInventoryQueryDto } from './dto/get-inventory-query.dto';
 import { RedisService } from '../../redis/redis.service';
 import { UserEventService } from '../user-events/user-event.service';
@@ -353,7 +361,7 @@ export class InventoryService {
         storageLocation: item.storageLocation,
         source: item.source,
         isDiscarded: true,
-        wasteType: dto.wasteType,
+        wasteType: normaliseWasteType(dto.wasteType),
         discardReason: dto.reason,
         discardNotes: dto.notes,
         discardedAt: new Date(),
@@ -379,7 +387,7 @@ export class InventoryService {
     }
 
     item.isDiscarded = true;
-    item.wasteType = dto.wasteType;
+    item.wasteType = normaliseWasteType(dto.wasteType);
     item.discardReason = dto.reason;
     item.discardNotes = dto.notes;
     item.discardedAt = new Date();
@@ -436,10 +444,10 @@ export class InventoryService {
         .exec();
 
       if (item) {
-        // Fully mark as consumed/cooked
+        // Eaten in a recipe: leaves the kitchen, but is not waste.
         item.isDiscarded = true;
-        item.discardReason = DiscardReason.COOKED;
-        item.wasteType = WasteType.WET;
+        item.discardReason = DiscardReason.CONSUMED;
+        item.wasteType = undefined;
         item.discardedAt = new Date();
         item.discardedQuantity = item.quantity;
         await item.save();
@@ -485,30 +493,53 @@ export class InventoryService {
   }
 
 
-  async getWasteAnalytics(userId: string): Promise<{
+  /**
+   * Personal waste analytics. `period` limits it to a rolling window on
+   * discardedAt; items eaten through a recipe are never counted as waste.
+   * Bin keys use the current categories unless `legacyKeys` is set (for
+   * apps older than NEW_WASTE_KEYS_MIN_VERSION).
+   */
+  async getWasteAnalytics(
+    userId: string,
+    options: { period?: WasteAnalyticsPeriod; legacyKeys?: boolean } = {},
+  ): Promise<{
+    period: WasteAnalyticsPeriod;
     totalDiscarded: number;
     byWasteType: Record<string, number>;
     byReason: Record<string, number>;
     byMonth: { month: string; count: number; quantity: number }[];
     topWastedItems: { name: string; count: number; totalQuantity: number }[];
+    summary: {
+      itemsNotUsed: number;
+      itemsUsed: number;
+      foodOrganics: number;
+      generalWaste: number;
+      recycling: number;
+    };
   }> {
     const userOid = new Types.ObjectId(userId);
+    const period = options.period ?? 'all';
+    const from = periodStart(period);
+    const inWindow = from ? { discardedAt: { $gte: from } } : {};
+    const wasteMatch = {
+      userId: userOid,
+      isDiscarded: true,
+      discardReason: { $nin: NOT_WASTE_REASONS },
+      ...inWindow,
+    };
 
-    const [byWasteType, byReason, byMonth, topWasted, totalCount] =
+    const [byWasteType, byReason, byMonth, topWasted, totalCount, usedCount] =
       await Promise.all([
-        // Group by waste type
         this.inventoryModel.aggregate([
-          { $match: { userId: userOid, isDiscarded: true } },
+          { $match: wasteMatch },
           { $group: { _id: '$wasteType', count: { $sum: 1 } } },
         ]),
-        // Group by reason
         this.inventoryModel.aggregate([
-          { $match: { userId: userOid, isDiscarded: true } },
+          { $match: wasteMatch },
           { $group: { _id: '$discardReason', count: { $sum: 1 } } },
         ]),
-        // Group by month
         this.inventoryModel.aggregate([
-          { $match: { userId: userOid, isDiscarded: true } },
+          { $match: wasteMatch },
           {
             $group: {
               _id: {
@@ -522,9 +553,8 @@ export class InventoryService {
           { $sort: { '_id.year': -1, '_id.month': -1 } },
           { $limit: 12 },
         ]),
-        // Top wasted items
         this.inventoryModel.aggregate([
-          { $match: { userId: userOid, isDiscarded: true } },
+          { $match: wasteMatch },
           {
             $group: {
               _id: '$name',
@@ -535,18 +565,27 @@ export class InventoryService {
           { $sort: { count: -1 } },
           { $limit: 10 },
         ]),
-        // Total count
+        this.inventoryModel.countDocuments(wasteMatch),
         this.inventoryModel.countDocuments({
           userId: userOid,
           isDiscarded: true,
+          discardReason: { $in: NOT_WASTE_REASONS },
+          ...inWindow,
         }),
       ]);
 
+    const rawByType: Record<string, number> = Object.fromEntries(
+      byWasteType.map((r) => [r._id || 'unknown', r.count]),
+    );
+    // Old records hold the old bins; report everything under the current ones.
+    const current = rekeyCounts(rawByType, (key) => normaliseWasteType(key));
+
     return {
+      period,
       totalDiscarded: totalCount,
-      byWasteType: Object.fromEntries(
-        byWasteType.map((r) => [r._id || 'unknown', r.count]),
-      ),
+      byWasteType: options.legacyKeys
+        ? rekeyCounts(current, (key) => toLegacyWasteType(key))
+        : current,
       byReason: Object.fromEntries(
         byReason.map((r) => [r._id || 'unknown', r.count]),
       ),
@@ -560,9 +599,15 @@ export class InventoryService {
         count: r.count,
         totalQuantity: r.totalQuantity,
       })),
+      summary: {
+        itemsNotUsed: totalCount,
+        itemsUsed: usedCount,
+        foodOrganics: current[WasteType.FOOD_ORGANICS] ?? 0,
+        generalWaste: current[WasteType.GENERAL_WASTE] ?? 0,
+        recycling: current[WasteType.RECYCLING] ?? 0,
+      },
     };
   }
-
 
   async getOutOfStockStaples(userId: string): Promise<string[]> {
     const staples = await this.inventoryModel
