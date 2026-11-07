@@ -21,6 +21,13 @@ import {
   UserSavefulPreferences,
 } from 'src/database/schemas/user-saveful-preferences.schema';
 import { deriveSavefulPreferences } from '../auth/saveful-preferences.utils';
+import {
+  cleanSaviVisits,
+  MAX_STORED_KEYS,
+  newKeys,
+  parseSaviIncrements,
+  SaviVisitCounts,
+} from './savi-visits';
 
 @Injectable()
 export class UserService {
@@ -267,5 +274,58 @@ export class UserService {
     return { ok: true };
   }
 
- 
+  /**
+   * Adds Savi screen visits with one atomic $inc and returns the user's
+   * totals. Body shape and limits are checked in parseSaviIncrements.
+   */
+  async incrementSaviVisits(
+    userId: string,
+    increments: unknown,
+  ): Promise<{ saviVisits: SaviVisitCounts }> {
+    if (!Types.ObjectId.isValid(userId)) {
+      throw new BadRequestException('Invalid userId');
+    }
+    const clean = parseSaviIncrements(increments);
+    const _id = new Types.ObjectId(userId);
+
+    const current = await this.userModel
+      .findById(_id)
+      .select({ 'uiState.saviVisits': 1 })
+      .lean();
+    if (!current) throw new NotFoundException('User not found');
+
+    const existing = cleanSaviVisits((current as any).uiState?.saviVisits);
+    const added = newKeys(existing, clean);
+    if (Object.keys(existing).length + added.length > MAX_STORED_KEYS) {
+      throw new BadRequestException(
+        `At most ${MAX_STORED_KEYS} screen keys can be stored`,
+      );
+    }
+
+    const $inc = Object.fromEntries(
+      Object.entries(clean).map(([key, n]) => [`uiState.saviVisits.${key}`, n]),
+    );
+    const updated = await this.userModel
+      .findOneAndUpdate(
+        { _id },
+        { $inc },
+        { new: true, projection: { 'uiState.saviVisits': 1 } },
+      )
+      .lean();
+    if (!updated) throw new NotFoundException('User not found');
+    return { saviVisits: cleanSaviVisits((updated as any).uiState?.saviVisits) };
+  }
+
+  /** Clears Savi visit counts (QA and the in-app developer menu). */
+  async resetSaviVisits(userId: string): Promise<{ saviVisits: SaviVisitCounts }> {
+    if (!Types.ObjectId.isValid(userId)) {
+      throw new BadRequestException('Invalid userId');
+    }
+    const result = await this.userModel.updateOne(
+      { _id: new Types.ObjectId(userId) },
+      { $unset: { 'uiState.saviVisits': 1 } },
+    );
+    if (result.matchedCount === 0) throw new NotFoundException('User not found');
+    return { saviVisits: {} };
+  }
 }

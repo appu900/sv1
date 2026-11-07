@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -15,6 +16,7 @@ import { UserService } from './user.service';
 import { GetUser } from 'src/common/decorators/Get.user.decorator';
 import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
 import { UserProfileDto } from './dto/user.profile.dto';
+import { SaviVisitIncrementsDto } from './dto/savi-visits.dto';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiJwtAuth } from 'src/common/swagger/api-auth.decorators';
 
@@ -108,5 +110,38 @@ export class UserController {
     const userId = user.userId;
     if (!userId) throw new UnauthorizedException();
     return this.userService.updateEmailMarketing(userId, body.isUserSubscribed);
+  }
+
+  @Post('ui-state/savi-visits')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Record Savi screen visits',
+    description:
+      'Authenticated user (JWT). Body: `{ increments: { <screenKey>: n } }`. Adds the visits atomically and returns the totals as `{ saviVisits }`. The app batches visits and retries failed sends, so counts follow the account across devices. 400 on a malformed key or value, or when more than 64 keys would be stored.',
+  })
+  @ApiOkResponse({ description: '`{ saviVisits: { <screenKey>: total } }`.' })
+  async incrementSaviVisits(
+    @Body() dto: SaviVisitIncrementsDto,
+    @GetUser() user: any,
+  ) {
+    const userId = user.userId;
+    if (!userId) throw new UnauthorizedException();
+    return this.userService.incrementSaviVisits(userId, dto.increments);
+  }
+
+  @Delete('ui-state/savi-visits')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Reset Savi screen visits',
+    description:
+      'Authenticated user (JWT). Clears the caller’s Savi visit counts, so first-visit screens show again. Used by QA and the in-app developer menu. Returns `{ saviVisits: {} }`.',
+  })
+  @ApiOkResponse({ description: '`{ saviVisits: {} }`.' })
+  async resetSaviVisits(@GetUser() user: any) {
+    const userId = user.userId;
+    if (!userId) throw new UnauthorizedException();
+    return this.userService.resetSaviVisits(userId);
   }
 }

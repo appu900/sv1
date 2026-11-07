@@ -30,6 +30,7 @@ import { SavefulPreferencesDto } from './dto/saveful-preferences.dto';
 import { UserEventService } from '../user-events/user-event.service';
 import { UserEventType } from '../../database/schemas/user-event.schema';
 import { ReferralAttributionService } from '../referral/referral-attribution.service';
+import { cleanSaviVisits } from '../user/savi-visits';
 import {
   Gender,
   HealthProfile,
@@ -582,6 +583,9 @@ export class AuthService {
       dietaryProfile: user.dietaryProfile,
       savefulPreferences: user.savefulPreferences || null,
       isUserSubscribed: user.isUserSubscribed !== false,
+      uiState: {
+        saviVisits: cleanSaviVisits((user as any).uiState?.saviVisits),
+      },
     };
   }
 
