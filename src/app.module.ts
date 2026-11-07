@@ -30,6 +30,7 @@ import { ShoppingListModule } from './modules/shopping-list/shopping-list.module
 import { TrackSurveyModule } from './modules/track-survey/track-survey.module';
 import { SurveyConfigModule } from './modules/survey-config/survey-config.module';
 import { PromoModule } from './modules/promo/promo.module';
+import { AppConfigModule } from './modules/app-config/app-config.module';
 import { QantasModule } from './modules/qantas/qantas.module';
 import { InventoryModule } from './modules/inventory/inventory.module';
 import {EventEmitterModule} from "@nestjs/event-emitter"
@@ -116,6 +117,7 @@ import { ReferralModule } from './modules/referral/referral.module';
     TrackSurveyModule,
     SurveyConfigModule,
     PromoModule,
+    AppConfigModule,
     QantasModule,
     InventoryModule,
     SqsModule,
