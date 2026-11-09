@@ -41,7 +41,8 @@
     "create:demo-account": "ts-node -r tsconfig-paths/register scripts/create-demo-account.ts",
     "delete:demo-account": "ts-node -r tsconfig-paths/register scripts/delete-demo-account.ts",
     "migrate:waste-types": "ts-node -r tsconfig-paths/register scripts/migrate-waste-types.ts",
-    "migrate:hacks-multi-category": "ts-node -r tsconfig-paths/register scripts/migrate-hacks-multi-category.ts"
+    "migrate:hacks-multi-category": "ts-node -r tsconfig-paths/register scripts/migrate-hacks-multi-category.ts",
+    "import:ingredient-images": "ts-node -r tsconfig-paths/register scripts/import-ingredient-images.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.958.0",
