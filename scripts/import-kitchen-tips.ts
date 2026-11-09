@@ -13,6 +13,8 @@
  *   npm run import:kitchen-tips -- <manifest.csv> --images=<folder> --apply --update
  *   options: --report=path.csv
  *
+ * Template with the columns and one example row: scripts/templates/kitchen-tips-manifest.csv
+ *
  * Rows with problems are never imported. Categories and sponsors must exist
  * in the admin panel first. Tip lists refresh in the app within 30 minutes
  * (cache), or clear the Redis keys hacks:* to see them at once.
