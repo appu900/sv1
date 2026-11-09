@@ -45,7 +45,11 @@ function looseKey(value: string): string {
 
 /** Names to try for a file, best first: exact, without "(2)", inside and outside brackets. */
 export function candidateNames(fileName: string): string[] {
-  const base = fileName.replace(/\.[a-z0-9]+$/i, '');
+  return nameCandidates(fileName.replace(/\.[a-z0-9]+$/i, ''));
+}
+
+/** Same as candidateNames for a plain name (no file extension to strip). */
+export function nameCandidates(base: string): string[] {
   const withoutCopy = base.replace(/\s*\(\d+\)\s*$/, '');
   const names = [base, withoutCopy];
   const bracket = withoutCopy.match(/^(.*?)\s*\(([^)]+)\)\s*(.*)$/);
@@ -87,12 +91,21 @@ export function buildNameIndex(ingredients: readonly MatchableIngredient[]): Ing
 
 /** Exact name or alias first, then ignoring plurals and word order. */
 export function matchImageFile(fileName: string, index: IngredientNameIndex): ImageMatch {
-  for (const name of candidateNames(fileName)) {
+  return matchCandidates(candidateNames(fileName), index);
+}
+
+/** Matches a typed ingredient name ("Stale bread", "Spring onions") the same way. */
+export function matchIngredientName(name: string, index: IngredientNameIndex): ImageMatch {
+  return matchCandidates(nameCandidates(name), index);
+}
+
+function matchCandidates(candidates: string[], index: IngredientNameIndex): ImageMatch {
+  for (const name of candidates) {
     const ids = index.exact.get(name);
     if (ids?.size === 1) return { status: 'matched', id: [...ids][0], via: name };
     if (ids && ids.size > 1) return { status: 'ambiguous', ids: [...ids], via: name };
   }
-  for (const name of candidateNames(fileName)) {
+  for (const name of candidates) {
     const ids = index.loose.get(looseKey(name));
     if (ids?.size === 1) return { status: 'matched', id: [...ids][0], via: `~${name}` };
     if (ids && ids.size > 1) return { status: 'ambiguous', ids: [...ids], via: `~${name}` };

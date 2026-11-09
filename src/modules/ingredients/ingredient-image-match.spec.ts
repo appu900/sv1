@@ -3,6 +3,7 @@ import {
   candidateNames,
   isNumberedCopy,
   matchImageFile,
+  matchIngredientName,
 } from './ingredient-image-match';
 
 const index = buildNameIndex([
@@ -43,6 +44,11 @@ describe('ingredient image matching', () => {
   it('reports ambiguous and unmatched files', () => {
     expect(matchImageFile('Chilli.png', index)).toMatchObject({ status: 'ambiguous' });
     expect(matchImageFile('Dragon fruit.png', index)).toEqual({ status: 'unmatched' });
+  });
+
+  it('matches typed names without treating dots as extensions', () => {
+    expect(matchIngredientName('almonds, flaked', index)).toMatchObject({ status: 'matched', id: 'flaked' });
+    expect(matchIngredientName('Indian gooseberries', index)).toMatchObject({ status: 'matched', id: 'amla' });
   });
 
   it('spots numbered copies', () => {
