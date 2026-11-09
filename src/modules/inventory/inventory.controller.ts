@@ -59,6 +59,7 @@ import { InventoryItemSource } from '../../database/schemas/user-inventory.schem
 import { SubscriptionService } from '../subscription/subscription.service';
 import { ApiJwtAuth, ApiJwtRoles } from '../../common/swagger/api-auth.decorators';
 import { isOpenAiServiceError, toAiUnavailable } from '../../common/utils/openai-error.util';
+import { parseExcludeIds } from './suggestion-filters';
 
 @ApiTags('Inventory')
 @ApiJwtAuth()
@@ -158,12 +159,18 @@ export class InventoryController {
   @ApiQuery({ name: 'country', required: false, description: 'ISO country code for recipe catalog scope.' })
   @ApiQuery({ name: 'limit', required: false, description: 'Max suggestions. Defaults to 10.' })
   @ApiQuery({ name: 'ingredientId', required: false, description: 'Only recipes that use this ingredient.' })
+  @ApiQuery({
+    name: 'excludeIngredientIds',
+    required: false,
+    description: 'Comma-separated ingredient ids to leave out of the match (removed chips on "What can I cook?").',
+  })
   @ApiOkResponse({ description: 'Quick meal suggestions.' })
   async getMealSuggestionsQuick(
     @Request() req,
     @Query('country') country?: string,
     @Query('limit') limit?: number,
     @Query('ingredientId') ingredientId?: string,
+    @Query('excludeIngredientIds') excludeIngredientIds?: string,
   ) {
     const userId = req.user._id || req.user.userId;
     this.logger.log(
@@ -176,6 +183,7 @@ export class InventoryController {
       country,
       limit || 10,
       ingredientId,
+      parseExcludeIds(excludeIngredientIds),
     );
   }
 

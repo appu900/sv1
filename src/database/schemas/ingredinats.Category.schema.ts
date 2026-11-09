@@ -18,6 +18,13 @@ export class IngredientsCategory {
 
   @Prop()
   imageUrl?: string
+
+  /**
+   * Fruit or vegetable category: throwing one out first suggests ways to use
+   * it. Left unset until an admin chooses, so the app can fall back to names.
+   */
+  @Prop()
+  isProduce?: boolean
 }
 
 

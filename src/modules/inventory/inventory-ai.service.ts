@@ -13,6 +13,7 @@ import {
   WasteType,
 } from '../../database/schemas/user-inventory.schema';
 import { normaliseWasteType } from './waste-types';
+import { withoutExcluded } from './suggestion-filters';
 import { Recipe, RecipeDocument } from '../../database/schemas/recipe.schema';
 import { RedisService } from '../../redis/redis.service';
 import { AIInteractionService } from '../ai-interaction/ai-interaction.service';
@@ -555,13 +556,14 @@ Return JSON EXACTLY in this shape:
     country?: string,
     limit = 10,
     filterIngredientId?: string,
+    excludeIngredientIds: readonly string[] = [],
   ): Promise<{
     suggestions: MealSuggestion[];
     inventoryNames: string[];
     expiringNames: string[];
     inventoryIngredientIdSet: Set<string>;
   }> {
-    const inventoryItems = await this.inventoryModel
+    const kitchenItems = await this.inventoryModel
       .find({
         userId: new Types.ObjectId(userId),
         isDiscarded: false,
@@ -569,6 +571,7 @@ Return JSON EXACTLY in this shape:
       })
       .lean()
       .exec();
+    const inventoryItems = withoutExcluded(kitchenItems, excludeIngredientIds);
 
     if (inventoryItems.length === 0) {
       return {
@@ -740,13 +743,15 @@ Return JSON EXACTLY in this shape:
     country?: string,
     limit = 10,
     filterIngredientId?: string,
+    excludeIngredientIds: readonly string[] = [],
   ): Promise<MealSuggestion[]> {
     const parsedLimit = Number(limit);
     const resolvedLimit =
       Number.isFinite(parsedLimit) && parsedLimit > 0
         ? Math.floor(parsedLimit)
         : 10;
-    const cacheKey = `${this.CACHE_PREFIX}:suggestions:quick:${userId}:country:${country ?? 'all'}:limit:${resolvedLimit}:ing:${filterIngredientId ?? 'all'}`;
+    const excludedKey = excludeIngredientIds.length ? excludeIngredientIds.join('.') : 'none';
+    const cacheKey = `${this.CACHE_PREFIX}:suggestions:quick:${userId}:country:${country ?? 'all'}:limit:${resolvedLimit}:ing:${filterIngredientId ?? 'all'}:ex:${excludedKey}`;
 
     try {
       const cached = await this.redisService.get(cacheKey);
@@ -763,6 +768,7 @@ Return JSON EXACTLY in this shape:
       country,
       resolvedLimit,
       filterIngredientId,
+      excludeIngredientIds,
     );
  
     try {
@@ -845,8 +851,8 @@ Return JSON EXACTLY in this shape:
 
     // Invalidate the quick suggestions cache so next fetch gets fresh data
     try {
-      await this.redisService.del(
-        `${this.CACHE_PREFIX}:suggestions:quick:${userId}`,
+      await this.redisService.delByPattern(
+        `${this.CACHE_PREFIX}:suggestions:quick:${userId}*`,
       );
     } catch (e) {
       // non-critical

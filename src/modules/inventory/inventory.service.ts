@@ -97,7 +97,7 @@ export class InventoryService {
     const items = await this.inventoryModel
       .find(filter)
       .populate('ingredientId', 'name heroImageUrl theme categoryId')
-      .populate('categoryId', 'name')
+      .populate('categoryId', 'name isProduce')
       .sort({ position: 1, expiresAt: 1, createdAt: -1 })
       .lean()
       .exec();
@@ -130,7 +130,7 @@ export class InventoryService {
         isDiscarded: false,
       })
       .populate('ingredientId', 'name heroImageUrl theme categoryId')
-      .populate('categoryId', 'name')
+      .populate('categoryId', 'name isProduce')
       .sort({ position: 1, expiresAt: 1, createdAt: -1 })
       .lean()
       .exec();
