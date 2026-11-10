@@ -48,7 +48,9 @@ async function main() {
 
   const conn = await mongoose.createConnection(uri, { dbName: process.env.MONGODB_DBNAME || 'saveful' }).asPromise();
   try {
-    const model = <T>(name: string, schema: mongoose.Schema) => conn.model<T>(name, schema);
+    // Untyped on purpose: passing these large schemas through mongoose's generic
+    // model<T>() makes the TypeScript build run out of memory (nest build OOM).
+    const model = (name: string, schema: unknown): any => conn.model(name, schema as any);
     const service = new SubscriptionAnalyticsService(
       model(Subscription.name, SubscriptionSchema) as any,
       model(RevenueCatEvent.name, RevenueCatEventSchema) as any,
