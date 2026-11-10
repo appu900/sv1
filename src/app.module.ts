@@ -49,6 +49,7 @@ import { DeeplinkModule } from './modules/deeplink/deeplink.module';
 import { PerksModule } from './modules/perks/perks.module';
 import { DataVersionModule } from './modules/data-version/data-version.module';
 import { ReferralModule } from './modules/referral/referral.module';
+import { SubscriptionAnalyticsModule } from './modules/subscription-analytics/subscription-analytics.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
@@ -132,6 +133,7 @@ import { ReferralModule } from './modules/referral/referral.module';
     DeeplinkModule,
     PerksModule,
     ReferralModule,
+    SubscriptionAnalyticsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

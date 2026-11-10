@@ -43,7 +43,8 @@
     "migrate:waste-types": "ts-node -r tsconfig-paths/register scripts/migrate-waste-types.ts",
     "migrate:hacks-multi-category": "ts-node -r tsconfig-paths/register scripts/migrate-hacks-multi-category.ts",
     "import:ingredient-images": "ts-node -r tsconfig-paths/register scripts/import-ingredient-images.ts",
-    "import:kitchen-tips": "ts-node -r tsconfig-paths/register scripts/import-kitchen-tips.ts"
+    "import:kitchen-tips": "ts-node -r tsconfig-paths/register scripts/import-kitchen-tips.ts",
+    "analytics:subscriptions:rebuild": "ts-node --transpile-only -r tsconfig-paths/register scripts/rebuild-subscription-analytics.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.958.0",
