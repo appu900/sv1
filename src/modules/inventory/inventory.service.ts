@@ -29,6 +29,12 @@ import {
   User,
   UserDocument,
 } from '../../database/schemas/user.auth.schema';
+import { Recipe, RecipeDocument } from '../../database/schemas/recipe.schema';
+import {
+  buildNameIndex,
+  IngredientNameIndex,
+} from '../ingredients/ingredient-image-match';
+import { ingredientImageFor, leftoverRecipeName } from './item-images';
 import { AddInventoryItemDto } from './dto/add-inventory-item.dto';
 import { BatchAddInventoryItemsDto } from './dto/batch-add-inventory-items.dto';
 import { UpdateInventoryItemDto } from './dto/update-inventory-item.dto';
@@ -62,6 +68,8 @@ export class InventoryService {
     private shoppingListModel: Model<ShoppingListDocument>,
     @InjectModel(User.name)
     private userModel: Model<UserDocument>,
+    @InjectModel(Recipe.name)
+    private recipeModel: Model<RecipeDocument>,
     private readonly redisService: RedisService,
     private readonly userEventService: UserEventService,
   ) {}
@@ -102,6 +110,12 @@ export class InventoryService {
       .lean()
       .exec();
 
+    try {
+      await this.fillMissingImages(items);
+    } catch (e: unknown) {
+      this.logger.warn('Kitchen item pictures failed:', (e as Error)?.message);
+    }
+
     return items as UserInventoryItemDocument[];
   }
 
@@ -116,7 +130,7 @@ export class InventoryService {
       expired: number;
     };
   }> {
-    const cacheKey = `${this.CACHE_PREFIX}:grouped:${userId}`;
+    const cacheKey = `${this.CACHE_PREFIX}:grouped:v2:${userId}`;
     try {
       const cached = await this.redisService.get(cacheKey);
       if (cached) return JSON.parse(cached);
@@ -694,9 +708,75 @@ export class InventoryService {
     }
   }
 
+  /** Ingredient names and pictures, rebuilt at most every 10 minutes. */
+  private ingredientImages: {
+    at: number;
+    index: IngredientNameIndex;
+    imageById: Map<string, string>;
+  } | null = null;
+
+  private async getIngredientImages() {
+    const TEN_MINUTES = 10 * 60 * 1000;
+    if (this.ingredientImages && Date.now() - this.ingredientImages.at < TEN_MINUTES) {
+      return this.ingredientImages;
+    }
+    const docs = await this.ingredientModel
+      .find({ heroImageUrl: { $nin: [null, ''] } }, 'name aliases heroImageUrl')
+      .lean()
+      .exec();
+    const imageById = new Map<string, string>();
+    const matchable = docs.map((d: any) => {
+      const id = String(d._id);
+      imageById.set(id, d.heroImageUrl);
+      return { id, name: d.name ?? '', aliases: d.aliases ?? [] };
+    });
+    this.ingredientImages = { at: Date.now(), index: buildNameIndex(matchable), imageById };
+    return this.ingredientImages;
+  }
+
+  /**
+   * Items with no picture (not linked to an ingredient: receipt scans, voice,
+   * typed names, leftovers) get one: the recipe's for a leftover, otherwise the
+   * best-matching ingredient's. Saved on the item so it's only worked out once.
+   */
+  private async fillMissingImages(items: any[]): Promise<void> {
+    const missing = items.filter(
+      (i) => !i.heroImageUrl && !(i.ingredientId && typeof i.ingredientId === 'object' && i.ingredientId.heroImageUrl),
+    );
+    if (!missing.length) return;
+
+    const titles = [...new Set(missing.map((i) => leftoverRecipeName(i.name ?? '')).filter(Boolean) as string[])];
+    const recipeImage = new Map<string, string>();
+    if (titles.length) {
+      const recipes = await this.recipeModel
+        .find({ title: { $in: titles }, heroImageUrl: { $nin: [null, ''] } }, 'title heroImageUrl')
+        .collation({ locale: 'en', strength: 2 })
+        .lean()
+        .exec();
+      for (const r of recipes as any[]) recipeImage.set(String(r.title).toLowerCase(), r.heroImageUrl);
+    }
+
+    const { index, imageById } = await this.getIngredientImages();
+    const updates: any[] = [];
+    for (const item of missing) {
+      const title = leftoverRecipeName(item.name ?? '');
+      const url =
+        (title && recipeImage.get(title.toLowerCase())) || ingredientImageFor(item.name ?? '', index, imageById);
+      if (!url) continue;
+      item.heroImageUrl = url;
+      updates.push({
+        updateOne: {
+          filter: { _id: item._id, heroImageUrl: { $in: [null, ''] } },
+          update: { $set: { heroImageUrl: url } },
+        },
+      });
+    }
+    if (updates.length) await this.inventoryModel.bulkWrite(updates, { ordered: false });
+  }
+
   private async invalidateCache(userId: string): Promise<void> {
     try {
-      await this.redisService.del(`${this.CACHE_PREFIX}:grouped:${userId}`);
+      await this.redisService.del(`${this.CACHE_PREFIX}:grouped:v2:${userId}`);
     } catch (e: unknown) {
       this.logger.warn('Cache invalidation failed:', (e as Error)?.message);
     }
