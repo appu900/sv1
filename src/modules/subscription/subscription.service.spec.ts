@@ -474,3 +474,66 @@ describe('SubscriptionService feature gating', () => {
     }
   });
 });
+
+describe('SubscriptionService plan gifts', () => {
+  function withGift(store: Record<string, unknown> | null, gifts: Record<string, unknown>[]) {
+    const subscriptionModel = {
+      findOneAndUpdate: jest.fn(async () => store),
+      updateOne: jest.fn(),
+      findOne: jest.fn(async () => store),
+    };
+    const usageModel = { findOneAndUpdate: jest.fn(), updateOne: jest.fn(), findOne: jest.fn(async () => null) };
+    const planGiftModel = {
+      find: jest.fn(() => ({ lean: () => ({ exec: async () => gifts }) })),
+      findOneAndUpdate: jest.fn(),
+    };
+    const configService = { get: jest.fn(() => undefined) } as unknown as ConfigService;
+    const service = new SubscriptionService(
+      subscriptionModel as any,
+      usageModel as any,
+      configService,
+      planGiftModel as any,
+    );
+    return { service, planGiftModel };
+  }
+  const userId = new Types.ObjectId().toHexString();
+  const later = new Date(Date.now() + 30 * 24 * 3600 * 1000);
+
+  it('raises a Basic user to the gifted plan', async () => {
+    const { service } = withGift({ plan: 'basic', status: 'active', willRenew: false }, [
+      { plan: 'hero', source: 'christmas-2026', startsAt: new Date(0), expiresAt: later },
+    ]);
+    expect(await service.getPlan(userId)).toBe('hero');
+    const snap = await service.getSubscriptionSnapshot(userId);
+    expect(snap.plan).toBe('hero');
+    expect(snap.billedPlan).toBe('basic');
+    expect(snap.gift).toEqual({ plan: 'hero', source: 'christmas-2026', expiresAt: later });
+    expect(await service.getStoreEffectivePlan(userId)).toBe('basic');
+  });
+
+  it('lets a Legend gift beat a paid Hero store plan', async () => {
+    const { service } = withGift(
+      { plan: 'hero', status: 'active', willRenew: true, expiresAt: later, productId: 'saveful.hero.monthly' },
+      [{ plan: 'legend', source: 'christmas-2026', startsAt: new Date(0), expiresAt: later }],
+    );
+    expect(await service.getPlan(userId)).toBe('legend');
+    expect(await service.getStoreEffectivePlan(userId)).toBe('hero');
+  });
+
+  it('never lowers a higher store plan', async () => {
+    const { service } = withGift(
+      { plan: 'legend', status: 'active', willRenew: true, expiresAt: later },
+      [{ plan: 'hero', source: 'christmas-2026', startsAt: new Date(0), expiresAt: later }],
+    );
+    expect(await service.getPlan(userId)).toBe('legend');
+  });
+
+  it('goes back to the store plan when no gift is active', async () => {
+    const { service, planGiftModel } = withGift({ plan: 'basic', status: 'active', willRenew: false }, []);
+    expect(await service.getPlan(userId)).toBe('basic');
+    // Only gifts active now are looked up.
+    const query = (planGiftModel.find as jest.Mock).mock.calls[0][0];
+    expect(query.startsAt.$lte).toBeInstanceOf(Date);
+    expect(query.expiresAt.$gt).toBeInstanceOf(Date);
+  });
+});

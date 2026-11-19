@@ -16,6 +16,12 @@ export const REDESIGN_AREAS = [
   'make',
   'tips',
   'track',
+  /** My Nutrition tab, its meal plan and food-logging screens. */
+  'nutrition',
+  /** Create and join a community group. */
+  'community',
+  /** How was your meal (after cooking) and the weekly check-in. */
+  'surveys',
 ] as const;
 
 export type RedesignArea = (typeof REDESIGN_AREAS)[number];

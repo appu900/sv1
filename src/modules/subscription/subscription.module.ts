@@ -8,6 +8,7 @@ import {
   SubscriptionUsage,
   SubscriptionUsageSchema,
 } from '../../database/schemas/subscription-usage.schema';
+import { PlanGift, PlanGiftSchema } from '../../database/schemas/plan-gift.schema';
 import { SubscriptionService } from './subscription.service';
 import { SubscriptionController } from './subscription.controller';
 import { RevenueCatWebhookController } from './revenuecat-webhook.controller';
@@ -20,6 +21,7 @@ import { ReferralModule } from '../referral/referral.module';
     MongooseModule.forFeature([
       { name: Subscription.name, schema: SubscriptionSchema },
       { name: SubscriptionUsage.name, schema: SubscriptionUsageSchema },
+      { name: PlanGift.name, schema: PlanGiftSchema },
     ]),
     ReferralModule,
   ],

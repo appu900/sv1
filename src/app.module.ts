@@ -28,6 +28,7 @@ import { FavouriteModule } from './modules/favourite/favourite.module';
 import { BadgesModule } from './modules/badges/badges.module';
 import { ShoppingListModule } from './modules/shopping-list/shopping-list.module';
 import { TrackSurveyModule } from './modules/track-survey/track-survey.module';
+import { CampaignSurveyModule } from './modules/campaign-survey/campaign-survey.module';
 import { SurveyConfigModule } from './modules/survey-config/survey-config.module';
 import { PromoModule } from './modules/promo/promo.module';
 import { AppConfigModule } from './modules/app-config/app-config.module';
@@ -116,6 +117,7 @@ import { SubscriptionAnalyticsModule } from './modules/subscription-analytics/su
     BadgesModule,
     ShoppingListModule,
     TrackSurveyModule,
+    CampaignSurveyModule,
     SurveyConfigModule,
     PromoModule,
     AppConfigModule,

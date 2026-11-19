@@ -16,6 +16,11 @@ import {
   SubscriptionUsageDocument,
 } from '../../database/schemas/subscription-usage.schema';
 import {
+  GiftPlan,
+  PlanGift,
+  PlanGiftDocument,
+} from '../../database/schemas/plan-gift.schema';
+import {
   FeatureKey,
   LimitKey,
   PLANS,
@@ -60,6 +65,17 @@ class RevenueCatCustomerNotFoundError extends Error {
   }
 }
 
+const PLAN_RANK: Record<SubscriptionPlan, number> = { basic: 0, hero: 1, legend: 2 };
+
+/** The higher of two plans; a missing second plan leaves the first. */
+export function higherPlan(
+  a: SubscriptionPlan,
+  b?: SubscriptionPlan | null,
+): SubscriptionPlan {
+  if (!b) return a;
+  return PLAN_RANK[b] > PLAN_RANK[a] ? b : a;
+}
+
 @Injectable()
 export class SubscriptionService {
   private readonly logger = new Logger(SubscriptionService.name);
@@ -78,7 +94,51 @@ export class SubscriptionService {
     @InjectModel(SubscriptionUsage.name)
     private readonly usageModel: Model<SubscriptionUsageDocument>,
     private readonly configService: ConfigService,
+    @InjectModel(PlanGift.name)
+    private readonly planGiftModel?: Model<PlanGiftDocument>,
   ) {}
+
+  /** The best gift active right now, if any (see PlanGift). */
+  async getActiveGift(
+    userId: string,
+    now: Date = new Date(),
+  ): Promise<{ plan: GiftPlan; source: string; startsAt: Date; expiresAt: Date } | null> {
+    if (!this.planGiftModel) return null;
+    const gifts = await this.planGiftModel
+      .find({
+        userId: toObjectId(userId),
+        startsAt: { $lte: now },
+        expiresAt: { $gt: now },
+      })
+      .lean()
+      .exec();
+    if (!gifts?.length) return null;
+    const best = [...gifts].sort(
+      (a: any, b: any) =>
+        PLAN_RANK[b.plan as SubscriptionPlan] - PLAN_RANK[a.plan as SubscriptionPlan] ||
+        new Date(b.expiresAt).getTime() - new Date(a.expiresAt).getTime(),
+    )[0] as any;
+    return { plan: best.plan, source: best.source, startsAt: best.startsAt, expiresAt: best.expiresAt };
+  }
+
+  /**
+   * Grants free plan time from Saveful (no store purchase). One gift per user
+   * per source; granting the same source again returns the existing gift.
+   */
+  async grantGift(
+    userId: string,
+    gift: { plan: GiftPlan; source: string; startsAt: Date; expiresAt: Date },
+  ) {
+    if (!this.planGiftModel) throw new ServiceUnavailableException('Gifts are unavailable');
+    return this.planGiftModel
+      .findOneAndUpdate(
+        { userId: toObjectId(userId), source: gift.source },
+        { $setOnInsert: { userId: toObjectId(userId), ...gift } },
+        { upsert: true, new: true, setDefaultsOnInsert: true },
+      )
+      .lean()
+      .exec();
+  }
 
   async getOrCreateSubscription(userId: string): Promise<SubscriptionDocument> {
     const uid = toObjectId(userId);
@@ -115,7 +175,32 @@ export class SubscriptionService {
   }
 
 
+  /**
+   * The user's plan: the store plan (with lazy expiry), raised to any active
+   * Saveful gift. `storePlan` is the store plan alone.
+   */
   private async resolveActiveSubscription(
+    userId: string,
+    options: { readOnly?: boolean } = {},
+  ): Promise<{
+    sub: SubscriptionDocument;
+    plan: SubscriptionPlan;
+    storePlan: SubscriptionPlan;
+    gift: Awaited<ReturnType<SubscriptionService['getActiveGift']>>;
+  }> {
+    const [store, gift] = await Promise.all([
+      this.resolveStoreSubscription(userId, options),
+      this.getActiveGift(userId).catch(() => null),
+    ]);
+    return {
+      ...store,
+      storePlan: store.plan,
+      plan: higherPlan(store.plan, gift?.plan),
+      gift,
+    };
+  }
+
+  private async resolveStoreSubscription(
     userId: string,
     options: { readOnly?: boolean } = {},
   ): Promise<{
@@ -150,6 +235,17 @@ export class SubscriptionService {
       return { sub, plan: 'basic' };
     }
     return { sub, plan: sub.plan };
+  }
+
+  /**
+   * The plan the user pays a store for, ignoring Saveful gifts. A cancelled
+   * trial counts as Basic, as in the snapshot.
+   */
+  async getStoreEffectivePlan(userId: string): Promise<SubscriptionPlan> {
+    const { sub, plan } = await this.resolveStoreSubscription(userId, { readOnly: true });
+    const isTrialPeriod = sub.periodType === 'trial' || sub.periodType === 'intro';
+    const cancelledTrial = sub.status === 'cancelled' && !sub.willRenew && isTrialPeriod;
+    return cancelledTrial ? 'basic' : plan;
   }
 
   async getPlan(userId: string): Promise<SubscriptionPlan> {
@@ -1552,7 +1648,7 @@ export class SubscriptionService {
 
   async getSubscriptionSnapshot(userId: string) {
 
-    const { sub, plan } = await this.resolveActiveSubscription(userId, {
+    const { sub, storePlan: plan, gift } = await this.resolveActiveSubscription(userId, {
       readOnly: true,
     });
 
@@ -1560,7 +1656,8 @@ export class SubscriptionService {
       sub.periodType === 'trial' || sub.periodType === 'intro';
     const cancelledTrial =
       sub.status === 'cancelled' && !sub.willRenew && isTrialPeriod;
-    const effectivePlan: SubscriptionPlan = cancelledTrial ? 'basic' : plan;
+    // A Saveful gift (e.g. the Christmas thank-you) raises the plan while it lasts.
+    const effectivePlan: SubscriptionPlan = higherPlan(cancelledTrial ? 'basic' : plan, gift?.plan);
     const def = PLANS[effectivePlan];
 
     const period = currentUsagePeriod({
@@ -1608,6 +1705,8 @@ export class SubscriptionService {
         hero: trialsConsumed.hero ?? null,
         legend: trialsConsumed.legend ?? null,
       },
+      /** Free plan time from Saveful (not billed by any store), if active. */
+      gift: gift ? { plan: gift.plan, source: gift.source, expiresAt: gift.expiresAt } : null,
       features: def.features,
       limits: def.limits,
       usage: {
