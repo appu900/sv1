@@ -259,4 +259,96 @@ Respond ONLY with valid JSON, no markdown, no explanation:
 
     return { ...parsed, aiEventId };
   }
+
+  /**
+   * One new meal for a day of an existing plan (swap or add). Same context
+   * as a full plan; avoids repeating the plan's other meals.
+   */
+  async generateSingleMeal(
+    ctx: MealPlanGenerationContext,
+    request: { slot: MealSlotType; dayLabel: string; avoidTitles: string[]; replacing?: string },
+    userId?: string,
+  ): Promise<AiPlanMeal> {
+    if (!this.openai) {
+      throw new ServiceUnavailableException('AI meal planning is not available — OPENAI_API_KEY is not configured');
+    }
+    const cuisineCtx = getCuisineContext(ctx.country);
+    const inventoryText = ctx.inventory?.length
+      ? ctx.inventory.map((i) => `• ${i.name} — ${i.quantity} ${i.unit} (${i.freshness})`).join('\n')
+      : 'No inventory data available.';
+    const d = ctx.dietary ?? {};
+    const dietary = [
+      `Diet type: ${d.vegType ?? 'OMNI'}`,
+      d.dairyFree ? 'Dairy-free' : '',
+      d.nutFree ? 'Nut-free' : '',
+      d.glutenFree ? 'Gluten-free' : '',
+      d.hasDiabetes ? 'Diabetic-friendly (low GI, controlled carbs)' : '',
+      d.otherAllergies?.length ? `Allergies: ${d.otherAllergies.join(', ')}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+    const perMealKcal = ctx.targets ? Math.round(ctx.targets.kcal / 4) : null;
+
+    const userPrompt = `
+DIETARY REQUIREMENTS:
+${dietary}
+
+GOAL: ${ctx.goalType ?? 'maintain'}${perMealKcal ? `\nRoughly ${perMealKcal} kcal for this meal.` : ''}
+
+DIGITAL INVENTORY (use these first, prioritise items expiring soon):
+${inventoryText}
+
+TASK: Suggest ONE ${request.slot} for ${request.dayLabel}.${request.replacing ? ` It replaces "${request.replacing}", so make it clearly different.` : ''}
+Do not repeat any of these meals: ${request.avoidTitles.join('; ') || 'none'}.
+Estimate kcal, protein_g, carbs_g, fat_g, fiber_g. List ingredients (names only), split into inventoryMatches and missingIngredients against the inventory; fromInventory is true only if ALL ingredients are in inventory.
+
+Respond ONLY with valid JSON:
+{"slot":"${request.slot}","title":"string","description":"string","estimatedNutrition":{"kcal":0,"protein_g":0,"carbs_g":0,"fat_g":0,"fiber_g":0},"ingredients":[],"inventoryMatches":[],"missingIngredients":[],"fromInventory":false}
+`.trim();
+
+    const startedAt = Date.now();
+    const response = await this.openai.chat.completions.create({
+      model: 'gpt-4.1',
+      messages: [
+        {
+          role: 'system',
+          content: `You are SavefulAI, a meal planning engine. Country / cuisine context: ${cuisineCtx.countryName} (${cuisineCtx.cuisineFocus}); a soft preference only.`,
+        },
+        { role: 'user', content: userPrompt },
+      ],
+      response_format: { type: 'json_object' },
+      temperature: 0.8,
+    });
+    const raw = response.choices[0]?.message?.content ?? '';
+    let meal: AiPlanMeal;
+    try {
+      meal = JSON.parse(raw) as AiPlanMeal;
+    } catch {
+      this.logger.error('AI single meal JSON parse error', raw.slice(0, 300));
+      throw new ServiceUnavailableException('AI returned an invalid meal — please try again');
+    }
+    if (!meal?.title || !meal.estimatedNutrition) {
+      throw new ServiceUnavailableException('AI returned an empty meal — please try again');
+    }
+    meal.slot = request.slot;
+    meal.ingredients = meal.ingredients ?? [];
+    meal.inventoryMatches = meal.inventoryMatches ?? [];
+    meal.missingIngredients = meal.missingIngredients ?? [];
+    meal.fromInventory = !!meal.fromInventory;
+    if (this.aiTracker) {
+      await this.aiTracker
+        .logFromResponse(
+          {
+            userId: userId ?? null,
+            feature: AIFeatureKey.RECIPE_GEN,
+            resultType: AIResultType.RECIPE_GENERATED,
+            latencyMs: Date.now() - startedAt,
+            metadata: { action: request.replacing ? 'swap_plan_meal' : 'add_plan_meal' },
+          },
+          response,
+        )
+        .catch(() => undefined);
+    }
+    return meal;
+  }
 }

@@ -11,6 +11,7 @@ import {
   MealPlanDocument,
   MealPlanStatus,
   MealPlanDuration,
+  MealSlotType,
 } from '../../database/schemas/meal-plan.schema';
 import {
   HealthProfile,
@@ -25,7 +26,7 @@ import { User, UserDocument } from '../../database/schemas/user.auth.schema';
 import { userRecipe, UserRecipeDocument } from '../../database/schemas/user.schema';
 import { MealPlanAiService } from './meal-plan-ai.service';
 import { CookbookaiProducer } from '../cookbookai/cookbookai.producer';
-import { GenerateMealPlanDto, GenerateRecipeFromPlanDto } from './dto/meal-plan.dto';
+import { ChangePlanMealDto, GenerateMealPlanDto, GenerateRecipeFromPlanDto } from './dto/meal-plan.dto';
 import { UserEventService } from '../user-events/user-event.service';
 import { UserEventType } from '../../database/schemas/user-event.schema';
 import { SubscriptionService } from '../subscription/subscription.service';
@@ -51,7 +52,8 @@ export class MealPlanService {
     private readonly subscriptionService: SubscriptionService,
   ) {}
 
-  async generate(userId: string, dto: GenerateMealPlanDto): Promise<MealPlanDocument> {
+  /** What the AI needs to plan for this user: targets, diet and kitchen. */
+  private async planningContext(userId: string, dto: Partial<GenerateMealPlanDto> = {}) {
     const user = await this.userModel
       .findById(userId)
       .select('country dietaryProfile')
@@ -106,6 +108,11 @@ export class MealPlanService {
       },
       inventory: inventoryForAi,
     };
+    return { user, healthProfile, context };
+  }
+
+  async generate(userId: string, dto: GenerateMealPlanDto): Promise<MealPlanDocument> {
+    const { user, healthProfile, context } = await this.planningContext(userId, dto);
 
     await this.subscriptionService.incrementUsage(userId, 'aiMealsUsed');
 
@@ -166,6 +173,51 @@ export class MealPlanService {
       },
     );
 
+    return plan;
+  }
+
+  /**
+   * Swaps one meal on a day for a new idea, or adds an extra meal, then
+   * recalculates that day's totals.
+   */
+  async changeMeal(userId: string, planId: string, dto: ChangePlanMealDto): Promise<MealPlanDocument> {
+    if (!Types.ObjectId.isValid(planId)) throw new NotFoundException('Meal plan not found');
+    const plan = await this.mealPlanModel.findOne({
+      _id: new Types.ObjectId(planId),
+      userId: new Types.ObjectId(userId),
+    });
+    if (!plan) throw new NotFoundException('Meal plan not found');
+    const day = plan.days.find((d: any) => d.dayNumber === dto.dayNumber) as any;
+    if (!day) throw new BadRequestException('That day is not in this plan');
+    const index = day.meals.findIndex((m: any) => m.slot === dto.slot);
+    if (dto.mode === 'swap' && index < 0) throw new BadRequestException('There is no meal to swap there');
+
+    const { context } = await this.planningContext(userId);
+    const avoidTitles = plan.days.flatMap((d: any) => d.meals.map((m: any) => m.title)).slice(0, 60);
+    const meal = await this.mealPlanAi.generateSingleMeal(
+      context,
+      {
+        slot: dto.slot as MealSlotType,
+        dayLabel: day.label ?? `Day ${day.dayNumber}`,
+        avoidTitles,
+        replacing: dto.mode === 'swap' ? day.meals[index].title : undefined,
+      },
+      userId,
+    );
+    if (dto.mode === 'swap') day.meals[index] = meal;
+    else day.meals.push(meal);
+    day.daySummary = (day.meals as any[]).reduce(
+      (sum, m) => ({
+        kcal: sum.kcal + (m.estimatedNutrition?.kcal ?? 0),
+        protein_g: sum.protein_g + (m.estimatedNutrition?.protein_g ?? 0),
+        carbs_g: sum.carbs_g + (m.estimatedNutrition?.carbs_g ?? 0),
+        fat_g: sum.fat_g + (m.estimatedNutrition?.fat_g ?? 0),
+        fiber_g: sum.fiber_g + (m.estimatedNutrition?.fiber_g ?? 0),
+      }),
+      { kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0 },
+    );
+    plan.markModified('days');
+    await plan.save();
     return plan;
   }
 

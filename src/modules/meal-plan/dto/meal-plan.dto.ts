@@ -1,5 +1,6 @@
 import {
   IsBoolean,
+  IsIn,
   IsInt,
   IsMongoId,
   IsOptional,
@@ -51,4 +52,17 @@ export class MarkPlanRecipeDto {
   @IsOptional()
   @IsBoolean()
   isSwapped?: boolean;
+}
+
+/** Swap one meal for a new idea, or add an extra meal to a day. */
+export class ChangePlanMealDto {
+  @IsInt()
+  @Min(1)
+  dayNumber: number;
+
+  @IsIn(['breakfast', 'lunch', 'snack', 'dinner'])
+  slot: 'breakfast' | 'lunch' | 'snack' | 'dinner';
+
+  @IsIn(['swap', 'add'])
+  mode: 'swap' | 'add';
 }

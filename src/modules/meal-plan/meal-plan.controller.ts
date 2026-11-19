@@ -32,6 +32,7 @@ import {
   GenerateMealPlanDto,
   GenerateRecipeFromPlanDto,
   MarkPlanRecipeDto,
+  ChangePlanMealDto,
 } from './dto/meal-plan.dto';
 
 @ApiTags('Meal Plan')
@@ -196,6 +197,28 @@ export class MealPlanController {
   ) {
     const userId = this.resolveUserId(req);
     const plan = await this.mealPlanService.markPlanRecipe(userId, planId, dto);
+    return { success: true, data: plan };
+  }
+
+  /** Swap one meal for a new idea, or add an extra meal to a day (AI). */
+  @Post(':planId/meals')
+  @RequireFeature('smart_meal_planning')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Swap or add a meal in a plan',
+    description:
+      'mode "swap" replaces the meal in `slot` on `dayNumber` with a new AI idea; mode "add" adds another meal in that slot. The day totals are recalculated. Requires the `smart_meal_planning` feature.',
+  })
+  @ApiParam({ name: 'planId', description: 'Meal plan ObjectId.' })
+  @ApiBody({ type: ChangePlanMealDto })
+  @ApiOkResponse({ description: 'Updated meal plan.' })
+  async changeMeal(
+    @Request() req,
+    @Param('planId') planId: string,
+    @Body() dto: ChangePlanMealDto,
+  ) {
+    const userId = this.resolveUserId(req);
+    const plan = await this.mealPlanService.changeMeal(userId, planId, dto);
     return { success: true, data: plan };
   }
 }
