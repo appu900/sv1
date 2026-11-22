@@ -36,6 +36,7 @@ import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
 import { RolesGuard } from 'src/common/guards/roles.guard';
 import { FileFieldsInterceptor } from '@nestjs/platform-express';
 import { ApiJwtRoles } from 'src/common/swagger/api-auth.decorators';
+import { collapseIngredientGroups } from 'src/utils/ingredient-match.util';
 
 const INGREDIENT_MULTIPART_PROPERTIES = {
   name: { type: 'string', description: 'Ingredient display name.' },
@@ -63,6 +64,11 @@ const INGREDIENT_MULTIPART_PROPERTIES = {
     description: 'JSON object mapping country code to month arrays.',
   },
   stickerId: { type: 'string', description: 'Optional sticker ObjectId.' },
+  allowDuplicate: {
+    type: 'string',
+    description:
+      'Create only: `true` creates the ingredient even when one with the same name exists (case, plural and spacing ignored); it is grouped under the existing one. Without it the request fails with 409 `INGREDIENT_EXISTS`.',
+  },
   isPantryItem: { type: 'string', description: '`true`/`false`.' },
   nutrition: { type: 'string', description: 'Nutrition notes / payload.' },
   order: { type: 'string', description: 'Display order (number).' },
@@ -205,16 +211,29 @@ export class IngredientsController {
   @ApiOperation({
     summary: 'List ingredients',
     description:
-      'Returns the full ingredient catalogue. Optionally filter by country code.',
+      'Returns the ingredient catalogue, one row per ingredient group: a duplicate grouped under another ingredient (`primaryIngredientId`) is folded into it, its name added to the main row\'s `aliases` and its id to `groupIngredientIds`. Pass `includeGrouped=true` for every row. Optionally filter by country code.',
   })
   @ApiQuery({
     name: 'country',
     required: false,
     description: 'ISO country code to filter ingredients (e.g. AU, IN).',
   })
+  @ApiQuery({
+    name: 'includeGrouped',
+    required: false,
+    description:
+      '`true` returns grouped duplicates as their own rows (admin tools that resolve existing references).',
+  })
   @ApiOkResponse({ description: 'Array of ingredients.' })
-  async getAllIngredients(@Query('country') country?: string) {
-    return this.ingrediantsService.getAllIngredients(country);
+  async getAllIngredients(
+    @Query('country') country?: string,
+    @Query('includeGrouped') includeGrouped?: string,
+  ) {
+    const ingredients = await this.ingrediantsService.getAllIngredients(country);
+    if (includeGrouped === 'true' || includeGrouped === '1') return ingredients;
+    return Array.isArray(ingredients)
+      ? collapseIngredientGroups(ingredients)
+      : ingredients;
   }
 
   @Get('summaries')

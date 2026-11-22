@@ -177,4 +177,13 @@ export class CreateIngredientDto {
     return Array.isArray(value) ? value : [];
   })
   countries?: string[];
+
+  /**
+   * Create even though an ingredient with the same name already exists. The new
+   * row is grouped under the existing one so search shows them as one.
+   */
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true' || value === '1')
+  @IsBoolean()
+  allowDuplicate?: boolean;
 }

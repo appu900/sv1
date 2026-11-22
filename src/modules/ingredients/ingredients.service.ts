@@ -28,6 +28,10 @@ import { CacheInvalidationEvent } from 'src/contracts/cache-invalidation.event';
 import { WINSTON_MODULE_PROVIDER } from 'nest-winston';
 import { DataVersionService } from '../data-version/data-version.service';
 import { SummaryHeroImage } from '../recipe/recipe.service';
+import {
+  collapseIngredientGroups,
+  ingredientMatchKey,
+} from '../../utils/ingredient-match.util';
 
 const VALID_MONTHS = new Set<string>(Object.values(Month));
 
@@ -183,15 +187,63 @@ export class IngredientsService implements OnModuleInit {
     return { message: 'Category deleted successfully' };
   }
 
+  /**
+   * Main ingredient of the group whose name matches `name` (case, plural and
+   * spacing ignored), or null. Variants resolve to their main ingredient.
+   */
+  async findExistingByName(
+    name: string,
+  ): Promise<{ _id: Types.ObjectId; name: string } | null> {
+    const key = ingredientMatchKey(name);
+    if (!key) return null;
+    const rows = await this.ingredientModel
+      .find({})
+      .select('_id name aliases primaryIngredientId hasPage')
+      .lean<
+        Array<{
+          _id: Types.ObjectId;
+          name: string;
+          aliases?: string[];
+          primaryIngredientId?: Types.ObjectId | null;
+          hasPage?: boolean;
+        }>
+      >();
+    const byId = new Map(rows.map((row) => [String(row._id), row]));
+    const hits = rows.filter((row) =>
+      [row.name, ...(row.aliases || [])].some(
+        (candidate) => ingredientMatchKey(candidate) === key,
+      ),
+    );
+    if (hits.length === 0) return null;
+    const primaries = hits.map((row) => {
+      const primary = row.primaryIngredientId
+        ? byId.get(String(row.primaryIngredientId))
+        : undefined;
+      return primary || row;
+    });
+    const best = primaries.find((row) => row.hasPage) || primaries[0];
+    return { _id: best._id, name: best.name };
+  }
+
   async createIngredient(
     dto: CreateIngredientDto,
     files?: { heroImage?: Express.Multer.File[] },
   ) {
+    const existing = await this.findExistingByName(dto.name);
+    if (existing && !dto.allowDuplicate) {
+      throw new ConflictException({
+        code: 'INGREDIENT_EXISTS',
+        message: `"${existing.name}" already exists. Use it, or send allowDuplicate=true to create "${dto.name}" grouped with it.`,
+        existing: { _id: String(existing._id), name: existing.name },
+      });
+    }
+
     const ingredientData: any = {
       name: dto.name,
       averageWeight: dto.averageWeight,
       categoryId: new Types.ObjectId(dto.categoryId),
       hasPage: dto.hasPage || false,
+      ...(existing ? { primaryIngredientId: existing._id } : {}),
     };
 
     if (dto.suitableDiets && dto.suitableDiets.length > 0) {
@@ -316,12 +368,12 @@ export class IngredientsService implements OnModuleInit {
     const rows = await this.ingredientModel
       .find(matchQuery)
       .select(
-        '_id name heroImageUrl heroImage theme inSeason seasonByCountry order',
+        '_id name heroImageUrl heroImage theme inSeason seasonByCountry order primaryIngredientId',
       )
       .sort({ order: 1, name: 1 })
       .lean();
 
-    const summaries = rows.map((row) =>
+    const summaries = collapseIngredientGroups(rows).map((row) =>
       this.mapIngredientSummary(row, normalizedCountry),
     );
 
@@ -644,10 +696,12 @@ export class IngredientsService implements OnModuleInit {
     }
 
     const deletedIngredient = await this.ingredientModel.findByIdAndDelete(id);
-    
+
     if (!deletedIngredient) {
       throw new NotFoundException('Ingredient not found');
     }
+
+    await this.promoteGroupAfterDelete(deletedIngredient._id as Types.ObjectId);
 
     if (deletedIngredient.heroImageUrl) {
       try {
@@ -689,6 +743,27 @@ export class IngredientsService implements OnModuleInit {
     await this.invalidateIngredientListCaches();
 
     return { message: 'Ingredient deleted successfully' };
+  }
+
+  /** When a group's main ingredient is deleted, the next member leads the group. */
+  private async promoteGroupAfterDelete(deletedId: Types.ObjectId) {
+    const variants = await this.ingredientModel
+      .find({ primaryIngredientId: deletedId })
+      .select('_id hasPage createdAt')
+      .sort({ hasPage: -1, createdAt: 1 })
+      .lean();
+    if (variants.length === 0) return;
+    const [next, ...rest] = variants;
+    await this.ingredientModel.updateOne(
+      { _id: next._id },
+      { $set: { primaryIngredientId: null } },
+    );
+    if (rest.length > 0) {
+      await this.ingredientModel.updateMany(
+        { _id: { $in: rest.map((row) => row._id) } },
+        { $set: { primaryIngredientId: next._id } },
+      );
+    }
   }
 
   private async invalidateIngredientListCaches() {

@@ -59,6 +59,15 @@ export class Ingredient {
   @Prop({ type: [{ type: Types.ObjectId, ref: 'Ingredient' }], default: [] })
   parentIngredients: Types.ObjectId[];
 
+  /**
+   * Set when this row is a duplicate grouped under another ingredient (e.g.
+   * "Tomatoes" under "Tomato"). The row keeps its own data and id, so recipes
+   * that use it are untouched, but search lists show the group once. Groups
+   * are one level deep: the main ingredient never has this set.
+   */
+  @Prop({ type: Types.ObjectId, ref: 'Ingredient', default: null })
+  primaryIngredientId?: Types.ObjectId | null;
+
   @Prop()
   description?: string; 
 
@@ -99,3 +108,4 @@ IngredientSchema.index({ categoryId: 1 });
 IngredientSchema.index({ hasPage: 1 });
 IngredientSchema.index({ suitableDiets: 1 });
 IngredientSchema.index({ countries: 1, hasPage: 1 });
+IngredientSchema.index({ primaryIngredientId: 1 });

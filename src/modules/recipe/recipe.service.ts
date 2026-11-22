@@ -931,6 +931,23 @@ export class RecipeService implements OnModuleInit {
     return recipes;
   }
 
+  /** Every ingredient id in the same group as `ingredientId`, itself included. */
+  private async ingredientGroupIds(ingredientId: string): Promise<Types.ObjectId[]> {
+    const id = new Types.ObjectId(ingredientId);
+    const self = await this.ingredientModel
+      .findById(id)
+      .select('primaryIngredientId')
+      .lean<{ primaryIngredientId?: Types.ObjectId | null }>();
+    const primaryId = self?.primaryIngredientId || id;
+    const members = await this.ingredientModel
+      .find({ $or: [{ _id: primaryId }, { primaryIngredientId: primaryId }] })
+      .select('_id')
+      .lean<Array<{ _id: Types.ObjectId }>>();
+    const ids = new Map<string, Types.ObjectId>([[String(id), id]]);
+    members.forEach((member) => ids.set(String(member._id), member._id));
+    return Array.from(ids.values());
+  }
+
   async findByIngredient(ingredientId: string, country?: string): Promise<Recipe[]> {
     if (!Types.ObjectId.isValid(ingredientId)) {
       throw new BadRequestException('Invalid ingredient ID format');
@@ -952,13 +969,13 @@ export class RecipeService implements OnModuleInit {
 
     const generationAtStart = await this.getRecipeCacheGeneration();
 
-    const ingredientObjectId = new Types.ObjectId(ingredientId);
-
+    // Grouped duplicates ("Tomato" / "Tomatoes") count as one ingredient.
+    const groupIds = { $in: await this.ingredientGroupIds(ingredientId) };
 
     const ingredientConditions = [
-      { 'components.component.requiredIngredients.recommendedIngredient': ingredientObjectId },
-      { 'components.component.requiredIngredients.alternativeIngredients.ingredient': ingredientObjectId },
-      { 'components.component.optionalIngredients.ingredient': ingredientObjectId },
+      { 'components.component.requiredIngredients.recommendedIngredient': groupIds },
+      { 'components.component.requiredIngredients.alternativeIngredients.ingredient': groupIds },
+      { 'components.component.optionalIngredients.ingredient': groupIds },
     ];
 
     const matchQuery = await this.publicRecipeMatch(
