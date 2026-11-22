@@ -22,6 +22,7 @@ import {
   AIFeatureKey,
   AIResultType,
 } from '../../database/schemas/ai-interaction-event.schema';
+import { normalizeCountry } from '../../utils/countries.util';
 
 
 export interface ParsedVoiceItem {
@@ -608,8 +609,11 @@ Return JSON EXACTLY in this shape:
     );
 
     const recipeFilter: any = { isActive: true };
-    if (country) {
-      recipeFilter.countries = { $in: [country] };
+    // Recipes are tagged with country names ("Australia"); profiles and the
+    // app may send a code ("AU"). Compare like with like.
+    const countryName = normalizeCountry(country);
+    if (countryName) {
+      recipeFilter.countries = { $in: [countryName] };
     }
     if (filterIngredientId && Types.ObjectId.isValid(filterIngredientId)) {
       const oid = new Types.ObjectId(filterIngredientId);
