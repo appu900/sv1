@@ -425,13 +425,13 @@ export class SubscriptionAnalyticsService {
       for (let i = 0; i < items.length; i += 1000) await fn(items.slice(i, i + 1000));
     };
     await chunk(result.periods, (b) =>
-      this.periodModel.insertMany(b.map((p) => ({ ...p, runId, userId: oid(p.userId) })), { ordered: false }),
+      this.periodModel.insertMany(b.map((p) => ({ ...p, runId, userId: oid(p.userId) })), { ordered: false, throwOnValidationError: true }),
     );
     await chunk(result.transactions, (b) =>
-      this.transactionModel.insertMany(b.map((t) => ({ ...t, runId, userId: oid(t.userId) })), { ordered: false }),
+      this.transactionModel.insertMany(b.map((t) => ({ ...t, runId, userId: oid(t.userId) })), { ordered: false, throwOnValidationError: true }),
     );
     await chunk(result.states, (b) =>
-      this.stateModel.insertMany(b.map((s) => ({ ...s, runId, userId: oid(s.userId) })), { ordered: false }),
+      this.stateModel.insertMany(b.map((s) => ({ ...s, runId, userId: oid(s.userId) })), { ordered: false, throwOnValidationError: true }),
     );
   }
 

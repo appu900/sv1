@@ -4,6 +4,7 @@ import { Model, Types } from 'mongoose';
 import OpenAI from 'openai';
 import { YoutubeTranscript } from 'youtube-transcript';
 import { userRecipe, UserRecipeDocument } from 'src/database/schemas/user.schema';
+import { User, UserDocument, UserRole } from 'src/database/schemas/user.auth.schema';
 import { getCuisineContext } from 'src/common/utils/country-cuisine.util';
 import { AIInteractionService } from '../ai-interaction/ai-interaction.service';
 import {
@@ -11,6 +12,7 @@ import {
   AIResultType,
 } from '../../database/schemas/ai-interaction-event.schema';
 import { AggregatedCall, extractUsage } from '../ai-interaction/ai-pricing.util';
+import { sanitizeComponentInstructions } from './sanitize-component-instructions';
 
 const EXTRACT_PROMPT = `You are a recipe extraction assistant. The user will provide a URL or recipe description.
 You MUST use web search to look up the URL and extract the ACTUAL recipe from it.
@@ -78,6 +80,7 @@ Rules:
 - For YouTube URLs, extract youtubeId it should be the id form the link provided,from "v=" param or youtu.be slug.
 - heroImageUrl defaults to empty string.
 - prepCookTime in minutes.
+- componentInstructions is an OPTIONAL one-sentence note for the ingredient screen. NEVER copy numbered cooking steps there. Put the full method only in componentSteps. Leave componentInstructions empty if you have no short note.
 
 CRITICAL — ALTERNATIVE INGREDIENTS (VERY IMPORTANT):
 
@@ -176,6 +179,8 @@ export class CookbookaiService {
     constructor(
         @InjectModel(userRecipe.name)
         private readonly userRecipeModel: Model<UserRecipeDocument>,
+        @InjectModel(User.name)
+        private readonly userModel: Model<UserDocument>,
         @Optional() private readonly aiTracker?: AIInteractionService,
     ) {}
 
@@ -359,9 +364,15 @@ export class CookbookaiService {
                 buttonText: String(w.buttonText || ''),
                 component: components.map((comp: any, ci: number) => {
                     const c = comp && typeof comp === 'object' ? comp : {};
+                    const componentSteps = (Array.isArray(c.componentSteps) ? c.componentSteps : [])
+                        .map((s: any) => ({ stepInstructions: String(s?.stepInstructions || ''), alwaysShow: s?.alwaysShow !== false }))
+                        .filter((s: any) => s.stepInstructions);
                     return {
                         componentTitle: String(c.componentTitle || `Component ${wi + 1}.${ci + 1}`),
-                        componentInstructions: String(c.componentInstructions || ''),
+                        componentInstructions: sanitizeComponentInstructions(
+                            c.componentInstructions,
+                            componentSteps,
+                        ),
                         includedInVariants: Array.isArray(c.includedInVariants) ? c.includedInVariants.filter(Boolean).map(String) : [],
                         requiredIngredients: (Array.isArray(c.requiredIngredients) ? c.requiredIngredients : [])
                             .map((ri: any) => ({
@@ -388,9 +399,7 @@ export class CookbookaiService {
                                 preparation: String(oi?.preparation || ''),
                             }))
                             .filter((oi: any) => oi.ingredientName),
-                        componentSteps: (Array.isArray(c.componentSteps) ? c.componentSteps : [])
-                            .map((s: any) => ({ stepInstructions: String(s?.stepInstructions || ''), alwaysShow: s?.alwaysShow !== false }))
-                            .filter((s: any) => s.stepInstructions),
+                        componentSteps,
                     };
                 }),
             };
@@ -587,6 +596,9 @@ export class CookbookaiService {
 
     async setRecipeStatus(recipeId: string, userId: string, status: 'pending' | 'accepted' | 'rejected') {
         if (!Types.ObjectId.isValid(recipeId)) return null;
+        if (status === 'accepted' && (await this.isChefAccount(userId))) {
+            return null;
+        }
         return await this.userRecipeModel
             .findOneAndUpdate(
                 { _id: new Types.ObjectId(recipeId), ...this.buildUserMatch(userId) },
@@ -619,10 +631,21 @@ export class CookbookaiService {
             .exec();
     }
 
+    private async isChefAccount(userId: string): Promise<boolean> {
+        if (!Types.ObjectId.isValid(userId)) return false;
+        const user = await this.userModel.findById(userId).select({ role: 1 }).lean().exec();
+        return String((user as { role?: string } | null)?.role || '').toUpperCase() === UserRole.CHEF;
+    }
+
     private async reconcileUserRecipeStatuses(userId: string) {
+        // Chef submissions must stay pending until an admin clicks Accept.
+        if (await this.isChefAccount(userId)) {
+            return;
+        }
+
         const userMatch = this.buildUserMatch(userId);
 
-        // Auto-heal rows that have completed content but are still marked pending.
+        // Auto-heal household Cookbook AI rows that have completed content but are still marked pending.
         await this.userRecipeModel.updateMany(
             {
                 ...userMatch,

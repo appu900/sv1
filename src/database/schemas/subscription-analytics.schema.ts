@@ -48,7 +48,8 @@ export class SubscriptionTransaction {
   @Prop({ type: Types.ObjectId, required: true, index: true }) userId: Types.ObjectId;
   @Prop({ type: String, default: null }) rcSubscriptionId: string | null;
   @Prop({ type: String, default: null }) originalTransactionId: string | null;
-  @Prop({ required: true }) productId: string;
+  /** Empty for trials rebuilt from the subscription row (store product unknown). */
+  @Prop({ type: String, default: '' }) productId: string;
   @Prop({ required: true }) plan: string;
   @Prop({ required: true }) billingPeriod: string;
   @Prop({ required: true }) store: string;
