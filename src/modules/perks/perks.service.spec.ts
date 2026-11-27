@@ -203,6 +203,10 @@ function createService(overrides: Record<string, unknown> = {}) {
   Object.assign(walletMetadataModel, overrides.walletMetadataModel);
   Object.assign(redis, overrides.redis);
   Object.assign(config, overrides.config);
+  const orderSnapshots = {
+    upsert: jest.fn().mockResolvedValue(0),
+  };
+  Object.assign(orderSnapshots, (overrides as { orderSnapshots?: object }).orderSnapshots);
 
   return {
     service: new PerksService(
@@ -219,7 +223,9 @@ function createService(overrides: Record<string, unknown> = {}) {
       billing as never,
       redis as never,
       config as never,
+      orderSnapshots as never,
     ),
+    orderSnapshots,
     api,
     session,
     billing,
@@ -1273,6 +1279,128 @@ describe('PerksService (corp)', () => {
       await expect(service.checkoutCart(userId)).rejects.toThrow(
         /cart is empty/i,
       );
+    });
+  });
+
+  describe('order snapshots for reporting', () => {
+    const groceriesTree = {
+      getCategories: jest.fn().mockResolvedValue([
+        {
+          id: 10,
+          slug: 'food-drink',
+          name: 'Food & Drink',
+          children: [{ id: 14, slug: 'groceries', name: 'Groceries' }],
+        },
+      ]),
+      listGiftCards: jest
+        .fn()
+        .mockImplementation(async ({ category }: { category: string }) =>
+          category === '14' ? [{ id: 1 }] : [],
+        ),
+    };
+    const paidOrder = {
+      id: 7,
+      order_number: '0007',
+      order_reference: 'REF-7',
+      status: 'completed',
+      payment_status: 'paid',
+      created_at: '2026-11-20 10:15:00',
+      subtotal: '100.00',
+      discount_amount: '4.50',
+      grand_total: '96.50',
+      order_item: [
+        {
+          id: 70,
+          gift_card_id: '1',
+          gift_card_name: 'Coles Gift Card',
+          amount: '100.00',
+          discount: '4.50',
+          delivery_fees: '1.00',
+          total_amount: '96.50',
+          status: 'sent',
+        },
+      ],
+    };
+
+    it('stores a categorised copy whenever a member reads their orders', async () => {
+      const upsert = jest.fn().mockResolvedValue(1);
+      const { service } = createService({
+        orderSnapshots: { upsert },
+        api: {
+          ...groceriesTree,
+          listOrdersPage: jest.fn().mockResolvedValue(ordersPageOf([paidOrder])),
+        },
+      });
+
+      await service.listOrders(userId, { limit: 20, offset: 0 });
+      // Capture runs in the background; let it settle.
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(upsert).toHaveBeenCalledTimes(1);
+      const [calledUser, snapshots] = upsert.mock.calls[0];
+      expect(calledUser).toBe(userId);
+      expect(snapshots[0]).toMatchObject({
+        orderKey: 'REF-7',
+        status: 'completed',
+        paymentStatus: 'paid',
+        faceValueCents: 10000,
+        purchasePriceCents: 9550,
+        savingsCents: 450,
+        totalCents: 9650,
+      });
+      expect(snapshots[0].orderedAt).toBeInstanceOf(Date);
+      expect(snapshots[0].lines[0]).toMatchObject({
+        ecardId: '1',
+        ecardName: 'Coles Gift Card',
+        faceValueCents: 10000,
+        category: 'groceries',
+        categoryGroup: 'food-drink',
+        perksCategory: 'groceries',
+      });
+    });
+
+    it('never fails the member request when the snapshot write fails', async () => {
+      const { service } = createService({
+        orderSnapshots: { upsert: jest.fn().mockRejectedValue(new Error('db down')) },
+        api: { listOrdersPage: jest.fn().mockResolvedValue(ordersPageOf([paidOrder])) },
+      });
+
+      const result = await service.listOrders(userId, { limit: 20, offset: 0 });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(result.items).toHaveLength(1);
+    });
+
+    it('syncs a member without a second background capture', async () => {
+      const upsert = jest.fn().mockResolvedValue(1);
+      const { service } = createService({
+        orderSnapshots: { upsert },
+        api: { listOrdersPage: jest.fn().mockResolvedValue(ordersPageOf([paidOrder])) },
+      });
+
+      const result = await service.syncMemberOrders(userId);
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(result).toEqual({ status: 'synced', orders: 1 });
+      expect(upsert).toHaveBeenCalledTimes(1);
+    });
+
+    it('skips members who are no longer entitled instead of failing the sync', async () => {
+      const upsert = jest.fn();
+      const { service } = createService({
+        orderSnapshots: { upsert },
+        billing: {
+          entitlementFor: jest.fn().mockReturnValue({
+            entitled: false,
+            reason: 'none',
+            paymentRequired: true,
+          }),
+        },
+      });
+
+      const result = await service.syncMemberOrders(userId);
+      expect(result).toMatchObject({ status: 'skipped', reason: 'PERKS_PAYMENT_REQUIRED' });
+      expect(upsert).not.toHaveBeenCalled();
     });
   });
 

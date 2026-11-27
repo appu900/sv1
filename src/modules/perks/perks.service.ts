@@ -58,6 +58,8 @@ import {
 } from './corp/perks-corp-api.client';
 import { PerksBillingService } from './billing/perks-billing.service';
 import { PerksCorpSessionService } from './corp/perks-corp-session.service';
+import { toOrderSnapshot } from './corp/perks-order-snapshot.mapper';
+import { PerksOrderSnapshotService } from './perks-order-snapshot.service';
 import type { PerksOrdersPage } from './corp/perks-corp-api.client';
 import {
   CatalogueCard,
@@ -119,7 +121,7 @@ export const PERKS_CATEGORIES = [
   { key: 'travel', name: 'Travel & Accommodation', discountBps: 1000 },
 ] as const;
 
-const PERKS_CATEGORY_ALIASES: Record<string, string> = {
+export const PERKS_CATEGORY_ALIASES: Record<string, string> = {
   grocery: 'groceries',
   petrol: 'fuel',
   health: 'pharmacy',
@@ -141,6 +143,34 @@ const PERKS_CATEGORY_ALIASES: Record<string, string> = {
   accommodation: 'travel',
   'travel-accommodation': 'travel',
 };
+
+/**
+ * First candidate (a WeMAD category slug or name) that matches one of our Perks
+ * categories, as its key; null when none do. Never throws, unlike
+ * `findCategory`, because reporting must not fail on an unknown category.
+ */
+export function perksCategoryKeyFor(
+  ...candidates: Array<string | null | undefined>
+): string | null {
+  for (const candidate of candidates) {
+    const normalized = String(candidate ?? '')
+      .trim()
+      .toLowerCase()
+      .replace(/&/g, '')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+    if (!normalized) continue;
+    const aliased = PERKS_CATEGORY_ALIASES[normalized] ?? normalized;
+    const match = PERKS_CATEGORIES.find(
+      (item) =>
+        item.key === aliased ||
+        item.name.toLowerCase().replace(/&/g, '').replace(/[^a-z0-9]+/g, '-') ===
+          normalized,
+    );
+    if (match) return match.key;
+  }
+  return null;
+}
 
 interface CartLikeItem {
   itemId: string;
@@ -178,6 +208,7 @@ export class PerksService {
     private readonly billing: PerksBillingService,
     private readonly redis: RedisService,
     private readonly config: ConfigService,
+    private readonly orderSnapshots: PerksOrderSnapshotService,
   ) {}
 
   async getMembershipStatus(userId: string) {
@@ -964,6 +995,7 @@ export class PerksService {
   private async collectVisibleOrders(
     userId: string,
     enough: (visible: Record<string, unknown>[]) => boolean,
+    { capture = true }: { capture?: boolean } = {},
   ) {
     const { user, membership } = await this.requireActiveMembership(userId);
 
@@ -1013,7 +1045,71 @@ export class PerksService {
       );
     }
 
+    // Keep a reporting copy of whatever we just read. In the background, so a
+    // slow write or category lookup never delays the member's screen.
+    if (capture && visible.length) {
+      void this.captureOrders(userId, visible).catch((error) =>
+        this.logger.warn(
+          `Perks order snapshot failed for user ${userId}: ${(error as Error).message}`,
+        ),
+      );
+    }
+
     return { rows: visible, total, summary, exhausted };
+  }
+
+  /** Map raw WeMAD orders to reporting snapshots (with categories) and store them. */
+  private async captureOrders(
+    userId: string,
+    rows: Record<string, unknown>[],
+  ): Promise<number> {
+    if (!rows.length) return 0;
+    let index = new Map<string, CardCategory>();
+    try {
+      index = await this.getCardCategoryIndex();
+    } catch (error) {
+      // Spend still counts without a category; it reports as Uncategorised.
+      this.logger.warn(
+        `Perks category index unavailable for order snapshots: ${(error as Error).message}`,
+      );
+    }
+    const snapshots = rows
+      .map((row) => toOrderSnapshot(row, index, perksCategoryKeyFor))
+      .filter((s): s is NonNullable<typeof s> => s !== null);
+    return this.orderSnapshots.upsert(userId, snapshots);
+  }
+
+  /**
+   * Read one member's full order history from WeMAD and store it, for the
+   * background reporting sync. Members who are not entitled any more cannot be
+   * read (WeMAD needs a live session); their earlier snapshots are kept.
+   */
+  async syncMemberOrders(
+    userId: string,
+  ): Promise<{ status: 'synced' | 'skipped'; orders: number; reason?: string }> {
+    try {
+      const { rows } = await this.collectVisibleOrders(userId, () => false, {
+        capture: false,
+      });
+      const orders = await this.captureOrders(userId, rows);
+      return { status: 'synced', orders };
+    } catch (error) {
+      if (error instanceof ForbiddenException) {
+        const body = error.getResponse() as { code?: string };
+        return { status: 'skipped', orders: 0, reason: body?.code ?? 'not_entitled' };
+      }
+      throw error;
+    }
+  }
+
+  /** Members whose orders can be read: active, non-legacy memberships. */
+  async listSyncableMemberIds(): Promise<string[]> {
+    const rows = await this.membershipModel
+      .find({ status: PerksMembershipStatus.ACTIVE }, { userId: 1, credentialVersion: 1 })
+      .lean();
+    return rows
+      .filter((row) => !this.isLegacyMembership(row))
+      .map((row) => String(row.userId));
   }
 
   /**

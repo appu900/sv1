@@ -21,6 +21,10 @@ import {
   PerksMembershipSchema,
 } from '../../database/schemas/perks-membership.schema';
 import {
+  PerksOrderSnapshot,
+  PerksOrderSnapshotSchema,
+} from '../../database/schemas/perks-order-snapshot.schema';
+import {
   PerksWalletMetadata,
   PerksWalletMetadataSchema,
 } from '../../database/schemas/perks-wallet-metadata.schema';
@@ -34,7 +38,10 @@ import { PerksBillingService } from './billing/perks-billing.service';
 import { PerksStripeClient } from './billing/perks-stripe.client';
 import { PerksCorpApiClient } from './corp/perks-corp-api.client';
 import { PerksCorpSessionService } from './corp/perks-corp-session.service';
+import { PerksAdminController } from './perks-admin.controller';
 import { PerksController } from './perks.controller';
+import { PerksOrderSnapshotService } from './perks-order-snapshot.service';
+import { PerksOrderSyncService } from './perks-order-sync.service';
 import { PerksService } from './perks.service';
 
 @Module({
@@ -47,19 +54,22 @@ import { PerksService } from './perks.service';
       { name: PerksFavourite.name, schema: PerksFavouriteSchema },
       { name: PerksCart.name, schema: PerksCartSchema },
       { name: PerksWalletMetadata.name, schema: PerksWalletMetadataSchema },
+      { name: PerksOrderSnapshot.name, schema: PerksOrderSnapshotSchema },
       {
         name: PerksCalculatorProfile.name,
         schema: PerksCalculatorProfileSchema,
       },
     ]),
   ],
-  controllers: [PerksController, PerksBillingController],
+  controllers: [PerksController, PerksBillingController, PerksAdminController],
   providers: [
     PerksCorpApiClient,
     PerksCorpSessionService,
     PerksStripeClient,
     PerksBillingService,
     PerksService,
+    PerksOrderSnapshotService,
+    PerksOrderSyncService,
   ],
   exports: [PerksService],
 })
